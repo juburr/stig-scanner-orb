@@ -1,19 +1,19 @@
 description: >
   Parse results.xml, write a human-readable summary.txt, apply the
-  optional ignore-list, and enforce the optional fail-on-finding gate.
+  optional ignore-list, and enforce the optional fail_on_finding gate.
 
 parameters:
-  output-dir:
+  output_dir:
     type: string
     default: "build/stig"
     description: Same value as passed to the `scan` command.
-  fail-on-finding:
+  fail_on_finding:
     type: boolean
     default: false
     description: >
       If true, exit non-zero when any non-ignored rule failed. Default
       is false so a baseline scan can be triaged before being gated.
-  ignore-findings:
+  ignore_findings:
     type: string
     default: ""
     description: >
@@ -28,7 +28,7 @@ steps:
   - run:
       name: Summarize STIG results and apply gate
       environment:
-        PARAM_OUTPUT_DIR: <<parameters.output-dir>>
-        PARAM_FAIL_ON_FINDING: <<parameters.fail-on-finding>>
-        PARAM_IGNORE_FINDINGS: <<parameters.ignore-findings>>
+        PARAM_OUTPUT_DIR: <<parameters.output_dir>>
+        PARAM_FAIL_ON_FINDING: <<parameters.fail_on_finding>>
+        PARAM_IGNORE_FINDINGS: <<parameters.ignore_findings>>
       command: <<include(scripts/summarize.sh)>>

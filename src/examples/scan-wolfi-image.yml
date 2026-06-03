@@ -13,4 +13,4 @@ usage:
       jobs:
         - stig-scanner-orb/scan:
             image: cgr.dev/chainguard/static:latest
-            target-base: wolfi
+            target_base: wolfi

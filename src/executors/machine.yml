@@ -7,7 +7,7 @@ description: >
 machine:
   image: << parameters.image >>
 
-resource_class: << parameters.resource-class >>
+resource_class: << parameters.resource_class >>
 
 parameters:
   image:
@@ -16,7 +16,7 @@ parameters:
     description: >
       CircleCI machine image tag. Stick with the default unless you need
       a specific Docker version baked in.
-  resource-class:
+  resource_class:
     type: string
     default: "medium"
     description: >

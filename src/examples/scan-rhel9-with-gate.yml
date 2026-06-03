@@ -15,6 +15,6 @@ usage:
       jobs:
         - stig-scanner-orb/scan:
             image: rockylinux:9
-            target-base: rhel9
-            fail-on-finding: true
-            ignore-findings: "SV-257779r925318,SV-257782r925327,xccdf_org.ssgproject.content_rule_package_telnet_removed"
+            target_base: rhel9
+            fail_on_finding: true
+            ignore_findings: "SV-257779r925318,SV-257782r925327,xccdf_org.ssgproject.content_rule_package_telnet_removed"

@@ -4,7 +4,7 @@ description: >
   the workflow built the image and persisted it via the workspace.
 
 parameters:
-  image-tarball:
+  image_tarball:
     type: string
     default: ""
     description: >
@@ -15,5 +15,5 @@ steps:
   - run:
       name: Load image tarball
       environment:
-        PARAM_IMAGE_TARBALL: <<parameters.image-tarball>>
+        PARAM_IMAGE_TARBALL: <<parameters.image_tarball>>
       command: <<include(scripts/load-image.sh)>>

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A CircleCI orb that runs OpenSCAP DISA STIG scans against container images and extracted filesystems. The user-facing surface is `juburr/stig-scanner-orb/scan` (a job) plus `scan` / `summarize` / `load-image` (commands).
+A CircleCI orb that runs OpenSCAP DISA STIG scans against container images and extracted filesystems. The user-facing surface is `juburr/stig-scanner-orb/scan` (a job) plus `scan` / `summarize` / `load_image` (commands).
 
 ## Local working notes
 
@@ -56,9 +56,9 @@ The dispatch table lives once in `src/scripts/scan.sh` (the big `case "${TARGET_
 
 1. Optional `docker load` of an image tarball (load-image.sh).
 2. `docker create --entrypoint /placeholder` + `docker export | tar -xf - --exclude='dev/*'` → host tmpdir. The `--entrypoint` placeholder is required for distroless images that ship no default CMD; the container is never started so the value is cosmetic. `--exclude='dev/*'` is required because rootless tar can't `mknod` device nodes.
-3. `target-base: auto` reads `/etc/os-release` from the extracted rootfs (sourced via subshell, can't be skipped because shellcheck), falling back to filesystem-shape hints (`apk` DB → wolfi, `rpm` DB → rhel9, dpkg → debian12).
+3. `target_base: auto` reads `/etc/os-release` from the extracted rootfs (sourced via subshell, can't be skipped because shellcheck), falling back to filesystem-shape hints (`apk` DB → wolfi, `rpm` DB → rhel9, dpkg → debian12).
 4. Run scanner via `docker run -v rootfs:/target:ro -v out:/out` → `oscap-chroot /target xccdf eval ... > /out/...`. Always `-u 0:0` inside; results get `chown`-ed back to host UID/GID at the end.
-5. `summarize.sh` parses `results.xml` with Python's stdlib `xml.etree`, applies the ignore-list (matches against short DISA id, full XCCDF rule id, and any `<ident>` value — case-insensitive), and enforces `fail-on-finding` exit codes.
+5. `summarize.sh` parses `results.xml` with Python's stdlib `xml.etree`, applies the ignore-list (matches against short DISA id, full XCCDF rule id, and any `<ident>` value — case-insensitive), and enforces `fail_on_finding` exit codes.
 
 ## YAML ↔ shell convention
 
@@ -86,6 +86,6 @@ When adding a parameter, edit four places: the command's `parameters:` block, th
 
 ## Tests
 
-`.circleci/test-deploy.yml` runs two integration jobs: `smoke-wolfi` (asserts the scan produces real signal — pass and N/A counts both > 50 against `cgr.dev/chainguard/static`) and `smoke-gate` (verifies fail-on-finding + ignore-list exit codes). These run on every push; publish only fires on `v*` tags.
+`.circleci/test-deploy.yml` runs a matrix of integration jobs, each driving the real `stig-scanner-orb/scan` job (so the machine executor and the load → scan → summarize → store_artifacts wiring are exercised, not just the commands): `smoke-wolfi` (real signal — pass and N/A both > 50 against `cgr.dev/chainguard/static`), `smoke-gate` (verifies `fail_on_finding` + ignore-list exit codes), `smoke-ubuntu2204` and `smoke-debian12-auto` (dpkg probes; the latter also exercises `target_base: auto`), `smoke-rhel9` (ubi9) and `smoke-fedora` (the RPM path — compliance-operator scanner + datastream donation), `smoke-rootfs` (`rootfs_path` mode), and `smoke-tarball` (`image_tarball` load mode). All run on every push and gate publish; publish only fires on `v*` tags.
 
 When debugging a scan-script change, the local end-to-end smoke against `cgr.dev/chainguard/static` is the fastest signal — finishes in ~20 s and exercises the full pipeline.

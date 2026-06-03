@@ -32,11 +32,11 @@ jobs:
           command: docker pull cgr.dev/chainguard/static:latest
       - stig-scanner-orb/scan:
           image: cgr.dev/chainguard/static:latest
-          target-base: wolfi
-          output-dir: build/stig
+          target_base: wolfi
+          output_dir: build/stig
       - stig-scanner-orb/summarize:
-          output-dir: build/stig
-          fail-on-finding: false
+          output_dir: build/stig
+          fail_on_finding: false
       - run:
           name: Assert summary shows real signal
           command: |
@@ -70,11 +70,11 @@ jobs:
           command: docker pull cgr.dev/chainguard/static:latest
       - stig-scanner-orb/scan:
           image: cgr.dev/chainguard/static:latest
-          target-base: wolfi
-          output-dir: build/stig
+          target_base: wolfi
+          output_dir: build/stig
       - stig-scanner-orb/summarize:
-          output-dir: build/stig
-          fail-on-finding: false
+          output_dir: build/stig
+          fail_on_finding: false
       - run:
           name: Gate ON, no ignores → expect exit 1
           command: |
@@ -114,7 +114,7 @@ workflows:
           # dpkg probe family via the Chainguard scanner; also leaves the
           # job's default `checkout: true` on, so that path is covered once.
           image: ubuntu:22.04
-          target-base: ubuntu2204
+          target_base: ubuntu2204
           post-steps:
             - run:
                 name: Assert dpkg-probe signal
@@ -132,10 +132,10 @@ workflows:
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-debian12-auto
-          # Also exercises `target-base: auto` (os-release ID=debian, 12 ->
+          # Also exercises `target_base: auto` (os-release ID=debian, 12 ->
           # debian12) on top of the debian12 datastream + anssi profile.
           image: debian:12-slim
-          target-base: auto
+          target_base: auto
           checkout: false
           post-steps:
             - run:
@@ -157,7 +157,7 @@ workflows:
           # anonymous pull-rate limits, and unlike a minimal Rocky image it
           # has enough installed content for rpm-state rules to really fire.
           image: registry.access.redhat.com/ubi9/ubi:latest
-          target-base: rhel9
+          target_base: rhel9
           checkout: false
           post-steps:
             - run:
@@ -177,7 +177,7 @@ workflows:
           # Second RPM datastream/profile (fedora / standard) through the
           # same compliance-operator + donation path.
           image: fedora:latest
-          target-base: fedora
+          target_base: fedora
           checkout: false
           post-steps:
             - run:
@@ -193,10 +193,10 @@ workflows:
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-rootfs
-          # rootfs-path mode: scan an already-extracted tree, skipping the
+          # rootfs_path mode: scan an already-extracted tree, skipping the
           # docker-export step entirely.
-          rootfs-path: /tmp/stig-rootfs
-          target-base: wolfi
+          rootfs_path: /tmp/stig-rootfs
+          target_base: wolfi
           checkout: false
           pre-steps:
             - run:
@@ -221,12 +221,12 @@ workflows:
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-tarball
-          # image-tarball / load-image mode. The tag is local-only and NOT
-          # pullable, so the scan can only succeed if load-image actually
+          # image_tarball / load_image mode. The tag is local-only and NOT
+          # pullable, so the scan can only succeed if load_image actually
           # loaded the tar — a real test of that path, not a no-op.
           image: localhost/stig-tarball-smoke:latest
-          image-tarball: /tmp/stig-image.tar
-          target-base: wolfi
+          image_tarball: /tmp/stig-image.tar
+          target_base: wolfi
           checkout: false
           pre-steps:
             - run:

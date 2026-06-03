@@ -12,8 +12,8 @@ usage:
     scan:
       jobs:
         - stig-scanner-orb/scan:
-            rootfs-path: /tmp/myapp-rpm-extracted
-            target-base: rhel9
+            rootfs_path: /tmp/myapp-rpm-extracted
+            target_base: rhel9
             pre-steps:
               - run:
                   name: Stage extracted RPM filesystem

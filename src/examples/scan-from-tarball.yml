@@ -15,9 +15,9 @@ usage:
             requires:
               - build-image
             image: localhost/myapp:latest
-            image-tarball: workspace/images/myapp.tar
-            target-base: wolfi
-            fail-on-finding: false
+            image_tarball: workspace/images/myapp.tar
+            target_base: wolfi
+            fail_on_finding: false
             pre-steps:
               - attach_workspace:
                   at: workspace

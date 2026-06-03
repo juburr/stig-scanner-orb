@@ -6,53 +6,53 @@ description: >
 
 executor:
   name: machine
-  resource-class: <<parameters.resource-class>>
+  resource_class: <<parameters.resource_class>>
 
 parameters:
   image:
     type: string
     default: ""
-    description: Image tag to scan. Mutually exclusive with rootfs-path.
-  rootfs-path:
+    description: Image tag to scan. Mutually exclusive with rootfs_path.
+  rootfs_path:
     type: string
     default: ""
     description: Filesystem path to scan via oscap-chroot.
-  image-tarball:
+  image_tarball:
     type: string
     default: ""
     description: Optional docker-saved tar to docker-load before the scan.
-  target-base:
+  target_base:
     type: enum
     enum: ["auto", "wolfi", "debian12", "ubuntu2204", "rhel8", "rhel9", "rhel10", "fedora"]
     default: auto
-  scanner-image:
+  scanner_image:
     type: string
     default: ""
-  datastream-name:
+  datastream_name:
     type: string
     default: ""
-  datastream-path:
+  datastream_path:
     type: string
     default: ""
-  profile-id:
+  profile_id:
     type: string
     default: ""
-  donor-image:
+  donor_image:
     type: string
     default: "cgr.dev/chainguard/openscap:latest-dev"
-  fail-on-finding:
+  fail_on_finding:
     type: boolean
     default: false
-  ignore-findings:
+  ignore_findings:
     type: string
     default: ""
-  output-dir:
+  output_dir:
     type: string
     default: "build/stig"
-  resource-class:
+  resource_class:
     type: string
     default: "medium"
-  no-output-timeout:
+  no_output_timeout:
     type: string
     default: "30m"
     description: >
@@ -72,31 +72,31 @@ steps:
   - when:
       condition: <<parameters.checkout>>
       steps: [checkout]
-  - load-image:
-      image-tarball: <<parameters.image-tarball>>
+  - load_image:
+      image_tarball: <<parameters.image_tarball>>
   - run:
       name: Reserve output directory
       command: |
-        mkdir -p <<parameters.output-dir>>
+        mkdir -p <<parameters.output_dir>>
   - scan:
       image: <<parameters.image>>
-      rootfs-path: <<parameters.rootfs-path>>
-      target-base: <<parameters.target-base>>
-      scanner-image: <<parameters.scanner-image>>
-      datastream-name: <<parameters.datastream-name>>
-      datastream-path: <<parameters.datastream-path>>
-      profile-id: <<parameters.profile-id>>
-      output-dir: <<parameters.output-dir>>
-      donor-image: <<parameters.donor-image>>
-      no-output-timeout: <<parameters.no-output-timeout>>
+      rootfs_path: <<parameters.rootfs_path>>
+      target_base: <<parameters.target_base>>
+      scanner_image: <<parameters.scanner_image>>
+      datastream_name: <<parameters.datastream_name>>
+      datastream_path: <<parameters.datastream_path>>
+      profile_id: <<parameters.profile_id>>
+      output_dir: <<parameters.output_dir>>
+      donor_image: <<parameters.donor_image>>
+      no_output_timeout: <<parameters.no_output_timeout>>
   - summarize:
-      output-dir: <<parameters.output-dir>>
-      fail-on-finding: <<parameters.fail-on-finding>>
-      ignore-findings: <<parameters.ignore-findings>>
+      output_dir: <<parameters.output_dir>>
+      fail_on_finding: <<parameters.fail_on_finding>>
+      ignore_findings: <<parameters.ignore_findings>>
   # Upload after summarize so summary.txt is captured. `when: always`
-  # ensures the artifacts still upload when fail-on-finding triggers a
+  # ensures the artifacts still upload when fail_on_finding triggers a
   # gate exit — the audit trail must be retrievable on a failing build.
   - store_artifacts:
-      path: <<parameters.output-dir>>
+      path: <<parameters.output_dir>>
       destination: stig
       when: always

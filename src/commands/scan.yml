@@ -2,7 +2,7 @@ description: >
   Run an OpenSCAP STIG scan against a container image (host-extracted via
   the local Docker daemon) or against an already-extracted filesystem
   tree. Writes report.html, results.xml, and scan-plan.env into
-  output-dir. Does not enforce a gate or apply ignore-lists — call the
+  output_dir. Does not enforce a gate or apply ignore-lists — call the
   `summarize` command after this for that.
 
 parameters:
@@ -12,33 +12,33 @@ parameters:
     description: >
       Image tag to scan, e.g. "myapp:latest" or
       "cgr.dev/chainguard/static:latest". If the tag isn't already in
-      the local docker daemon (e.g. via image-tarball) the orb will
-      `docker pull` it. Mutually exclusive with rootfs-path.
-  rootfs-path:
+      the local docker daemon (e.g. via image_tarball) the orb will
+      `docker pull` it. Mutually exclusive with rootfs_path.
+  rootfs_path:
     type: string
     default: ""
     description: >
       Path to an already-extracted filesystem tree (e.g. an RPM
       unpacked into a tmpdir, or a mounted VM disk). Mutually
       exclusive with image.
-  target-base:
+  target_base:
     type: enum
     enum: ["auto", "wolfi", "debian12", "ubuntu2204", "rhel8", "rhel9", "rhel10", "fedora"]
     default: auto
     description: >
-      Selects the (scanner-image, datastream, profile) triple. `auto`
+      Selects the (scanner_image, datastream, profile) triple. `auto`
       reads /etc/os-release from the target rootfs, falling back to
       filesystem-shape hints (apk DB → wolfi, rpm DB → rhel9, dpkg
       status → debian12). For distroless images with no os-release,
       set this explicitly.
-  scanner-image:
+  scanner_image:
     type: string
     default: ""
     description: >
       Override the scanner image. Defaults: cgr.dev/chainguard/openscap
       for wolfi/debian/ubuntu, quay.io/compliance-operator/openscap-ocp
       for rhel/fedora.
-  datastream-name:
+  datastream_name:
     type: string
     default: ""
     description: >
@@ -46,25 +46,25 @@ parameters:
       scanner image's bundled content, or to the donor cache). Use this
       to scan against a non-default OS variant whose datastream lives
       alongside the default one.
-  datastream-path:
+  datastream_path:
     type: string
     default: ""
     description: >
       Host-local path to a datastream file. Bypasses the donor flow
       entirely. Use this for air-gapped consumers who mirror SCAP
       content via their own pipeline.
-  profile-id:
+  profile_id:
     type: string
     default: ""
     description: >
       Override the XCCDF profile id. Defaults to the DISA STIG profile
       where the datastream has one. Useful for scanning against CIS,
       PCI-DSS, ANSSI, etc. (`oscap info <datastream>` lists profiles).
-  output-dir:
+  output_dir:
     type: string
     default: "build/stig"
     description: Where report.html, results.xml, and summary.txt land.
-  donor-image:
+  donor_image:
     type: string
     default: "cgr.dev/chainguard/openscap:latest-dev"
     description: >
@@ -72,7 +72,7 @@ parameters:
       tar -xf preserves UID/GID from the target image) and to copy
       SCAP datastreams out of for RPM-family targets. Override for
       air-gap mirrors.
-  no-output-timeout:
+  no_output_timeout:
     type: string
     default: "30m"
     description: >
@@ -85,15 +85,15 @@ parameters:
 steps:
   - run:
       name: STIG scan
-      no_output_timeout: <<parameters.no-output-timeout>>
+      no_output_timeout: <<parameters.no_output_timeout>>
       environment:
         PARAM_IMAGE: <<parameters.image>>
-        PARAM_ROOTFS_PATH: <<parameters.rootfs-path>>
-        PARAM_TARGET_BASE: <<parameters.target-base>>
-        PARAM_SCANNER_IMAGE: <<parameters.scanner-image>>
-        PARAM_DATASTREAM_NAME: <<parameters.datastream-name>>
-        PARAM_DATASTREAM_PATH: <<parameters.datastream-path>>
-        PARAM_PROFILE_ID: <<parameters.profile-id>>
-        PARAM_OUTPUT_DIR: <<parameters.output-dir>>
-        PARAM_DONOR_IMAGE: <<parameters.donor-image>>
+        PARAM_ROOTFS_PATH: <<parameters.rootfs_path>>
+        PARAM_TARGET_BASE: <<parameters.target_base>>
+        PARAM_SCANNER_IMAGE: <<parameters.scanner_image>>
+        PARAM_DATASTREAM_NAME: <<parameters.datastream_name>>
+        PARAM_DATASTREAM_PATH: <<parameters.datastream_path>>
+        PARAM_PROFILE_ID: <<parameters.profile_id>>
+        PARAM_OUTPUT_DIR: <<parameters.output_dir>>
+        PARAM_DONOR_IMAGE: <<parameters.donor_image>>
       command: <<include(scripts/scan.sh)>>
