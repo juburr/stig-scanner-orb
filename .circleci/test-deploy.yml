@@ -103,6 +103,150 @@ workflows:
           filters: *filters
       - smoke-gate:
           filters: *filters
+      # Broader coverage: every supported family + every input mode, each
+      # exercised through the real `stig-scanner-orb/scan` JOB (so the
+      # machine executor and the load -> scan -> summarize -> store_artifacts
+      # wiring are covered too, not just the commands). Count thresholds are
+      # deliberately loose — well below locally-observed values — so routine
+      # ComplianceAsCode/SSG content updates don't make these flaky.
+      - stig-scanner-orb/scan:
+          name: smoke-ubuntu2204
+          # dpkg probe family via the Chainguard scanner; also leaves the
+          # job's default `checkout: true` on, so that path is covered once.
+          image: ubuntu:22.04
+          target-base: ubuntu2204
+          post-steps:
+            - run:
+                name: Assert dpkg-probe signal
+                command: |
+                  set -e
+                  test -f build/stig/summary.txt
+                  test -f build/stig/results.xml
+                  test -f build/stig/report.html
+                  grep -q "target-base:    ubuntu2204" build/stig/summary.txt
+                  pass=$(awk '/^  pass / {print $2}' build/stig/summary.txt)
+                  na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
+                  echo "pass=${pass:-0} notapplicable=${na:-0}"
+                  test "${pass:-0}" -gt 5
+                  test "${na:-0}" -gt 50
+          filters: *filters
+      - stig-scanner-orb/scan:
+          name: smoke-debian12-auto
+          # Also exercises `target-base: auto` (os-release ID=debian, 12 ->
+          # debian12) on top of the debian12 datastream + anssi profile.
+          image: debian:12-slim
+          target-base: auto
+          checkout: false
+          post-steps:
+            - run:
+                name: Assert auto-detect resolves debian12 + dpkg signal
+                command: |
+                  set -e
+                  grep -q "target-base:    debian12" build/stig/summary.txt
+                  pass=$(awk '/^  pass / {print $2}' build/stig/summary.txt)
+                  na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
+                  echo "pass=${pass:-0} notapplicable=${na:-0}"
+                  test "${pass:-0}" -gt 3
+                  test "${na:-0}" -gt 10
+          filters: *filters
+      - stig-scanner-orb/scan:
+          name: smoke-rhel9
+          # The whole RPM path: compliance-operator scanner + datastream
+          # donated from the Chainguard image + rpm probes. ubi9 is pulled
+          # from registry.access.redhat.com (not Docker Hub) to dodge
+          # anonymous pull-rate limits, and unlike a minimal Rocky image it
+          # has enough installed content for rpm-state rules to really fire.
+          image: registry.access.redhat.com/ubi9/ubi:latest
+          target-base: rhel9
+          checkout: false
+          post-steps:
+            - run:
+                name: Assert RPM dispatch + real probe signal
+                command: |
+                  set -e
+                  grep -q "scanner=quay.io/compliance-operator" build/stig/scan-plan.env
+                  grep -q "family=rpm" build/stig/scan-plan.env
+                  pass=$(awk '/^  pass / {print $2}' build/stig/summary.txt)
+                  na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
+                  echo "pass=${pass:-0} notapplicable=${na:-0}"
+                  test "${pass:-0}" -gt 5
+                  test "${na:-0}" -gt 50
+          filters: *filters
+      - stig-scanner-orb/scan:
+          name: smoke-fedora
+          # Second RPM datastream/profile (fedora / standard) through the
+          # same compliance-operator + donation path.
+          image: fedora:latest
+          target-base: fedora
+          checkout: false
+          post-steps:
+            - run:
+                name: Assert fedora RPM scan signal
+                command: |
+                  set -e
+                  grep -q "family=rpm" build/stig/scan-plan.env
+                  pass=$(awk '/^  pass / {print $2}' build/stig/summary.txt)
+                  na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
+                  echo "pass=${pass:-0} notapplicable=${na:-0}"
+                  test "${pass:-0}" -gt 3
+                  test "${na:-0}" -gt 10
+          filters: *filters
+      - stig-scanner-orb/scan:
+          name: smoke-rootfs
+          # rootfs-path mode: scan an already-extracted tree, skipping the
+          # docker-export step entirely.
+          rootfs-path: /tmp/stig-rootfs
+          target-base: wolfi
+          checkout: false
+          pre-steps:
+            - run:
+                name: Stage an extracted rootfs
+                command: |
+                  set -e
+                  cid=$(docker create --entrypoint /placeholder cgr.dev/chainguard/static:latest)
+                  mkdir -p /tmp/stig-rootfs
+                  docker export "$cid" | tar -C /tmp/stig-rootfs -xf - --numeric-owner --exclude='dev/*'
+                  docker rm "$cid"
+          post-steps:
+            - run:
+                name: Assert rootfs-mode outputs
+                command: |
+                  set -e
+                  test -f build/stig/results.xml
+                  test -f build/stig/report.html
+                  grep -q "target-rootfs:" build/stig/summary.txt
+                  na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
+                  echo "notapplicable=${na:-0}"
+                  test "${na:-0}" -gt 50
+          filters: *filters
+      - stig-scanner-orb/scan:
+          name: smoke-tarball
+          # image-tarball / load-image mode. The tag is local-only and NOT
+          # pullable, so the scan can only succeed if load-image actually
+          # loaded the tar — a real test of that path, not a no-op.
+          image: localhost/stig-tarball-smoke:latest
+          image-tarball: /tmp/stig-image.tar
+          target-base: wolfi
+          checkout: false
+          pre-steps:
+            - run:
+                name: Build a non-pullable image tarball
+                command: |
+                  set -e
+                  docker pull cgr.dev/chainguard/static:latest
+                  docker tag cgr.dev/chainguard/static:latest localhost/stig-tarball-smoke:latest
+                  docker save localhost/stig-tarball-smoke:latest -o /tmp/stig-image.tar
+                  docker rmi localhost/stig-tarball-smoke:latest cgr.dev/chainguard/static:latest
+          post-steps:
+            - run:
+                name: Assert scan ran against the tarball-loaded image
+                command: |
+                  set -e
+                  test -f build/stig/summary.txt
+                  na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
+                  echo "notapplicable=${na:-0}"
+                  test "${na:-0}" -gt 50
+          filters: *filters
       - orb-tools/pack:
           filters: *release-filters
       - orb-tools/publish:
@@ -113,5 +257,11 @@ workflows:
             - orb-tools/pack
             - smoke-wolfi
             - smoke-gate
+            - smoke-ubuntu2204
+            - smoke-debian12-auto
+            - smoke-rhel9
+            - smoke-fedora
+            - smoke-rootfs
+            - smoke-tarball
           context: orb-publishing
           filters: *release-filters
