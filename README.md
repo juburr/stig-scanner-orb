@@ -1,7 +1,7 @@
 <div align="center">
-  <img align="center" width="256" src="assets/logos/stig-scanner-orb-256px.png" alt="STIG Scanner Orb"><br /><br />
-  <h2>STIG Scanner Orb</h2>
-  <i>A CircleCI orb that scans for DISA STIG findings using Chainguard's OpenSCAP scanner. Includes the ability to scan multiple operating systems, with optional failure gates and ignore lists.</i><br /><br />
+  <img align="center" width="300" src="assets/logos/stig-scanner-orb-512px.png?v=2" alt="STIG Scanner Orb"><br /><br />
+  <h1>STIG Scanner Orb</h1>
+  <i>A CircleCI orb that scans for DISA STIG findings using Chainguard's OpenSCAP scanner.</i><br /><br />
 </div>
 
 <!---
@@ -12,7 +12,7 @@
 ## 📖 Overview
 This CircleCI orb uses the same process outlined by Chainguard in their [STIGs for Chainguard Containers](https://edu.chainguard.dev/chainguard/chainguard-images/features/image-stigs/) guide. I've extended it to work with other non-Wolfi operating systems such as UBI8, UBI9, Ubuntu, Debian, Fedora, and certain distroless images.
 
-As you might expect, the orb includes optional failure gates, ignore lists to exclude certain findings from the failure gates, summarized outputs, and the ability to emit artifacts to use as ATO evidence or to attach to your container as in-toto attestations using Cosign.
+The orb includes optional failure gates, ignore lists to exclude findings from the failure gates, summarized outputs, and the ability to emit artifacts to use as ATO evidence or to attach to your container as in-toto attestations using Cosign.
 
 ## 🚀 Getting Started
 
