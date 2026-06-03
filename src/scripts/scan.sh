@@ -86,15 +86,19 @@ if [ -n "${IMAGE}" ]; then
     CID="$(docker create --entrypoint /placeholder "${IMAGE}")"
     trap 'docker rm -f "${CID}" >/dev/null 2>&1 || true' EXIT
     # Pipe the export tar into a docker container running as root, which
-    # runs `tar -xf --same-owner --numeric-owner` so the extracted tree
-    # carries the image's original UIDs/GIDs (not the runner's).
+    # runs `tar -xf --numeric-owner` so the extracted tree carries the
+    # image's original numeric UIDs/GIDs (not the runner's). tar restores
+    # ownership by default when extracting as root, so --numeric-owner is
+    # sufficient; we deliberately do NOT pass GNU tar's --same-owner here
+    # because the donor image ships busybox tar, which rejects that flag
+    # and would abort the extraction (and thus every image-mode scan).
     # --exclude='dev/*' skips device nodes (mknod can fail in some
     # rootless setups; SCAP probes don't read device nodes anyway).
     docker export "${CID}" | docker run --rm -i -u 0:0 \
         -v "${ROOTFS_DIR}:/target" \
         --entrypoint tar \
         "${DONOR_IMAGE}" \
-        -C /target -xf - --same-owner --numeric-owner --exclude='dev/*'
+        -C /target -xf - --numeric-owner --exclude='dev/*'
     docker rm "${CID}" >/dev/null 2>&1 || true
     trap - EXIT
 else
