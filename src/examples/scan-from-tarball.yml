@@ -1,0 +1,23 @@
+description: >
+  Scan an image that a previous job built and persisted to the
+  workspace as a docker-saved tar. The job loads the tar before the
+  scan, then runs the standard flow.
+
+usage:
+  version: 2.1
+  orbs:
+    stig-scanner-orb: juburr/stig-scanner-orb@1.0.0
+  workflows:
+    build-and-scan:
+      jobs:
+        - build-image
+        - stig-scanner-orb/scan:
+            requires:
+              - build-image
+            image: localhost/myapp:latest
+            image-tarball: workspace/images/myapp.tar
+            target-base: wolfi
+            fail-on-finding: false
+            pre-steps:
+              - attach_workspace:
+                  at: workspace

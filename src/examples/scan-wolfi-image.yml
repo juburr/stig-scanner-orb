@@ -1,0 +1,16 @@
+description: >
+  Scan a Chainguard / Wolfi-based container image against the
+  Chainguard GPOS profile. Pipeline only fails on a scanner error;
+  rule failures are surfaced via summary.txt + report.html artifacts
+  for triage.
+
+usage:
+  version: 2.1
+  orbs:
+    stig-scanner-orb: juburr/stig-scanner-orb@1.0.0
+  workflows:
+    scan:
+      jobs:
+        - stig-scanner-orb/scan:
+            image: cgr.dev/chainguard/static:latest
+            target-base: wolfi

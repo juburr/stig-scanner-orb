@@ -1,0 +1,34 @@
+description: >
+  Parse results.xml, write a human-readable summary.txt, apply the
+  optional ignore-list, and enforce the optional fail-on-finding gate.
+
+parameters:
+  output-dir:
+    type: string
+    default: "build/stig"
+    description: Same value as passed to the `scan` command.
+  fail-on-finding:
+    type: boolean
+    default: false
+    description: >
+      If true, exit non-zero when any non-ignored rule failed. Default
+      is false so a baseline scan can be triaged before being gated.
+  ignore-findings:
+    type: string
+    default: ""
+    description: >
+      Comma-separated rule IDs to subtract from the failure count for
+      gate purposes only (still surfaced in summary.txt as ignored).
+      Accepted forms per entry: short DISA id ("SV-257779r925318"),
+      full XCCDF rule id, or any CCE/STIG ident from the rule's
+      <ident> block. Matching is case-insensitive and whitespace-
+      tolerant.
+
+steps:
+  - run:
+      name: Summarize STIG results and apply gate
+      environment:
+        PARAM_OUTPUT_DIR: <<parameters.output-dir>>
+        PARAM_FAIL_ON_FINDING: <<parameters.fail-on-finding>>
+        PARAM_IGNORE_FINDINGS: <<parameters.ignore-findings>>
+      command: <<include(scripts/summarize.sh)>>

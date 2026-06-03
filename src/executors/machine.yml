@@ -1,0 +1,24 @@
+description: >
+  Linux machine executor — required because the scan host-extracts target
+  rootfs via the local Docker daemon. The Docker resource class isn't
+  viable here: setup_remote_docker runs the daemon in a separate VM, so
+  bind-mounts of the extracted rootfs would be empty on the daemon side.
+
+machine:
+  image: << parameters.image >>
+
+resource_class: << parameters.resource-class >>
+
+parameters:
+  image:
+    type: string
+    default: "ubuntu-2404:current"
+    description: >
+      CircleCI machine image tag. Stick with the default unless you need
+      a specific Docker version baked in.
+  resource-class:
+    type: string
+    default: "medium"
+    description: >
+      Machine resource class. STIG scans are CPU-light but I/O-heavy
+      during rootfs extraction; medium is usually enough.

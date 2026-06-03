@@ -1,0 +1,20 @@
+description: >
+  Scan a RHEL-9-family container image against the DISA STIG profile,
+  with a failure gate that ignores a triaged baseline of three known
+  findings. Use this shape once the consumer has reviewed an initial
+  baseline scan and wants to prevent regressions. Note: most rules in
+  the RHEL host STIG profile evaluate as notapplicable against a
+  container image — see the orb README for context.
+
+usage:
+  version: 2.1
+  orbs:
+    stig-scanner-orb: juburr/stig-scanner-orb@1.0.0
+  workflows:
+    scan:
+      jobs:
+        - stig-scanner-orb/scan:
+            image: rockylinux:9
+            target-base: rhel9
+            fail-on-finding: true
+            ignore-findings: "SV-257779r925318,SV-257782r925327,xccdf_org.ssgproject.content_rule_package_telnet_removed"

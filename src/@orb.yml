@@ -1,7 +1,13 @@
 version: 2.1
 
 description: >
-  CircleCI orb that scans for DISA STIG findings using Chainguard's OpenSCAP scanner.
+  Scan container images and extracted filesystems for DISA STIG compliance
+  using OpenSCAP. Wraps Chainguard's hardened openscap image for Wolfi /
+  Debian / Ubuntu targets and the public OpenShift compliance-operator
+  scanner for RHEL / Fedora / Rocky / Alma / Oracle Linux targets, with
+  consistent reporting, an optional failure gate, and an ignore-list for
+  triaged baseline findings.
 
 display:
   source_url: "https://github.com/juburr/stig-scanner-orb"
+  home_url: "https://github.com/juburr/stig-scanner-orb"

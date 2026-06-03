@@ -1,18 +1,14 @@
 version: 2.1
+
 orbs:
-  # Your orb will be automatically injected here during the pipeline.
-  # Reference your orb's jobs and commands below as they will exist when built.
   orb-tools: circleci/orb-tools@12.3
-  # The orb definition is intentionally not included here. It will be injected into the pipeline.
+  # The orb definition is injected into the pipeline by the setup workflow.
   stig-scanner-orb: {}
 
-# Use this tag to ensure test jobs always run,
-# even though the downstream publish job will only run on release tags.
 filters: &filters
   tags:
     only: /.*/
 
-# Filter for release tags.
 release-filters: &release-filters
   branches:
     ignore: /.*/
@@ -20,32 +16,102 @@ release-filters: &release-filters
     only: /^v[0-9]+\.[0-9]+\.[0-9]+$/
 
 jobs:
-  # Create jobs to test the commands of your orbs.
-  # You may want to add additional validation steps to ensure the commands are working as expected.
-  command-test:
-    docker:
-      - image: cimg/base:current
+  smoke-wolfi:
+    description: >
+      Scan a tiny known Wolfi-based image and assert the orb's summary
+      shows real signal — pass and notapplicable counts both nonzero.
+      Catches regressions in scan.sh, summarize.sh, and the Chainguard
+      datastream wiring.
+    machine:
+      image: ubuntu-2404:current
+    resource_class: medium
     steps:
       - checkout
-      # Run your orb's commands to validate them.
-      - stig-scanner-orb/greet
+      - run:
+          name: Pull a tiny Wolfi target into the local docker daemon
+          command: docker pull cgr.dev/chainguard/static:latest
+      - stig-scanner-orb/scan:
+          image: cgr.dev/chainguard/static:latest
+          target-base: wolfi
+          output-dir: build/stig
+      - stig-scanner-orb/summarize:
+          output-dir: build/stig
+          fail-on-finding: false
+      - run:
+          name: Assert summary shows real signal
+          command: |
+            set -e
+            test -f build/stig/summary.txt
+            test -f build/stig/results.xml
+            test -f build/stig/report.html
+            grep -q "target-base:    wolfi" build/stig/summary.txt
+            pass=$(awk '/^  pass / {print $2}' build/stig/summary.txt)
+            na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
+            echo "pass=${pass:-0} notapplicable=${na:-0}"
+            test "${pass:-0}" -gt 50 || { echo "expected >50 pass rules"; exit 1; }
+            test "${na:-0}" -gt 50 || { echo "expected >50 notapplicable rules"; exit 1; }
+      - store_artifacts:
+          path: build/stig
+          destination: smoke-wolfi
+
+  smoke-gate:
+    description: >
+      Verify the failure gate and ignore-list logic by scanning the
+      same Wolfi target, then re-running summarize twice — once with
+      the gate on and no ignores (must exit 1), once with the gate on
+      and the actual failures listed (must exit 0).
+    machine:
+      image: ubuntu-2404:current
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: Produce a results.xml with known failures
+          command: docker pull cgr.dev/chainguard/static:latest
+      - stig-scanner-orb/scan:
+          image: cgr.dev/chainguard/static:latest
+          target-base: wolfi
+          output-dir: build/stig
+      - stig-scanner-orb/summarize:
+          output-dir: build/stig
+          fail-on-finding: false
+      - run:
+          name: Gate ON, no ignores → expect exit 1
+          command: |
+            set +e
+            PARAM_OUTPUT_DIR="build/stig" \
+            PARAM_FAIL_ON_FINDING="true" \
+            PARAM_IGNORE_FINDINGS="" \
+            bash src/scripts/summarize.sh >/dev/null 2>&1
+            rc=$?
+            test "$rc" -eq 1 || { echo "expected exit 1, got $rc"; exit 1; }
+      - run:
+          name: Gate ON, ignore all real failures → expect exit 0
+          command: |
+            set -e
+            fails=$(grep -oE 'SV-[0-9]+r[0-9]+' build/stig/summary.txt | sort -u | tr '\n' ',' | sed 's/,$//')
+            test -n "$fails" || { echo "no failures parsed; smoke-wolfi precondition broken"; exit 1; }
+            PARAM_OUTPUT_DIR="build/stig" \
+            PARAM_FAIL_ON_FINDING="true" \
+            PARAM_IGNORE_FINDINGS="$fails" \
+            bash src/scripts/summarize.sh >/dev/null 2>&1
+
 workflows:
   test-deploy:
     jobs:
-      # Make sure to include "filters: *filters" in every test job you want to run as part of your deployment.
-      # Test your orb's commands in a custom job and test your orb's jobs directly as a part of this workflow.
-      - command-test:
+      - smoke-wolfi:
           filters: *filters
-      # The orb must be re-packed for publishing, and saved to the workspace.
+      - smoke-gate:
+          filters: *filters
       - orb-tools/pack:
           filters: *release-filters
       - orb-tools/publish:
           orb_name: juburr/stig-scanner-orb
           vcs_type: << pipeline.project.type >>
           pub_type: production
-          # Ensure this job requires all test jobs and the pack job.
           requires:
             - orb-tools/pack
-            - command-test
+            - smoke-wolfi
+            - smoke-gate
           context: orb-publishing
           filters: *release-filters

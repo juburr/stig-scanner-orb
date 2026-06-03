@@ -1,0 +1,22 @@
+description: >
+  Scan a filesystem tree that's been extracted from an RPM (or mounted
+  from a VM disk) rather than a container image. The orb skips the
+  docker-extract step and runs oscap-chroot directly against the
+  supplied path.
+
+usage:
+  version: 2.1
+  orbs:
+    stig-scanner-orb: juburr/stig-scanner-orb@1.0.0
+  workflows:
+    scan:
+      jobs:
+        - stig-scanner-orb/scan:
+            rootfs-path: /tmp/myapp-rpm-extracted
+            target-base: rhel9
+            pre-steps:
+              - run:
+                  name: Stage extracted RPM filesystem
+                  command: |
+                    mkdir -p /tmp/myapp-rpm-extracted
+                    rpm2cpio myapp.rpm | (cd /tmp/myapp-rpm-extracted && cpio -idmv)

@@ -1,0 +1,102 @@
+description: >
+  End-to-end DISA STIG scan against a container image. Loads an image
+  tarball if supplied, runs the scan, summarizes + applies the gate,
+  and stores the output directory as artifacts even on failure so the
+  evidence is always retrievable.
+
+executor:
+  name: machine
+  resource-class: <<parameters.resource-class>>
+
+parameters:
+  image:
+    type: string
+    default: ""
+    description: Image tag to scan. Mutually exclusive with rootfs-path.
+  rootfs-path:
+    type: string
+    default: ""
+    description: Filesystem path to scan via oscap-chroot.
+  image-tarball:
+    type: string
+    default: ""
+    description: Optional docker-saved tar to docker-load before the scan.
+  target-base:
+    type: enum
+    enum: ["auto", "wolfi", "debian12", "ubuntu2204", "rhel8", "rhel9", "rhel10", "fedora"]
+    default: auto
+  scanner-image:
+    type: string
+    default: ""
+  datastream-name:
+    type: string
+    default: ""
+  datastream-path:
+    type: string
+    default: ""
+  profile-id:
+    type: string
+    default: ""
+  donor-image:
+    type: string
+    default: "cgr.dev/chainguard/openscap:latest-dev"
+  fail-on-finding:
+    type: boolean
+    default: false
+  ignore-findings:
+    type: string
+    default: ""
+  output-dir:
+    type: string
+    default: "build/stig"
+  resource-class:
+    type: string
+    default: "medium"
+  no-output-timeout:
+    type: string
+    default: "30m"
+    description: >
+      OpenSCAP can be silent for several minutes during evaluation,
+      especially on RHEL datastreams (~28 MB). Default 30m is generous;
+      shorten only if you know your scan completes quickly.
+  checkout:
+    type: boolean
+    default: true
+    description: >
+      Whether to run `checkout` before the scan. Disable for minimal
+      jobs that don't need the consumer's source tree. CircleCI's
+      built-in pre-steps / post-steps job injection points are still
+      available for callers needing arbitrary steps around the scan.
+
+steps:
+  - when:
+      condition: <<parameters.checkout>>
+      steps: [checkout]
+  - load-image:
+      image-tarball: <<parameters.image-tarball>>
+  - run:
+      name: Reserve output directory
+      command: |
+        mkdir -p <<parameters.output-dir>>
+  - scan:
+      image: <<parameters.image>>
+      rootfs-path: <<parameters.rootfs-path>>
+      target-base: <<parameters.target-base>>
+      scanner-image: <<parameters.scanner-image>>
+      datastream-name: <<parameters.datastream-name>>
+      datastream-path: <<parameters.datastream-path>>
+      profile-id: <<parameters.profile-id>>
+      output-dir: <<parameters.output-dir>>
+      donor-image: <<parameters.donor-image>>
+      no-output-timeout: <<parameters.no-output-timeout>>
+  - summarize:
+      output-dir: <<parameters.output-dir>>
+      fail-on-finding: <<parameters.fail-on-finding>>
+      ignore-findings: <<parameters.ignore-findings>>
+  # Upload after summarize so summary.txt is captured. `when: always`
+  # ensures the artifacts still upload when fail-on-finding triggers a
+  # gate exit — the audit trail must be retrievable on a failing build.
+  - store_artifacts:
+      path: <<parameters.output-dir>>
+      destination: stig
+      when: always

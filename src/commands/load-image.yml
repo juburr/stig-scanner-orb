@@ -1,0 +1,19 @@
+description: >
+  Optional helper: docker load an image tarball into the local daemon
+  so the `scan` command can find it. Useful when the previous job in
+  the workflow built the image and persisted it via the workspace.
+
+parameters:
+  image-tarball:
+    type: string
+    default: ""
+    description: >
+      Path to a docker-saved tar (e.g. "workspace/myapp-image.tar"). No-
+      op when empty.
+
+steps:
+  - run:
+      name: Load image tarball
+      environment:
+        PARAM_IMAGE_TARBALL: <<parameters.image-tarball>>
+      command: <<include(scripts/load-image.sh)>>
