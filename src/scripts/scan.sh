@@ -54,6 +54,33 @@ HOST_GID="$(id -g)"
 # --- 2. extract target rootfs (if image mode) ----------------------------
 ROOTFS_DIR=""
 CLEANUP_ROOTFS=0
+CID=""
+
+# Single cleanup trap, installed BEFORE any resource is created so an
+# early failure (failed pull / create / export) can't leak the mktemp'd
+# rootfs dir or a dangling create-only container.
+cleanup() {
+    if [ -n "${CID}" ]; then
+        docker rm -f "${CID}" >/dev/null 2>&1 || true
+    fi
+    if [ "${CLEANUP_ROOTFS}" = "1" ] && [ -n "${ROOTFS_DIR}" ] && [ -d "${ROOTFS_DIR}" ]; then
+        # The extracted rootfs carries the image's original UIDs/GIDs, so
+        # it likely contains root-owned files in restrictive directories
+        # the host runner can't rm. Use the donor image (already pulled,
+        # parameterizable for air-gap) as a root-privileged rm helper; the
+        # host then only has to drop an empty directory.
+        if docker image inspect "${DONOR_IMAGE}" >/dev/null 2>&1; then
+            docker run --rm -u 0:0 \
+                -v "${ROOTFS_DIR}:/cleanup" \
+                --entrypoint sh \
+                "${DONOR_IMAGE}" -c \
+                'rm -rf /cleanup/* /cleanup/.[!.]* 2>/dev/null || true' \
+                >/dev/null 2>&1 || true
+        fi
+        rmdir "${ROOTFS_DIR}" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
 
 if [ -n "${IMAGE}" ]; then
     if ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then
@@ -84,7 +111,6 @@ if [ -n "${IMAGE}" ]; then
     # /static). The container is never started, so the value is
     # cosmetic; we just need create to succeed so we can export it.
     CID="$(docker create --entrypoint /placeholder "${IMAGE}")"
-    trap 'docker rm -f "${CID}" >/dev/null 2>&1 || true' EXIT
     # Pipe the export tar into a docker container running as root, which
     # runs `tar -xf --numeric-owner` so the extracted tree carries the
     # image's original numeric UIDs/GIDs (not the runner's). tar restores
@@ -99,8 +125,10 @@ if [ -n "${IMAGE}" ]; then
         --entrypoint tar \
         "${DONOR_IMAGE}" \
         -C /target -xf - --numeric-owner --exclude='dev/*'
+    # Container consumed; drop it now and clear CID so the EXIT trap
+    # doesn't try to remove it again. The rootfs cleanup stays armed.
     docker rm "${CID}" >/dev/null 2>&1 || true
-    trap - EXIT
+    CID=""
 else
     if [ ! -d "${ROOTFS_PATH}" ]; then
         echo "ERROR: rootfs-path '${ROOTFS_PATH}' is not a directory." >&2
@@ -108,27 +136,6 @@ else
     fi
     ROOTFS_DIR="$(cd "${ROOTFS_PATH}" && pwd)"
 fi
-
-cleanup() {
-    if [ "${CLEANUP_ROOTFS}" = "1" ] && [ -n "${ROOTFS_DIR}" ] && [ -d "${ROOTFS_DIR}" ]; then
-        # The extracted rootfs now carries the image's original UIDs/
-        # GIDs, so it likely contains root-owned files in restrictive
-        # directories that the host runner can't rm. Use the donor
-        # image (already pulled, parameterizable for air-gap) as a
-        # root-privileged rm helper. The host then only has to drop an
-        # empty directory.
-        if docker image inspect "${DONOR_IMAGE}" >/dev/null 2>&1; then
-            docker run --rm -u 0:0 \
-                -v "${ROOTFS_DIR}:/cleanup" \
-                --entrypoint sh \
-                "${DONOR_IMAGE}" -c \
-                'rm -rf /cleanup/* /cleanup/.[!.]* 2>/dev/null || true' \
-                >/dev/null 2>&1 || true
-        fi
-        rmdir "${ROOTFS_DIR}" 2>/dev/null || true
-    fi
-}
-trap cleanup EXIT
 
 # --- 3. resolve target-base → (scanner, datastream, profile, family) -----
 # Parse a single field out of an os-release-format file as DATA — never

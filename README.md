@@ -1,5 +1,5 @@
 <div align="center">
-  <img align="center" width="300" src="assets/logos/stig-scanner-orb-512px.png?v=2" alt="STIG Scanner Orb"><br /><br />
+  <img align="center" width="300" src="assets/logos/stig-scanner-orb-512px.png?v=2" alt="STIG Scanner Orb"><br />
   <h1>STIG Scanner Orb</h1>
   <i>A CircleCI orb that scans for DISA STIG findings using Chainguard's OpenSCAP scanner.</i><br /><br />
 </div>
@@ -26,7 +26,7 @@ workflows:
     jobs:
       - stig-scanner-orb/scan:
           image: cgr.dev/chainguard/static:latest
-          target-base: wolfi
+          target_base: wolfi
 ```
 
 That's enough to produce `report.html`, `results.xml`, and `summary.txt` as job artifacts. The gate is off by default — the scan reports findings without failing the build, so you can establish a triaged baseline before turning the gate on.
@@ -34,8 +34,8 @@ That's enough to produce `report.html`, `results.xml`, and `summary.txt` as job 
 ## 🧰 What it does
 
 1. (Optional) `docker load` an image tarball produced by an upstream job.
-2. Host-extract the target image's rootfs via `docker create` + `docker export`. Skipped when you pass `rootfs-path` directly.
-3. Resolve `target-base` to a scanner image, datastream, and XCCDF profile. `auto` reads `/etc/os-release` from the extracted rootfs.
+2. Host-extract the target image's rootfs via `docker create` + `docker export`. Skipped when you pass `rootfs_path` directly.
+3. Resolve `target_base` to a scanner image, datastream, and XCCDF profile. `auto` reads `/etc/os-release` from the extracted rootfs.
 4. For RPM-based targets, copy the right `ssg-*-ds.xml` out of the Chainguard openscap image (which bundles every major datastream) into a runner-side cache. The compliance-operator scanner is purpose-built for `oscap-chroot` and ships no SCAP content of its own, so we donate the file from Chainguard.
 5. Pull the resolved scanner image and run `oscap-chroot` against the extracted rootfs.
 6. Parse `results.xml`, write `summary.txt`, apply the ignore-list, and enforce the gate.
@@ -45,7 +45,7 @@ That's enough to produce `report.html`, `results.xml`, and `summary.txt` as job 
 
 ## 🎯 Supported targets
 
-| `target-base` | Scanner image | Datastream | Default profile |
+| `target_base` | Scanner image | Datastream | Default profile |
 |---|---|---|---|
 | `wolfi` | `cgr.dev/chainguard/openscap:latest-dev` | `ssg-chainguard-gpos-ds.xml` | Chainguard GPOS |
 | `debian12` | `cgr.dev/chainguard/openscap:latest-dev` | `ssg-debian12-ds.xml` | ANSSI-NP-NT28 high |
@@ -56,7 +56,7 @@ That's enough to produce `report.html`, `results.xml`, and `summary.txt` as job 
 | `fedora` | `quay.io/compliance-operator/openscap-ocp:latest` | `ssg-fedora-ds.xml` | standard |
 | `auto` | resolved from `/etc/os-release` | resolved | resolved |
 
-`auto` recognizes RHEL, Rocky, Alma, Oracle Linux, Fedora, Debian 12, Ubuntu 22.04, Wolfi, and Chainguard via the target's `/etc/os-release`, with filesystem-shape fallbacks (`apk`, `rpm`, `dpkg`) for distroless images that lack one. For Wolfi static distroless or scratch images, set `target-base` explicitly.
+`auto` recognizes RHEL, Rocky, Alma, Oracle Linux, Fedora, Debian 12, Ubuntu 22.04, Wolfi, and Chainguard via the target's `/etc/os-release`, with filesystem-shape fallbacks (`apk`, `rpm`, `dpkg`) for distroless images that lack one. For `scratch` images that ship neither `/etc/os-release` nor a package database, set `target_base` explicitly.
 
 ## ⚠️ RHEL host STIGs evaluated against containers
 
@@ -64,7 +64,7 @@ Heads up: the **DISA STIG for RHEL N profile is a host-level benchmark**. A typi
 
 Concretely, scanning `rockylinux:9` with the DISA STIG for RHEL 9 profile produces roughly **0 pass / 0 fail / 485 notapplicable / 1045 notselected**. That is the *correct* OpenSCAP result, not a defect in the orb.
 
-If you want more container-applicable signal against a RHEL-family image, override `profile-id` to one of:
+If you want more container-applicable signal against a RHEL-family image, override `profile_id` to one of:
 
 - `xccdf_org.ssgproject.content_profile_cis_server_l1` — CIS Level 1, more file-permission and package rules that actually apply to containers.
 - `xccdf_org.ssgproject.content_profile_pci-dss` — narrower scope, more container-relevant rules per scope.
@@ -76,29 +76,29 @@ A v1.1 container-tailored RHEL STIG tailoring file is on the roadmap; until then
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `image` | string | `""` | Image tag to scan. If not already in the local daemon, the orb will `docker pull` it. Mutually exclusive with `rootfs-path`. |
-| `rootfs-path` | string | `""` | Path to a pre-extracted filesystem. Use for RPM-extracted trees, mounted VM disks, etc. |
-| `image-tarball` | string | `""` | Optional `docker load` source before scanning. |
-| `target-base` | enum | `auto` | See dispatch table above. |
-| `scanner-image` | string | `""` | Override resolved scanner. For air-gap mirrors. |
-| `datastream-name` | string | `""` | Override the bundled datastream filename. |
-| `datastream-path` | string | `""` | Host-local datastream file. Skips the donor flow. |
-| `profile-id` | string | `""` | Override the XCCDF profile id (e.g. switch to CIS). |
-| `donor-image` | string | `cgr.dev/chainguard/openscap:latest-dev` | Image to copy datastreams out of for RPM targets. Override for air-gap. |
-| `fail-on-finding` | boolean | `false` | When true, exits 1 on any non-ignored failure. |
-| `ignore-findings` | string | `""` | Comma-separated rule IDs to subtract from the gate count. |
-| `output-dir` | string | `build/stig` | Where reports and summary land. |
-| `resource-class` | string | `medium` | Pass-through to the machine executor. |
-| `no-output-timeout` | string | `30m` | OpenSCAP can be silent for several minutes during evaluation. |
+| `image` | string | `""` | Image tag to scan. If not already in the local daemon, the orb will `docker pull` it. Mutually exclusive with `rootfs_path`. |
+| `rootfs_path` | string | `""` | Path to a pre-extracted filesystem. Use for RPM-extracted trees, mounted VM disks, etc. |
+| `image_tarball` | string | `""` | Optional `docker load` source before scanning. |
+| `target_base` | enum | `auto` | See dispatch table above. |
+| `scanner_image` | string | `""` | Override resolved scanner. For air-gap mirrors. |
+| `datastream_name` | string | `""` | Override the bundled datastream filename. |
+| `datastream_path` | string | `""` | Host-local datastream file. Skips the donor flow. |
+| `profile_id` | string | `""` | Override the XCCDF profile id (e.g. switch to CIS). |
+| `donor_image` | string | `cgr.dev/chainguard/openscap:latest-dev` | Image to copy datastreams out of for RPM targets. Override for air-gap. |
+| `fail_on_finding` | boolean | `false` | When true, exits 1 on any non-ignored failure. |
+| `ignore_findings` | string | `""` | Comma-separated rule IDs to subtract from the gate count. |
+| `output_dir` | string | `build/stig` | Where reports and summary land. |
+| `resource_class` | string | `medium` | Pass-through to the machine executor. |
+| `no_output_timeout` | string | `30m` | OpenSCAP can be silent for several minutes during evaluation. |
 | `checkout` | boolean | `true` | Whether to `checkout` before scanning. |
 
 CircleCI's standard `pre-steps` and `post-steps` job-injection points work as usual — use them for `attach_workspace`, `docker login`, etc.
 
-The orb also exposes `stig-scanner-orb/scan` (command), `stig-scanner-orb/summarize`, and `stig-scanner-orb/load-image` for callers who want to assemble a custom job.
+The orb also exposes `stig-scanner-orb/scan` (command), `stig-scanner-orb/summarize`, and `stig-scanner-orb/load_image` for callers who want to assemble a custom job.
 
 ## 📦 Outputs
 
-Under `<output-dir>/`:
+Under `<output_dir>/`:
 
 - `report.html` — the XCCDF HTML report. CircleCI inlines this in the Artifacts tab so an assessor can open it from the build page.
 - `results.xml` — the XCCDF results document, machine-readable.
@@ -109,7 +109,7 @@ These are well-suited as ATO evidence and easy to attach to your container as in
 
 ## 🙈 Ignore-list semantics
 
-Entries in `ignore-findings` are matched case-insensitively against:
+Entries in `ignore_findings` are matched case-insensitively against:
 
 - the short DISA id (e.g. `SV-257779r925318`),
 - the full XCCDF rule id, or
@@ -121,11 +121,11 @@ Ignored failures still appear in the summary and the HTML report — they are re
 
 Every image and content reference is parameterized:
 
-- `scanner-image` overrides the runtime scanner (point at a mirror).
-- `donor-image` overrides where datastreams are copied out of.
-- `datastream-path` skips the donor flow entirely; mount your own datastream into the runner first.
+- `scanner_image` overrides the runtime scanner (point at a mirror).
+- `donor_image` overrides where datastreams are copied out of.
+- `datastream_path` skips the donor flow entirely; mount your own datastream into the runner first.
 
-For RHEL-only consumers who don't want a Chainguard dependency at all, mirror `quay.io/compliance-operator/openscap-ocp` and supply datastreams via `datastream-path`.
+For RHEL-only consumers who don't want a Chainguard dependency at all, mirror `quay.io/compliance-operator/openscap-ocp` and supply datastreams via `datastream_path`.
 
 ## 🛠️ Local development
 

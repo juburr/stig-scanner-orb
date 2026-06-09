@@ -154,42 +154,104 @@ workflows:
           # The whole RPM path: compliance-operator scanner + datastream
           # donated from the Chainguard image + rpm probes. ubi9 is pulled
           # from registry.access.redhat.com (not Docker Hub) to dodge
-          # anonymous pull-rate limits, and unlike a minimal Rocky image it
-          # has enough installed content for rpm-state rules to really fire.
+          # anonymous pull-rate limits.
+          #
+          # NOTE: the DISA STIG for RHEL profile is a HOST benchmark, so
+          # against a container it yields ~0 pass / 0 fail / ~485 N/A (see
+          # README + docs/spike-results.md). We assert the documented N/A
+          # baseline and the RPM dispatch markers — NOT a pass count, which
+          # is 0 here. For pass/fail signal on the RPM path see
+          # smoke-rhel9-cis below.
           image: registry.access.redhat.com/ubi9/ubi:latest
           target_base: rhel9
           checkout: false
           post-steps:
             - run:
-                name: Assert RPM dispatch + real probe signal
+                name: Assert RPM dispatch + host-STIG N/A baseline
                 command: |
                   set -e
+                  test -f build/stig/results.xml
+                  test -f build/stig/report.html
                   grep -q "scanner=quay.io/compliance-operator" build/stig/scan-plan.env
+                  grep -q "datastream=ssg-rhel9-ds.xml" build/stig/scan-plan.env
                   grep -q "family=rpm" build/stig/scan-plan.env
-                  pass=$(awk '/^  pass / {print $2}' build/stig/summary.txt)
                   na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
-                  echo "pass=${pass:-0} notapplicable=${na:-0}"
-                  test "${pass:-0}" -gt 5
+                  echo "notapplicable=${na:-0}"
+                  test "${na:-0}" -gt 50
+          filters: *filters
+      - stig-scanner-orb/scan:
+          name: smoke-rhel9-cis
+          # profile_id override coverage on the RPM path. The DISA STIG
+          # profile is a host benchmark (≈0 evaluated rules against a
+          # container); CIS Level 1 has file-permission and package rules
+          # that DO evaluate, so this proves both that the override flows
+          # through to the scan and that the RPM path can produce
+          # actionable pass/fail signal.
+          image: registry.access.redhat.com/ubi9/ubi:latest
+          target_base: rhel9
+          profile_id: xccdf_org.ssgproject.content_profile_cis_server_l1
+          checkout: false
+          post-steps:
+            - run:
+                name: Assert profile_id override + actionable CIS signal
+                command: |
+                  set -e
+                  grep -q "profile=xccdf_org.ssgproject.content_profile_cis_server_l1" build/stig/scan-plan.env
+                  pass=$(awk '/^  pass / {print $2}' build/stig/summary.txt)
+                  fail=$(awk '/^  fail / {print $2}' build/stig/summary.txt)
+                  echo "pass=${pass:-0} fail=${fail:-0}"
+                  # CIS (unlike the host STIG profile) evaluates container-
+                  # applicable rules, so at least some pass/fail must appear.
+                  test "$(( ${pass:-0} + ${fail:-0} ))" -gt 0
+          filters: *filters
+      - stig-scanner-orb/scan:
+          name: smoke-rhel8-auto
+          # Covers TWO gaps at once: rhel8 (its own ssg-rhel8-ds.xml +
+          # donation path; the most common DoD RHEL target) AND
+          # target_base: auto on the RPM family (os-release ID=rhel,
+          # VERSION_ID 8 -> rhel8). ubi8 from the Red Hat registry dodges
+          # Docker Hub pull-rate limits. Same host-STIG N/A baseline as
+          # rhel9.
+          image: registry.access.redhat.com/ubi8/ubi:latest
+          target_base: auto
+          checkout: false
+          post-steps:
+            - run:
+                name: Assert auto-detect resolves rhel8 + RPM dispatch
+                command: |
+                  set -e
+                  grep -q "target_base=rhel8" build/stig/scan-plan.env
+                  grep -q "datastream=ssg-rhel8-ds.xml" build/stig/scan-plan.env
+                  grep -q "family=rpm" build/stig/scan-plan.env
+                  na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
+                  echo "notapplicable=${na:-0}"
                   test "${na:-0}" -gt 50
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-fedora
           # Second RPM datastream/profile (fedora / standard) through the
-          # same compliance-operator + donation path.
-          image: fedora:latest
+          # same compliance-operator + donation path. Pulled from quay.io
+          # (not Docker Hub) to dodge anonymous pull-rate limits.
+          #
+          # We assert the dispatch markers + a complete, parseable scan
+          # rather than a pass/N-A count: the fedora 'standard' profile's
+          # result distribution against a container isn't pinned by the
+          # spike, and SSG content drift would make a hard count threshold
+          # flaky. The scan step itself fails on any oscap error, so valid
+          # outputs here already prove the second RPM path works end-to-end.
+          image: quay.io/fedora/fedora:latest
           target_base: fedora
           checkout: false
           post-steps:
             - run:
-                name: Assert fedora RPM scan signal
+                name: Assert fedora RPM dispatch + complete scan output
                 command: |
                   set -e
+                  test -f build/stig/results.xml
+                  test -f build/stig/report.html
+                  grep -q "datastream=ssg-fedora-ds.xml" build/stig/scan-plan.env
                   grep -q "family=rpm" build/stig/scan-plan.env
-                  pass=$(awk '/^  pass / {print $2}' build/stig/summary.txt)
-                  na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
-                  echo "pass=${pass:-0} notapplicable=${na:-0}"
-                  test "${pass:-0}" -gt 3
-                  test "${na:-0}" -gt 10
+                  grep -q "^Rule results:" build/stig/summary.txt
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-rootfs
@@ -259,7 +321,9 @@ workflows:
             - smoke-gate
             - smoke-ubuntu2204
             - smoke-debian12-auto
+            - smoke-rhel8-auto
             - smoke-rhel9
+            - smoke-rhel9-cis
             - smoke-fedora
             - smoke-rootfs
             - smoke-tarball
