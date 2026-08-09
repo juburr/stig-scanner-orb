@@ -17,6 +17,13 @@ OUTPUT_DIR="$(subst "${PARAM_OUTPUT_DIR:-build/stig}")"
 IGNORE_FINDINGS="$(subst "${PARAM_IGNORE_FINDINGS:-}")"
 FAIL_ON_FINDING="${PARAM_FAIL_ON_FINDING:-false}"
 
+case "${FAIL_ON_FINDING}" in
+    true|false) ;;
+    *)
+        echo "ERROR: fail-on-finding must be 'true' or 'false', got '${FAIL_ON_FINDING}'." >&2
+        exit 2 ;;
+esac
+
 RESULTS="${OUTPUT_DIR}/results.xml"
 SUMMARY="${OUTPUT_DIR}/summary.txt"
 PLAN="${OUTPUT_DIR}/scan-plan.env"
@@ -148,10 +155,11 @@ for el in root.iter():
 
 plan = {}
 if os.path.isfile(plan_path):
-    for line in open(plan_path):
-        if "=" in line:
-            k, v = line.strip().split("=", 1)
-            plan[k] = v
+    with open(plan_path, encoding="utf-8") as plan_file:
+        for line in plan_file:
+            if "=" in line:
+                k, v = line.strip().split("=", 1)
+                plan[k] = v
 
 primary = ("pass", "fail", "ignored", "notapplicable", "notchecked", "error", "unknown", "notselected", "informational", "fixed")
 lines = []
@@ -201,11 +209,11 @@ else:
 
 text = "\n".join(lines) + "\n"
 print(text, end="")
-with open(summary_path, "w") as fh:
+with open(summary_path, "w", encoding="utf-8") as fh:
     fh.write(text)
 
 # Stash the actionable count for the gate.
-with open(summary_path + ".gate", "w") as fh:
+with open(summary_path + ".gate", "w", encoding="utf-8") as fh:
     fh.write(str(len(actionable_failures)))
 PY
 

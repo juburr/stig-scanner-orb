@@ -28,13 +28,24 @@ subst() {
 
 IMAGE="$(subst "${PARAM_IMAGE:-}")"
 ROOTFS_PATH="$(subst "${PARAM_ROOTFS_PATH:-}")"
-TARGET_BASE="${PARAM_TARGET_BASE:-auto}"
+TARGET_BASE="$(subst "${PARAM_TARGET_BASE:-auto}")"
 SCANNER_IMAGE_OVERRIDE="$(subst "${PARAM_SCANNER_IMAGE:-}")"
-DATASTREAM_NAME_OVERRIDE="${PARAM_DATASTREAM_NAME:-}"
+DATASTREAM_NAME_OVERRIDE="$(subst "${PARAM_DATASTREAM_NAME:-}")"
 DATASTREAM_PATH_OVERRIDE="$(subst "${PARAM_DATASTREAM_PATH:-}")"
-PROFILE_ID_OVERRIDE="${PARAM_PROFILE_ID:-}"
+PROFILE_ID_OVERRIDE="$(subst "${PARAM_PROFILE_ID:-}")"
 OUTPUT_DIR="$(subst "${PARAM_OUTPUT_DIR:-build/stig}")"
-DONOR_IMAGE="${PARAM_DONOR_IMAGE:-cgr.dev/chainguard/openscap:latest-dev}"
+DONOR_IMAGE="$(subst "${PARAM_DONOR_IMAGE:-cgr.dev/chainguard/openscap:latest-dev}")"
+
+# A datastream name is appended to paths in both the donor and scanner
+# containers.  Keep it a filename: accepting path separators would let a
+# typo select unrelated content (or write outside /out during donation).
+if [ -n "${DATASTREAM_NAME_OVERRIDE}" ]; then
+    case "${DATASTREAM_NAME_OVERRIDE}" in
+        */*|*\\*|.|..)
+            echo "ERROR: datastream-name must be a filename, not a path: '${DATASTREAM_NAME_OVERRIDE}'." >&2
+            exit 2 ;;
+    esac
+fi
 
 # --- 1. validate input shape ---------------------------------------------
 if [ -n "${IMAGE}" ] && [ -n "${ROOTFS_PATH}" ]; then
@@ -74,7 +85,7 @@ cleanup() {
                 -v "${ROOTFS_DIR}:/cleanup" \
                 --entrypoint sh \
                 "${DONOR_IMAGE}" -c \
-                'rm -rf /cleanup/* /cleanup/.[!.]* 2>/dev/null || true' \
+                'rm -rf /cleanup/* /cleanup/.[!.]* /cleanup/..?* 2>/dev/null || true' \
                 >/dev/null 2>&1 || true
         fi
         rmdir "${ROOTFS_DIR}" 2>/dev/null || true
@@ -159,34 +170,46 @@ parse_os_release_field() {
 }
 detect_target_base() {
     local rootfs="$1"
-    local id="" version_id="" has_osr=0
-    if [ -f "${rootfs}/etc/os-release" ]; then
+    local id="" version_id="" has_osr=0 os_release=""
+    # /etc/os-release is commonly an absolute symlink to
+    # /usr/lib/os-release. Following that link on the host can read the
+    # host's release file instead of the target's, so never open a symlink
+    # here and explicitly try the canonical in-rootfs fallback.
+    if [ -e "${rootfs}/etc/os-release" ] || [ -L "${rootfs}/etc/os-release" ]; then
         has_osr=1
-        id="$(parse_os_release_field "${rootfs}/etc/os-release" ID)"
-        version_id="$(parse_os_release_field "${rootfs}/etc/os-release" VERSION_ID)"
+    fi
+    if [ ! -L "${rootfs}/etc/os-release" ] && [ -f "${rootfs}/etc/os-release" ]; then
+        os_release="${rootfs}/etc/os-release"
+    elif [ -f "${rootfs}/usr/lib/os-release" ]; then
+        os_release="${rootfs}/usr/lib/os-release"
+        has_osr=1
+    fi
+    if [ -n "${os_release}" ]; then
+        id="$(parse_os_release_field "${os_release}" ID)"
+        version_id="$(parse_os_release_field "${os_release}" VERSION_ID)"
     fi
     case "${id}" in
         wolfi|chainguard) echo wolfi; return ;;
         rhel)
             case "${version_id}" in
-                10*) echo rhel10; return ;;
-                9*)  echo rhel9; return ;;
-                8*)  echo rhel8; return ;;
+                10|10.*) echo rhel10; return ;;
+                9|9.*)   echo rhel9; return ;;
+                8|8.*)   echo rhel8; return ;;
             esac ;;
         rocky|almalinux|ol|oracle)
             case "${version_id}" in
-                10*) echo rhel10; return ;;
-                9*)  echo rhel9; return ;;
-                8*)  echo rhel8; return ;;
+                10|10.*) echo rhel10; return ;;
+                9|9.*)   echo rhel9; return ;;
+                8|8.*)   echo rhel8; return ;;
             esac ;;
         fedora) echo fedora; return ;;
         debian)
             case "${version_id}" in
-                12*) echo debian12; return ;;
+                12|12.*) echo debian12; return ;;
             esac ;;
         ubuntu)
             case "${version_id}" in
-                22.04*|22*) echo ubuntu2204; return ;;
+                22.04|22.04.*) echo ubuntu2204; return ;;
             esac ;;
     esac
     # If os-release was present but didn't match a supported entry,
@@ -322,9 +345,13 @@ else
             --entrypoint sh \
             "${DONOR_IMAGE}" -c '
                 set -e
-                cp "/usr/share/xml/scap/ssg/content/${DS}" "/out/${DS}"
-                chown "${HOST_UID}:${HOST_GID}" "/out/${DS}"
-                chmod 0644 "/out/${DS}"
+                tmp="/out/.${DS}.tmp.$$"
+                trap '\''rm -f "${tmp}"'\'' EXIT
+                cp "/usr/share/xml/scap/ssg/content/${DS}" "${tmp}"
+                test -s "${tmp}"
+                chown "${HOST_UID}:${HOST_GID}" "${tmp}"
+                chmod 0644 "${tmp}"
+                mv -f "${tmp}" "/out/${DS}"
             '
     else
         echo "==> Reusing cached datastream at ${DATASTREAM_HOST_DIR}/${DATASTREAM}"
@@ -345,6 +372,9 @@ if [ -n "${DATASTREAM_HOST_DIR}" ]; then
 fi
 
 echo "==> Running oscap-chroot"
+# Never allow files from an earlier invocation to make an otherwise
+# output-less scanner run look successful.
+rm -f "${OUTPUT_DIR_ABS}/results.xml" "${OUTPUT_DIR_ABS}/report.html"
 set +e
 docker run --rm -u 0:0 \
     "${mount_args[@]}" \
@@ -375,6 +405,11 @@ set -e
 if [ "${oscap_rc}" -ne 0 ]; then
     echo "ERROR: oscap-chroot failed (exit ${oscap_rc})." >&2
     exit "${oscap_rc}"
+fi
+
+if [ ! -s "${OUTPUT_DIR_ABS}/results.xml" ] || [ ! -s "${OUTPUT_DIR_ABS}/report.html" ]; then
+    echo "ERROR: oscap-chroot reported success but did not produce non-empty results.xml and report.html." >&2
+    exit 1
 fi
 
 # Persist the scan plan alongside results so summarize.sh / artifact

@@ -76,8 +76,9 @@ steps:
       image_tarball: <<parameters.image_tarball>>
   - run:
       name: Reserve output directory
-      command: |
-        mkdir -p <<parameters.output_dir>>
+      environment:
+        PARAM_OUTPUT_DIR: <<parameters.output_dir>>
+      command: mkdir -p "$(circleci env subst "${PARAM_OUTPUT_DIR}")"
   - scan:
       image: <<parameters.image>>
       rootfs_path: <<parameters.rootfs_path>>
