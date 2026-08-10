@@ -17,10 +17,14 @@ OUTPUT_DIR="$(subst "${PARAM_OUTPUT_DIR:-build/stig}")"
 IGNORE_FINDINGS="$(subst "${PARAM_IGNORE_FINDINGS:-}")"
 FAIL_ON_FINDING="${PARAM_FAIL_ON_FINDING:-false}"
 
+# CircleCI serializes boolean orb parameters as 1/0 in run-step
+# environments, while direct/local callers naturally use true/false.
+# Normalize both representations before applying the gate.
 case "${FAIL_ON_FINDING}" in
-    true|false) ;;
+    true|1)  FAIL_ON_FINDING=true ;;
+    false|0) FAIL_ON_FINDING=false ;;
     *)
-        echo "ERROR: fail-on-finding must be 'true' or 'false', got '${FAIL_ON_FINDING}'." >&2
+        echo "ERROR: fail-on-finding must be 'true', 'false', '1', or '0'; got '${FAIL_ON_FINDING}'." >&2
         exit 2 ;;
 esac
 
