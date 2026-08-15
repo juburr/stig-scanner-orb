@@ -28,13 +28,24 @@ subst() {
 
 IMAGE="$(subst "${PARAM_IMAGE:-}")"
 ROOTFS_PATH="$(subst "${PARAM_ROOTFS_PATH:-}")"
-TARGET_BASE="${PARAM_TARGET_BASE:-auto}"
+TARGET_BASE="$(subst "${PARAM_TARGET_BASE:-auto}")"
 SCANNER_IMAGE_OVERRIDE="$(subst "${PARAM_SCANNER_IMAGE:-}")"
-DATASTREAM_NAME_OVERRIDE="${PARAM_DATASTREAM_NAME:-}"
+DATASTREAM_NAME_OVERRIDE="$(subst "${PARAM_DATASTREAM_NAME:-}")"
 DATASTREAM_PATH_OVERRIDE="$(subst "${PARAM_DATASTREAM_PATH:-}")"
-PROFILE_ID_OVERRIDE="${PARAM_PROFILE_ID:-}"
+PROFILE_ID_OVERRIDE="$(subst "${PARAM_PROFILE_ID:-}")"
 OUTPUT_DIR="$(subst "${PARAM_OUTPUT_DIR:-build/stig}")"
-DONOR_IMAGE="${PARAM_DONOR_IMAGE:-cgr.dev/chainguard/openscap:latest-dev}"
+DONOR_IMAGE="$(subst "${PARAM_DONOR_IMAGE:-cgr.dev/chainguard/openscap:latest-dev}")"
+
+# A datastream name is appended to paths in both the donor and scanner
+# containers.  Keep it a filename: accepting path separators would let a
+# typo select unrelated content (or write outside /out during donation).
+if [ -n "${DATASTREAM_NAME_OVERRIDE}" ]; then
+    case "${DATASTREAM_NAME_OVERRIDE}" in
+        */*|*\\*|.|..)
+            echo "ERROR: datastream-name must be a filename, not a path: '${DATASTREAM_NAME_OVERRIDE}'." >&2
+            exit 2 ;;
+    esac
+fi
 
 # --- 1. validate input shape ---------------------------------------------
 if [ -n "${IMAGE}" ] && [ -n "${ROOTFS_PATH}" ]; then
@@ -55,6 +66,7 @@ HOST_GID="$(id -g)"
 ROOTFS_DIR=""
 CLEANUP_ROOTFS=0
 CID=""
+DATASTREAM_TMP=""
 
 # Single cleanup trap, installed BEFORE any resource is created so an
 # early failure (failed pull / create / export) can't leak the mktemp'd
@@ -62,6 +74,9 @@ CID=""
 cleanup() {
     if [ -n "${CID}" ]; then
         docker rm -f "${CID}" >/dev/null 2>&1 || true
+    fi
+    if [ -n "${DATASTREAM_TMP}" ]; then
+        rm -f "${DATASTREAM_TMP}" 2>/dev/null || true
     fi
     if [ "${CLEANUP_ROOTFS}" = "1" ] && [ -n "${ROOTFS_DIR}" ] && [ -d "${ROOTFS_DIR}" ]; then
         # The extracted rootfs carries the image's original UIDs/GIDs, so
@@ -74,7 +89,7 @@ cleanup() {
                 -v "${ROOTFS_DIR}:/cleanup" \
                 --entrypoint sh \
                 "${DONOR_IMAGE}" -c \
-                'rm -rf /cleanup/* /cleanup/.[!.]* 2>/dev/null || true' \
+                'rm -rf /cleanup/* /cleanup/.[!.]* /cleanup/..?* 2>/dev/null || true' \
                 >/dev/null 2>&1 || true
         fi
         rmdir "${ROOTFS_DIR}" 2>/dev/null || true
@@ -159,34 +174,59 @@ parse_os_release_field() {
 }
 detect_target_base() {
     local rootfs="$1"
-    local id="" version_id="" has_osr=0
-    if [ -f "${rootfs}/etc/os-release" ]; then
-        has_osr=1
-        id="$(parse_os_release_field "${rootfs}/etc/os-release" ID)"
-        version_id="$(parse_os_release_field "${rootfs}/etc/os-release" VERSION_ID)"
+    local id="" version_id="" has_osr=0 os_release=""
+    local rootfs_real candidate candidate_real
+    # A regular-file check on the leaf component alone isn't enough: any
+    # *parent* directory (etc, usr, usr/lib) can itself be an absolute
+    # symlink (e.g. rootfs/usr -> /usr) that redirects the whole path onto
+    # the host filesystem while the leaf still looks like an ordinary
+    # file. Canonicalize each candidate with the parent shell's own
+    # symlink resolution (readlink -f) and only trust it if the result is
+    # still inside the extracted rootfs.
+    rootfs_real="$(cd "${rootfs}" && pwd -P)"
+    # Strip a trailing slash so the "${rootfs_real}/"* containment pattern
+    # below stays a single separator when rootfs_real is itself "/" (e.g.
+    # rootfs-path: / to scan a mounted disk at the filesystem root) —
+    # otherwise it would require a doubled "//" prefix that no real path
+    # under /etc or /usr/lib ever has, rejecting every candidate.
+    rootfs_real="${rootfs_real%/}"
+    for candidate in "${rootfs}/etc/os-release" "${rootfs}/usr/lib/os-release"; do
+        if [ -e "${candidate}" ] || [ -L "${candidate}" ]; then
+            has_osr=1
+        fi
+        candidate_real="$(readlink -f "${candidate}" 2>/dev/null || true)"
+        case "${candidate_real}" in
+            "${rootfs_real}/"*)
+                [ -z "${os_release}" ] && [ -f "${candidate_real}" ] && os_release="${candidate}"
+                ;;
+        esac
+    done
+    if [ -n "${os_release}" ]; then
+        id="$(parse_os_release_field "${os_release}" ID)"
+        version_id="$(parse_os_release_field "${os_release}" VERSION_ID)"
     fi
     case "${id}" in
         wolfi|chainguard) echo wolfi; return ;;
         rhel)
             case "${version_id}" in
-                10*) echo rhel10; return ;;
-                9*)  echo rhel9; return ;;
-                8*)  echo rhel8; return ;;
+                10|10.*) echo rhel10; return ;;
+                9|9.*)   echo rhel9; return ;;
+                8|8.*)   echo rhel8; return ;;
             esac ;;
         rocky|almalinux|ol|oracle)
             case "${version_id}" in
-                10*) echo rhel10; return ;;
-                9*)  echo rhel9; return ;;
-                8*)  echo rhel8; return ;;
+                10|10.*) echo rhel10; return ;;
+                9|9.*)   echo rhel9; return ;;
+                8|8.*)   echo rhel8; return ;;
             esac ;;
         fedora) echo fedora; return ;;
         debian)
             case "${version_id}" in
-                12*) echo debian12; return ;;
+                12|12.*) echo debian12; return ;;
             esac ;;
         ubuntu)
             case "${version_id}" in
-                22.04*|22*) echo ubuntu2204; return ;;
+                22.04|22.04.*) echo ubuntu2204; return ;;
             esac ;;
     esac
     # If os-release was present but didn't match a supported entry,
@@ -314,18 +354,32 @@ else
     if [ ! -f "${DATASTREAM_HOST_DIR}/${DATASTREAM}" ]; then
         echo "==> Donating ${DATASTREAM} from ${DONOR_IMAGE}"
         docker pull "${DONOR_IMAGE}" >/dev/null
+        # Reserve the temp name on the host, not inside the container: a
+        # container's entrypoint `sh -c` is always PID 1 in its own PID
+        # namespace, so a name derived from the container's own $$ is the
+        # same across concurrent donations. Two scans sharing this cache
+        # dir and racing to populate the same missing datastream would
+        # then collide on one temp path and stomp/abort each other.
+        # Host-side mktemp is unique per invocation and creates the file
+        # atomically up front, so the trap-based cleanup() above can
+        # always find and remove it on any failure.
+        DATASTREAM_TMP="$(mktemp "${DATASTREAM_HOST_DIR}/.${DATASTREAM}.tmp.XXXXXX")"
         docker run --rm -u 0:0 \
             -v "${DATASTREAM_HOST_DIR}:/out" \
             -e DS="${DATASTREAM}" \
+            -e TMP_NAME="$(basename "${DATASTREAM_TMP}")" \
             -e HOST_UID="${HOST_UID}" \
             -e HOST_GID="${HOST_GID}" \
             --entrypoint sh \
             "${DONOR_IMAGE}" -c '
                 set -e
-                cp "/usr/share/xml/scap/ssg/content/${DS}" "/out/${DS}"
-                chown "${HOST_UID}:${HOST_GID}" "/out/${DS}"
-                chmod 0644 "/out/${DS}"
+                cp "/usr/share/xml/scap/ssg/content/${DS}" "/out/${TMP_NAME}"
+                test -s "/out/${TMP_NAME}"
+                chown "${HOST_UID}:${HOST_GID}" "/out/${TMP_NAME}"
+                chmod 0644 "/out/${TMP_NAME}"
             '
+        mv -f "${DATASTREAM_TMP}" "${DATASTREAM_HOST_DIR}/${DATASTREAM}"
+        DATASTREAM_TMP=""
     else
         echo "==> Reusing cached datastream at ${DATASTREAM_HOST_DIR}/${DATASTREAM}"
     fi
@@ -345,6 +399,9 @@ if [ -n "${DATASTREAM_HOST_DIR}" ]; then
 fi
 
 echo "==> Running oscap-chroot"
+# Never allow files from an earlier invocation to make an otherwise
+# output-less scanner run look successful.
+rm -f "${OUTPUT_DIR_ABS}/results.xml" "${OUTPUT_DIR_ABS}/report.html"
 set +e
 docker run --rm -u 0:0 \
     "${mount_args[@]}" \
@@ -375,6 +432,11 @@ set -e
 if [ "${oscap_rc}" -ne 0 ]; then
     echo "ERROR: oscap-chroot failed (exit ${oscap_rc})." >&2
     exit "${oscap_rc}"
+fi
+
+if [ ! -s "${OUTPUT_DIR_ABS}/results.xml" ] || [ ! -s "${OUTPUT_DIR_ABS}/report.html" ]; then
+    echo "ERROR: oscap-chroot reported success but did not produce non-empty results.xml and report.html." >&2
+    exit 1
 fi
 
 # Persist the scan plan alongside results so summarize.sh / artifact
