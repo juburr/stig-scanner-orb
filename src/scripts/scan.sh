@@ -184,6 +184,12 @@ detect_target_base() {
     # symlink resolution (readlink -f) and only trust it if the result is
     # still inside the extracted rootfs.
     rootfs_real="$(cd "${rootfs}" && pwd -P)"
+    # Strip a trailing slash so the "${rootfs_real}/"* containment pattern
+    # below stays a single separator when rootfs_real is itself "/" (e.g.
+    # rootfs-path: / to scan a mounted disk at the filesystem root) —
+    # otherwise it would require a doubled "//" prefix that no real path
+    # under /etc or /usr/lib ever has, rejecting every candidate.
+    rootfs_real="${rootfs_real%/}"
     for candidate in "${rootfs}/etc/os-release" "${rootfs}/usr/lib/os-release"; do
         if [ -e "${candidate}" ] || [ -L "${candidate}" ]; then
             has_osr=1
