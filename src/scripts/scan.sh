@@ -175,25 +175,26 @@ parse_os_release_field() {
 detect_target_base() {
     local rootfs="$1"
     local id="" version_id="" has_osr=0 os_release=""
-    # /etc/os-release is commonly an absolute symlink to
-    # /usr/lib/os-release. Following that link on the host can read the
-    # host's release file instead of the target's, so never open a symlink
-    # here and explicitly try the canonical in-rootfs fallback.
-    if [ -e "${rootfs}/etc/os-release" ] || [ -L "${rootfs}/etc/os-release" ]; then
-        has_osr=1
-    fi
-    if [ -e "${rootfs}/usr/lib/os-release" ] || [ -L "${rootfs}/usr/lib/os-release" ]; then
-        has_osr=1
-    fi
-    # Only read a candidate if it's a regular file, not a symlink: either
-    # path can itself be an absolute symlink (e.g. usr/lib/os-release ->
-    # /etc/os-release), which would resolve on the host and defeat the
-    # same protection applied to /etc/os-release above.
-    if [ ! -L "${rootfs}/etc/os-release" ] && [ -f "${rootfs}/etc/os-release" ]; then
-        os_release="${rootfs}/etc/os-release"
-    elif [ ! -L "${rootfs}/usr/lib/os-release" ] && [ -f "${rootfs}/usr/lib/os-release" ]; then
-        os_release="${rootfs}/usr/lib/os-release"
-    fi
+    local rootfs_real candidate candidate_real
+    # A regular-file check on the leaf component alone isn't enough: any
+    # *parent* directory (etc, usr, usr/lib) can itself be an absolute
+    # symlink (e.g. rootfs/usr -> /usr) that redirects the whole path onto
+    # the host filesystem while the leaf still looks like an ordinary
+    # file. Canonicalize each candidate with the parent shell's own
+    # symlink resolution (readlink -f) and only trust it if the result is
+    # still inside the extracted rootfs.
+    rootfs_real="$(cd "${rootfs}" && pwd -P)"
+    for candidate in "${rootfs}/etc/os-release" "${rootfs}/usr/lib/os-release"; do
+        if [ -e "${candidate}" ] || [ -L "${candidate}" ]; then
+            has_osr=1
+        fi
+        candidate_real="$(readlink -f "${candidate}" 2>/dev/null || true)"
+        case "${candidate_real}" in
+            "${rootfs_real}/"*)
+                [ -z "${os_release}" ] && [ -f "${candidate_real}" ] && os_release="${candidate}"
+                ;;
+        esac
+    done
     if [ -n "${os_release}" ]; then
         id="$(parse_os_release_field "${os_release}" ID)"
         version_id="$(parse_os_release_field "${os_release}" VERSION_ID)"
