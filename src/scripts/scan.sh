@@ -66,6 +66,7 @@ HOST_GID="$(id -g)"
 ROOTFS_DIR=""
 CLEANUP_ROOTFS=0
 CID=""
+DATASTREAM_TMP=""
 
 # Single cleanup trap, installed BEFORE any resource is created so an
 # early failure (failed pull / create / export) can't leak the mktemp'd
@@ -73,6 +74,9 @@ CID=""
 cleanup() {
     if [ -n "${CID}" ]; then
         docker rm -f "${CID}" >/dev/null 2>&1 || true
+    fi
+    if [ -n "${DATASTREAM_TMP}" ]; then
+        rm -f "${DATASTREAM_TMP}" 2>/dev/null || true
     fi
     if [ "${CLEANUP_ROOTFS}" = "1" ] && [ -n "${ROOTFS_DIR}" ] && [ -d "${ROOTFS_DIR}" ]; then
         # The extracted rootfs carries the image's original UIDs/GIDs, so
@@ -178,11 +182,17 @@ detect_target_base() {
     if [ -e "${rootfs}/etc/os-release" ] || [ -L "${rootfs}/etc/os-release" ]; then
         has_osr=1
     fi
+    if [ -e "${rootfs}/usr/lib/os-release" ] || [ -L "${rootfs}/usr/lib/os-release" ]; then
+        has_osr=1
+    fi
+    # Only read a candidate if it's a regular file, not a symlink: either
+    # path can itself be an absolute symlink (e.g. usr/lib/os-release ->
+    # /etc/os-release), which would resolve on the host and defeat the
+    # same protection applied to /etc/os-release above.
     if [ ! -L "${rootfs}/etc/os-release" ] && [ -f "${rootfs}/etc/os-release" ]; then
         os_release="${rootfs}/etc/os-release"
-    elif [ -f "${rootfs}/usr/lib/os-release" ]; then
+    elif [ ! -L "${rootfs}/usr/lib/os-release" ] && [ -f "${rootfs}/usr/lib/os-release" ]; then
         os_release="${rootfs}/usr/lib/os-release"
-        has_osr=1
     fi
     if [ -n "${os_release}" ]; then
         id="$(parse_os_release_field "${os_release}" ID)"
@@ -337,22 +347,32 @@ else
     if [ ! -f "${DATASTREAM_HOST_DIR}/${DATASTREAM}" ]; then
         echo "==> Donating ${DATASTREAM} from ${DONOR_IMAGE}"
         docker pull "${DONOR_IMAGE}" >/dev/null
+        # Reserve the temp name on the host, not inside the container: a
+        # container's entrypoint `sh -c` is always PID 1 in its own PID
+        # namespace, so a name derived from the container's own $$ is the
+        # same across concurrent donations. Two scans sharing this cache
+        # dir and racing to populate the same missing datastream would
+        # then collide on one temp path and stomp/abort each other.
+        # Host-side mktemp is unique per invocation and creates the file
+        # atomically up front, so the trap-based cleanup() above can
+        # always find and remove it on any failure.
+        DATASTREAM_TMP="$(mktemp "${DATASTREAM_HOST_DIR}/.${DATASTREAM}.tmp.XXXXXX")"
         docker run --rm -u 0:0 \
             -v "${DATASTREAM_HOST_DIR}:/out" \
             -e DS="${DATASTREAM}" \
+            -e TMP_NAME="$(basename "${DATASTREAM_TMP}")" \
             -e HOST_UID="${HOST_UID}" \
             -e HOST_GID="${HOST_GID}" \
             --entrypoint sh \
             "${DONOR_IMAGE}" -c '
                 set -e
-                tmp="/out/.${DS}.tmp.$$"
-                trap '\''rm -f "${tmp}"'\'' EXIT
-                cp "/usr/share/xml/scap/ssg/content/${DS}" "${tmp}"
-                test -s "${tmp}"
-                chown "${HOST_UID}:${HOST_GID}" "${tmp}"
-                chmod 0644 "${tmp}"
-                mv -f "${tmp}" "/out/${DS}"
+                cp "/usr/share/xml/scap/ssg/content/${DS}" "/out/${TMP_NAME}"
+                test -s "/out/${TMP_NAME}"
+                chown "${HOST_UID}:${HOST_GID}" "/out/${TMP_NAME}"
+                chmod 0644 "/out/${TMP_NAME}"
             '
+        mv -f "${DATASTREAM_TMP}" "${DATASTREAM_HOST_DIR}/${DATASTREAM}"
+        DATASTREAM_TMP=""
     else
         echo "==> Reusing cached datastream at ${DATASTREAM_HOST_DIR}/${DATASTREAM}"
     fi
