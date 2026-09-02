@@ -4,15 +4,17 @@
   <i>A CircleCI orb that scans for DISA STIG findings using Chainguard's OpenSCAP scanner.</i><br /><br />
 </div>
 
-<!---
-[![CircleCI Build Status](https://circleci.com/gh/juburr/stig-scanner-orb.svg?style=shield "CircleCI Build Status")](https://circleci.com/gh/juburr/stig-scanner-orb) [![CircleCI Orb Version](https://badges.circleci.com/orbs/juburr/stig-scanner-orb.svg)](https://circleci.com/developer/orbs/orb/juburr/stig-scanner-orb) [![GitHub License](https://img.shields.io/badge/license-MIT-lightgrey.svg)](https://raw.githubusercontent.com/juburr/stig-scanner-orb/master/LICENSE) [![CircleCI Community](https://img.shields.io/badge/community-CircleCI%20Discuss-343434.svg)](https://discuss.circleci.com/c/ecosystem/orbs)
---->
+[![CircleCI Build Status](https://circleci.com/gh/juburr/stig-scanner-orb.svg?style=shield "CircleCI Build Status")](https://circleci.com/gh/juburr/stig-scanner-orb) [![CircleCI Orb Version](https://badges.circleci.com/orbs/juburr/stig-scanner-orb.svg)](https://circleci.com/developer/orbs/orb/juburr/stig-scanner-orb) [![GitHub License](https://img.shields.io/badge/license-MIT-lightgrey.svg)](https://raw.githubusercontent.com/juburr/stig-scanner-orb/main/LICENSE) [![CircleCI Community](https://img.shields.io/badge/community-CircleCI%20Discuss-343434.svg)](https://discuss.circleci.com/c/ecosystem/orbs)
 
 
 ## 📖 Overview
 This CircleCI orb uses the same process outlined by Chainguard in their [STIGs for Chainguard Containers](https://edu.chainguard.dev/chainguard/chainguard-images/features/image-stigs/) guide. I've extended it to work with other non-Wolfi operating systems such as UBI8, UBI9, Ubuntu, Debian, Fedora, and certain distroless images.
 
 The orb includes optional failure gates, ignore lists to exclude findings from the failure gates, summarized outputs, and the ability to emit artifacts to use as ATO evidence or to attach to your container as in-toto attestations using Cosign.
+
+Release notes are maintained in [CHANGELOG.md](CHANGELOG.md). Maintainers cut
+production releases through the tag-gated process in
+[RELEASING.md](RELEASING.md).
 
 ## 🚀 Getting Started
 
@@ -159,4 +161,4 @@ The same scripts CircleCI runs in pipeline are runnable directly via `bash` — 
 - arm64 verification — the scan path works on amd64; arm64 may produce surprising probe results we haven't validated.
 
 ## ⚖️ Legal
-This project is released under an [MIT license](LICENSE) and as such is **provided without warranty of any kind**. I make no promises as to its correctness or accuracy. 
+This project is released under an [MIT license](LICENSE) and as such is **provided without warranty of any kind**. I make no promises as to its correctness or accuracy.
