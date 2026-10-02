@@ -50,6 +50,10 @@ jobs:
             echo "pass=${pass:-0} notapplicable=${na:-0}"
             test "${pass:-0}" -gt 50 || { echo "expected >50 pass rules"; exit 1; }
             test "${na:-0}" -gt 50 || { echo "expected >50 notapplicable rules"; exit 1; }
+            if grep -q "not evidence of compliance" build/stig/summary.txt; then
+              echo "wolfi scan was hollow; expected evaluated rules"
+              exit 1
+            fi
       - store_artifacts:
           path: build/stig
           destination: smoke-wolfi
@@ -89,12 +93,35 @@ jobs:
           name: Gate ON, ignore all real failures → expect exit 0
           command: |
             set -e
-            fails=$(grep -oE 'SV-[0-9]+r[0-9]+' build/stig/summary.txt | sort -u | tr '\n' ',' | sed 's/,$//')
+            # Short ids from the Fail, Error, and Unknown sections. SV-only
+            # matching would miss an error result whose id is not a DISA id,
+            # and fail_on_finding now counts those.
+            fails=$(awk '
+              /^Fail \(/ || /^Error \(/ || /^Unknown \(/ {section=1; next}
+              /^Notchecked \(/ || /^[A-Za-z]/ {section=0}
+              section && $1 == "-" {
+                if ($2 == "[IGNORED]") print $3; else print $2
+              }
+            ' build/stig/summary.txt | sort -u | paste -sd, -)
             test -n "$fails" || { echo "no failures parsed; smoke-wolfi precondition broken"; exit 1; }
             PARAM_OUTPUT_DIR="build/stig" \
             PARAM_FAIL_ON_FINDING="true" \
             PARAM_IGNORE_FINDINGS="$fails" \
             bash src/scripts/summarize.sh >/dev/null 2>&1
+
+  test-summarize-fixtures:
+    description: >
+      Gate logic against fixture results.xml: hollow scans fail closed,
+      error and unknown count toward fail_on_finding, and an ignored
+      failure baseline is not treated as unevaluated.
+    docker:
+      - image: cimg/base:stable
+    resource_class: small
+    steps:
+      - checkout
+      - run:
+          name: Run summarize gate fixtures
+          command: bash tests/summarize_gate_test.sh
 
 workflows:
   test-deploy:
@@ -102,6 +129,8 @@ workflows:
       - smoke-wolfi:
           filters: *filters
       - smoke-gate:
+          filters: *filters
+      - test-summarize-fixtures:
           filters: *filters
       # Broader coverage: every supported family + every input mode, each
       # exercised through the real `stig-scanner-orb/scan` JOB (so the
@@ -157,13 +186,14 @@ workflows:
           # anonymous pull-rate limits.
           #
           # NOTE: the DISA STIG for RHEL profile is a HOST benchmark, so
-          # against a container it yields ~0 pass / 0 fail / ~485 N/A (see
-          # README + docs/spike-results.md). We assert the documented N/A
-          # baseline and the RPM dispatch markers — NOT a pass count, which
-          # is 0 here. For pass/fail signal on the RPM path see
-          # smoke-rhel9-cis below.
+          # against a container it yields ~0 pass / 0 fail / ~485 N/A.
+          # That is a correct OpenSCAP result and not evidence of
+          # compliance. require_evaluated_rules defaults to true and would
+          # fail this job; the opt-out records the N/A baseline on purpose.
+          # For pass/fail signal on the RPM path see smoke-rhel9-cis.
           image: registry.access.redhat.com/ubi9/ubi:latest
           target_base: rhel9
+          require_evaluated_rules: false
           checkout: false
           post-steps:
             - run:
@@ -178,6 +208,8 @@ workflows:
                   na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
                   echo "notapplicable=${na:-0}"
                   test "${na:-0}" -gt 50
+                  grep -q "not evidence of compliance" build/stig/summary.txt
+                  grep -q "require_evaluated_rules=false" build/stig/summary.txt
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-rhel9-cis
@@ -203,6 +235,10 @@ workflows:
                   # CIS (unlike the host STIG profile) evaluates container-
                   # applicable rules, so at least some pass/fail must appear.
                   test "$(( ${pass:-0} + ${fail:-0} ))" -gt 0
+                  if grep -q "not evidence of compliance" build/stig/summary.txt; then
+                    echo "CIS scan was hollow; expected evaluated rules"
+                    exit 1
+                  fi
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-rhel8-auto
@@ -211,9 +247,10 @@ workflows:
           # target_base: auto on the RPM family (os-release ID=rhel,
           # VERSION_ID 8 -> rhel8). ubi8 from the Red Hat registry dodges
           # Docker Hub pull-rate limits. Same host-STIG N/A baseline as
-          # rhel9.
+          # rhel9, including the explicit require_evaluated_rules opt-out.
           image: registry.access.redhat.com/ubi8/ubi:latest
           target_base: auto
+          require_evaluated_rules: false
           checkout: false
           post-steps:
             - run:
@@ -226,6 +263,8 @@ workflows:
                   na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
                   echo "notapplicable=${na:-0}"
                   test "${na:-0}" -gt 50
+                  grep -q "not evidence of compliance" build/stig/summary.txt
+                  grep -q "require_evaluated_rules=false" build/stig/summary.txt
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-fedora
@@ -235,12 +274,13 @@ workflows:
           #
           # We assert the dispatch markers + a complete, parseable scan
           # rather than a pass/N-A count: the fedora 'standard' profile's
-          # result distribution against a container isn't pinned by the
-          # spike, and SSG content drift would make a hard count threshold
-          # flaky. The scan step itself fails on any oscap error, so valid
-          # outputs here already prove the second RPM path works end-to-end.
+          # result distribution against a container isn't pinned, and SSG
+          # content drift would make a hard count threshold flaky.
+          # require_evaluated_rules is off so an all-notapplicable result
+          # still proves the plumbing. That opt-out is not a compliance claim.
           image: quay.io/fedora/fedora:latest
           target_base: fedora
+          require_evaluated_rules: false
           checkout: false
           post-steps:
             - run:
@@ -319,6 +359,7 @@ workflows:
             - orb-tools/pack
             - smoke-wolfi
             - smoke-gate
+            - test-summarize-fixtures
             - smoke-ubuntu2204
             - smoke-debian12-auto
             - smoke-rhel8-auto

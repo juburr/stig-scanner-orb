@@ -1,6 +1,9 @@
 description: >
   Parse results.xml, write a human-readable summary.txt, apply the
-  optional ignore-list, and enforce the optional fail_on_finding gate.
+  optional ignore-list, and enforce the gates. fail_on_finding covers
+  non-ignored fail, error, and unknown results. require_evaluated_rules
+  fails the job when nothing evaluated to pass or fail, so an
+  all-notapplicable host STIG cannot pass as a clean scan.
 
 parameters:
   output_dir:
@@ -11,17 +14,28 @@ parameters:
     type: boolean
     default: false
     description: >
-      If true, exit non-zero when any non-ignored rule failed. Default
-      is false so a baseline scan can be triaged before being gated.
+      If true, exit non-zero when any non-ignored result is fail,
+      error, or unknown. Default is false so a baseline that actually
+      evaluated rules can be triaged before being gated. An unevaluated
+      scan still fails; see require_evaluated_rules.
+  require_evaluated_rules:
+    type: boolean
+    default: true
+    description: >
+      Fail the job when zero rules evaluate to pass, fail, fixed, or
+      informational. A DISA host STIG against a container is typically
+      entirely notapplicable. That OpenSCAP result is real, and it is
+      not evidence of compliance. Set false only to record that
+      baseline on purpose. The summary says so either way.
   ignore_findings:
     type: string
     default: ""
     description: >
-      Comma-separated rule IDs to subtract from the failure count for
-      gate purposes only (still surfaced in summary.txt as ignored).
-      Accepted forms per entry: short DISA id ("SV-257779r925318"),
-      full XCCDF rule id, or any CCE/STIG ident from the rule's
-      <ident> block. Matching is case-insensitive and whitespace-
+      Comma-separated rule IDs to subtract from the fail/error/unknown
+      gate count (still surfaced in summary.txt as ignored). Accepted
+      forms per entry: short DISA id ("SV-257779r925318"), full XCCDF
+      rule id, or any CCE/STIG ident from the rule's <ident> or
+      <reference> text. Matching is case-insensitive and whitespace-
       tolerant.
 
 steps:
@@ -30,5 +44,6 @@ steps:
       environment:
         PARAM_OUTPUT_DIR: <<parameters.output_dir>>
         PARAM_FAIL_ON_FINDING: <<parameters.fail_on_finding>>
+        PARAM_REQUIRE_EVALUATED_RULES: <<parameters.require_evaluated_rules>>
         PARAM_IGNORE_FINDINGS: <<parameters.ignore_findings>>
       command: <<include(scripts/summarize.sh)>>

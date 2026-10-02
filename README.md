@@ -29,7 +29,7 @@ workflows:
           target_base: wolfi
 ```
 
-That's enough to produce `report.html`, `results.xml`, and `summary.txt` as job artifacts. The gate is off by default — the scan reports findings without failing the build, so you can establish a triaged baseline before turning the gate on.
+That's enough to produce `report.html`, `results.xml`, and `summary.txt` as job artifacts. `fail_on_finding` is off by default, so evaluated `fail` results are reported without failing the build and you can triage a baseline before turning that gate on. A scan that evaluates zero rules to pass or fail still fails the job. That is what a host STIG profile does against a container. Set `require_evaluated_rules: false` only when you mean to record that notapplicable baseline, and read the warning in `summary.txt`: the job is then not evidence of compliance.
 
 ## 🧰 What it does
 
@@ -62,9 +62,11 @@ That's enough to produce `report.html`, `results.xml`, and `summary.txt` as job 
 
 Heads up: the **DISA STIG for RHEL N profile is a host-level benchmark**. A typical container image has no sshd, no auditd, no kernel parameters of its own, no firewalld, no `/etc/login.defs` modifications — so the majority of rules in the profile will report `notapplicable` regardless of which scanner you use.
 
-Concretely, scanning `rockylinux:9` with the DISA STIG for RHEL 9 profile produces roughly **0 pass / 0 fail / 485 notapplicable / 1045 notselected**. That is the *correct* OpenSCAP result, not a defect in the orb.
+Concretely, scanning `rockylinux:9` with the DISA STIG for RHEL 9 profile produces roughly **0 pass / 0 fail / 485 notapplicable / 1045 notselected**. That is the correct OpenSCAP result, and it is not evidence that the image meets the STIG. The job fails that scan unless you set `require_evaluated_rules: false`. The summary then states the opt-out in the artifact itself.
 
-If you want more container-applicable signal against a RHEL-family image, override `profile_id` to one of:
+`fail_on_finding` also treats non-ignored `error` and `unknown` results as findings. `notchecked` is listed and does not by itself trip that gate; a scan that is only `notchecked` still fails `require_evaluated_rules`.
+
+If you want container-applicable signal against a RHEL-family image, override `profile_id` to one of:
 
 - `xccdf_org.ssgproject.content_profile_cis_server_l1` — CIS Level 1, more file-permission and package rules that actually apply to containers.
 - `xccdf_org.ssgproject.content_profile_pci-dss` — narrower scope, more container-relevant rules per scope.
@@ -85,8 +87,9 @@ A v1.1 container-tailored RHEL STIG tailoring file is on the roadmap; until then
 | `datastream_path` | string | `""` | Host-local datastream file. Skips the donor flow. |
 | `profile_id` | string | `""` | Override the XCCDF profile id (e.g. switch to CIS). |
 | `donor_image` | string | `cgr.dev/chainguard/openscap:latest-dev` | Image to copy datastreams out of for RPM targets. Override for air-gap. |
-| `fail_on_finding` | boolean | `false` | When true, exits 1 on any non-ignored failure. |
-| `ignore_findings` | string | `""` | Comma-separated rule IDs to subtract from the gate count. |
+| `fail_on_finding` | boolean | `false` | When true, exit 1 on any non-ignored `fail`, `error`, or `unknown` result. |
+| `require_evaluated_rules` | boolean | `true` | Fail the job when zero rules evaluate to pass, fail, fixed, or informational. Set false only to record a host-STIG notapplicable baseline. |
+| `ignore_findings` | string | `""` | Comma-separated rule IDs to subtract from the fail/error/unknown gate count. |
 | `output_dir` | string | `build/stig` | Where reports and summary land. |
 | `resource_class` | string | `medium` | Pass-through to the machine executor. |
 | `no_output_timeout` | string | `30m` | OpenSCAP can be silent for several minutes during evaluation. |
@@ -102,7 +105,7 @@ Under `<output_dir>/`:
 
 - `report.html` — the XCCDF HTML report. CircleCI inlines this in the Artifacts tab so an assessor can open it from the build page.
 - `results.xml` — the XCCDF results document, machine-readable.
-- `summary.txt` — pass / fail / notapplicable counts and the failed-rule list. The "ignored" tier appears separately for auditing.
+- `summary.txt` — pass / fail / error / unknown / notapplicable counts, the rule list for fail, error, unknown, and notchecked, and a hollow-scan warning when nothing evaluated. The "ignored" tier appears separately for auditing.
 - `scan-plan.env` — the resolved scanner / datastream / profile, so a later consumer of the artifacts knows exactly what produced them.
 
 These are well-suited as ATO evidence and easy to attach to your container as in-toto attestations via Cosign.
@@ -113,9 +116,9 @@ Entries in `ignore_findings` are matched case-insensitively against:
 
 - the short DISA id (e.g. `SV-257779r925318`),
 - the full XCCDF rule id, or
-- any `<ident>` value on the rule (CCE, CVE, CCI, etc.).
+- any `<ident>` or `<reference>` value on the rule (CCE, CVE, CCI, a NIST control such as `AC-2`, and so on). A shared reference waives every rule that cites it.
 
-Ignored failures still appear in the summary and the HTML report — they are removed from the gate count, not the audit trail.
+Ignored `fail`, `error`, and `unknown` results still appear in the summary and the HTML report. They are removed from the `fail_on_finding` count, not the audit trail. Ignoring them does not waive `require_evaluated_rules`: a result that actually failed was evaluated.
 
 ## 🛡️ Air-gap
 
