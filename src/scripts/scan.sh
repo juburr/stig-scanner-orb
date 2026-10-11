@@ -309,7 +309,9 @@ detect_target_base() {
     if [ -d "${rootfs}/var/lib/rpm" ]; then
         echo "rhel9 package-db"; return
     fi
-    if [ -f "${rootfs}/var/lib/dpkg/status" ]; then
+    # dpkg: a status file, or the distroless per-package status.d/ layout
+    # (which step 3b turns into a status file in image mode).
+    if [ -f "${rootfs}/var/lib/dpkg/status" ] || [ -d "${rootfs}/var/lib/dpkg/status.d" ]; then
         echo "debian12 package-db"; return
     fi
     return 1
