@@ -42,6 +42,15 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   SSG versions; the OpenSCAP version; scan start/end time. `scan-plan.env`
   carries the raw facts.
 
+- **Distroless dpkg support.** Google distroless images keep dpkg metadata as
+  per-package stanzas in `/var/lib/dpkg/status.d/`, which OpenSCAP's dpkg
+  probe cannot read, so package rules came back `error`. In image mode the orb
+  now builds `/var/lib/dpkg/status` from those stanzas in its scratch copy of
+  the rootfs and records that in `summary.txt` / `provenance.json`;
+  `rootfs_path` trees are left untouched and get a warning instead.
+- Smoke coverage for `ubi9/ubi-minimal`, `ubi8/ubi-minimal` (CIS L1), and
+  `gcr.io/distroless/cc-debian12` in both image and `rootfs_path` mode.
+
 ### Changed
 
 - Every helper and scanner container now runs from the resolved local image

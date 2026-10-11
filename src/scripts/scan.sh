@@ -7,6 +7,9 @@
 #      a host temp dir.
 #   3. Resolve target-base → (scanner-image, datastream, profile-id) by
 #      auto-detection from /etc/os-release if needed.
+#   3b. For dpkg-family targets laid out like Google distroless (per-
+#      package stanzas in /var/lib/dpkg/status.d/, no status file),
+#      synthesize /var/lib/dpkg/status in the extracted scratch copy.
 #   4. For RPM-family targets, copy the datastream out of the Chainguard
 #      openscap image (which bundles all major datastreams) and into a
 #      cache dir. The compliance-operator scanner that ships rpm probes
@@ -383,6 +386,87 @@ echo "    datastream:    ${DATASTREAM}"
 echo "    profile:       ${PROFILE}"
 echo "    output:        ${OUTPUT_DIR_ABS}"
 
+# --- 3b. dpkg status for distroless images ---------------------------------
+# OpenSCAP's dpkginfo probe reads only <root>/var/lib/dpkg/status. Google
+# distroless images record their packages as one stanza per file under
+# /var/lib/dpkg/status.d/ (plus *.md5sums) and ship no status file, so every
+# dpkg-backed check errors: package-removal rules come back `error`, not
+# `pass`. In image mode the extracted rootfs is our scratch copy, so build
+# the status file there from the stanzas. In rootfs_path mode the tree
+# belongs to the caller and stays untouched; summarize warns instead.
+# Recorded as dpkg_status=synthesized|missing in scan-plan.env.
+DPKG_STATUS=""
+DPKG_STATUS_PACKAGES=""
+if [ "${FAMILY}" = "dpkg" ] && [ "${CLEANUP_ROOTFS}" = "1" ]; then
+    # Decide and write inside the helper container, which sees only the
+    # scratch rootfs: a symlinked var/lib/dpkg in the target image can't
+    # redirect the write anywhere on the host, and the realpath check makes
+    # sure the file lands where oscap-chroot will read it.
+    #
+    # Each stanza gets the Status line dpkg itself records for an installed
+    # package when it is missing, and every stanza (the last one included)
+    # ends in a blank line: the probe treats a final stanza with no
+    # terminating blank line as a match for any package name.
+    # One stanza per input file, normalized: CR stripped, a Status line
+    # added after Package when absent, and a blank line after every stanza.
+    # shellcheck disable=SC2016  # $0 and friends belong to awk
+    stanza_awk='
+        function flush(i) {
+            if (n == 0) return
+            for (i = 1; i <= n; i++) {
+                print buf[i]
+                if (i == pkg && !status) print "Status: install ok installed"
+            }
+            print ""
+            n = 0; pkg = 0; status = 0
+        }
+        { sub(/\r$/, "") }
+        /^[ \t]*$/ { flush(); next }
+        {
+            buf[++n] = $0
+            if (!pkg && $0 ~ /^Package:/) pkg = n
+            if ($0 ~ /^Status:/) status = 1
+        }
+        END { flush() }
+    '
+    dpkg_result="$(docker run --rm -u 0:0 \
+        -v "${ROOTFS_DIR}:/target" \
+        -e STANZA_AWK="${stanza_awk}" \
+        --entrypoint sh \
+        "${DONOR_ID}" -c '
+            set -eu
+            d=/target/var/lib/dpkg
+            if [ -e "$d/status" ] || [ -L "$d/status" ]; then echo present; exit 0; fi
+            if [ ! -d "$d/status.d" ] || [ "$(readlink -f "$d")" != "$d" ]; then echo absent; exit 0; fi
+            tmp="$d/.status.stig-scanner-orb.tmp"
+            find "$d/status.d" -maxdepth 1 -type f ! -name "*.md5sums" | sort > "$tmp.list"
+            : > "$tmp"
+            while IFS= read -r f; do
+                awk "$STANZA_AWK" "$f" >> "$tmp"
+            done < "$tmp.list"
+            rm -f "$tmp.list"
+            count="$(grep -c "^Package:" "$tmp" || true)"
+            if [ "${count:-0}" -eq 0 ]; then rm -f "$tmp"; echo empty; exit 0; fi
+            chmod 0644 "$tmp"
+            mv "$tmp" "$d/status"
+            echo "synthesized ${count}"
+        ')"
+    case "${dpkg_result}" in
+        synthesized\ *)
+            DPKG_STATUS="synthesized"
+            DPKG_STATUS_PACKAGES="${dpkg_result#synthesized }"
+            echo "==> Synthesized /var/lib/dpkg/status from status.d/ (${DPKG_STATUS_PACKAGES} packages) in the scratch rootfs"
+            ;;
+    esac
+elif [ "${FAMILY}" = "dpkg" ] && [ -d "${ROOTFS_DIR}/var/lib/dpkg/status.d" ] \
+        && [ ! -e "${ROOTFS_DIR}/var/lib/dpkg/status" ]; then
+    DPKG_STATUS="missing"
+    echo "WARNING: ${ROOTFS_PATH} has /var/lib/dpkg/status.d/ but no /var/lib/dpkg/status." >&2
+    echo "         OpenSCAP's dpkg probe reads only the status file, so package rules will" >&2
+    echo "         report 'error'. The orb does not modify a rootfs_path tree; see the README" >&2
+    echo "         (Distroless images) to add the file, or scan the image instead." >&2
+fi
+
 # --- 4. acquire datastream -----------------------------------------------
 # Chainguard scanner ships datastreams internally; we point oscap-chroot at
 # /usr/share/xml/scap/ssg/content/<ds>. compliance-operator scanner doesn't
@@ -548,6 +632,10 @@ fi
     fi
     echo "profile=${PROFILE}"
     echo "family=${FAMILY}"
+    if [ -n "${DPKG_STATUS}" ]; then
+        echo "dpkg_status=${DPKG_STATUS}"
+        echo "dpkg_status_packages=${DPKG_STATUS_PACKAGES}"
+    fi
     if [ -n "${IMAGE}" ]; then
         echo "image=${IMAGE}"
         echo "image_id=${TARGET_IMAGE_ID}"

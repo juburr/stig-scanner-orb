@@ -350,6 +350,104 @@ workflows:
                     exit 1
                   fi
           filters: *filters
+      # The minimal and distroless bases downstream consumers actually ship.
+      - stig-scanner-orb/scan:
+          name: smoke-ubi9-minimal
+          # ubi-minimal (microdnf, no dnf/yum) through auto-detect and the
+          # RPM path with the default host-STIG profile and gate.
+          image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+          target_base: auto
+          checkout: false
+          post-steps:
+            - run:
+                name: Assert ubi9-minimal resolves rhel9 and evaluates the STIG subset
+                command: |
+                  set -e
+                  grep -q "target_base=rhel9" build/stig/scan-plan.env
+                  grep -q "family=rpm" build/stig/scan-plan.env
+                  ev=$(awk '/^Evaluated rules:/ {print $3}' build/stig/summary.txt)
+                  na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
+                  err=$(awk '/^  error / {print $2}' build/stig/summary.txt)
+                  echo "evaluated=${ev:-0} notapplicable=${na:-0} error=${err:-0}"
+                  test "${ev:-0}" -gt 0
+                  test "${na:-0}" -gt 50
+                  test "${err:-0}" -eq 0
+          filters: *filters
+      - stig-scanner-orb/scan:
+          name: smoke-ubi8-minimal-cis
+          # ubi8-minimal via auto-detect, with the CIS L1 profile consumers
+          # pair with the host STIG.
+          image: registry.access.redhat.com/ubi8/ubi-minimal:latest
+          target_base: auto
+          profile_id: xccdf_org.ssgproject.content_profile_cis_server_l1
+          checkout: false
+          post-steps:
+            - run:
+                name: Assert ubi8-minimal resolves rhel8 and CIS evaluates
+                command: |
+                  set -e
+                  grep -q "target_base=rhel8" build/stig/scan-plan.env
+                  grep -q "profile=xccdf_org.ssgproject.content_profile_cis_server_l1" build/stig/scan-plan.env
+                  ev=$(awk '/^Evaluated rules:/ {print $3}' build/stig/summary.txt)
+                  err=$(awk '/^  error / {print $2}' build/stig/summary.txt)
+                  echo "evaluated=${ev:-0} error=${err:-0}"
+                  test "${ev:-0}" -gt 0
+                  test "${err:-0}" -eq 0
+          filters: *filters
+      - stig-scanner-orb/scan:
+          name: smoke-distroless-debian12
+          # Google distroless keeps dpkg metadata as per-package stanzas in
+          # /var/lib/dpkg/status.d/ with no status file, which OpenSCAP's
+          # dpkg probe can't read. Image mode synthesizes the file in the
+          # scratch copy; without it the package rules come back `error`.
+          image: gcr.io/distroless/cc-debian12:latest
+          target_base: auto
+          checkout: false
+          post-steps:
+            - run:
+                name: Assert dpkg status synthesized and package rules evaluate
+                command: |
+                  set -e
+                  grep -q "target_base=debian12" build/stig/scan-plan.env
+                  grep -q "dpkg_status=synthesized" build/stig/scan-plan.env
+                  grep -q "dpkg-status:       synthesized" build/stig/summary.txt
+                  ev=$(awk '/^Evaluated rules:/ {print $3}' build/stig/summary.txt)
+                  err=$(awk '/^  error / {print $2}' build/stig/summary.txt)
+                  echo "evaluated=${ev:-0} error=${err:-0}"
+                  test "${ev:-0}" -gt 0
+                  test "${err:-0}" -eq 0
+                  python3 -c '
+                  import json
+                  p = json.load(open("build/stig/provenance.json"))
+                  d = p["target"]["dpkg_status"]
+                  assert d["state"] == "synthesized" and d["packages"] > 0, d
+                  '
+          filters: *filters
+      - stig-scanner-orb/scan:
+          name: smoke-distroless-rootfs
+          # rootfs_path trees belong to the caller and are never modified,
+          # so the distroless layout must surface as a loud warning instead.
+          rootfs_path: /tmp/distroless-rootfs
+          target_base: debian12
+          checkout: false
+          pre-steps:
+            - run:
+                name: Stage an extracted distroless rootfs
+                command: |
+                  set -e
+                  cid=$(docker create --entrypoint /placeholder gcr.io/distroless/cc-debian12:latest)
+                  mkdir -p /tmp/distroless-rootfs
+                  docker export "$cid" | tar -C /tmp/distroless-rootfs -xf - --numeric-owner --exclude='dev/*'
+                  docker rm "$cid"
+          post-steps:
+            - run:
+                name: Assert the missing dpkg status is warned about, tree untouched
+                command: |
+                  set -e
+                  test ! -e /tmp/distroless-rootfs/var/lib/dpkg/status
+                  grep -q "dpkg_status=missing" build/stig/scan-plan.env
+                  grep -q "^WARNING: the target has /var/lib/dpkg/status.d/" build/stig/summary.txt
+          filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-fedora
           # Second RPM datastream/profile (fedora / standard) through the
@@ -450,6 +548,10 @@ workflows:
             - smoke-rhel9
             - smoke-rhel9-cis
             - smoke-fedora
+            - smoke-ubi9-minimal
+            - smoke-ubi8-minimal-cis
+            - smoke-distroless-debian12
+            - smoke-distroless-rootfs
             - smoke-rootfs
             - smoke-tarball
           context: orb-publishing

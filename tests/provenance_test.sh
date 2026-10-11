@@ -126,12 +126,37 @@ EOF
 summarize "${dir}" || fail "local: summarize exited $?"
 check_json local "${dir}" 'p["target"]["repo_digests"] == [] and p["target"]["image_id"].startswith("sha256:1111")'
 check_json local "${dir}" 'p["donor"] is None'
+check_json local "${dir}" 'p["target"]["dpkg_status"] is None'
 check_json local "${dir}" 'p["datastream"]["ssg_version"] is None and p["datastream"]["benchmark_version"] == "3.2.17"'
 check_json local "${dir}" 'p["datastream"]["sha256"] is None'
 check_json local "${dir}" 'p["profile"]["title"] is None'
 check_summary local "${dir}" "  target-digest:     none, not pulled from a registry (image id sha256:1111"
 check_summary local "${dir}" "  datastream-sha256: unavailable"
 check_summary local "${dir}" "  ssg-version:       n/a (not ComplianceAsCode content)"
+
+# --- distroless dpkg layout: synthesized (image mode) / missing (rootfs) --
+dir="$(mktemp -d)"
+ssg_results > "${dir}/results.xml"
+printf '%s\n' "target_base=debian12" "scanner=s" "datastream=ssg-debian12-ds.xml" \
+    "profile=xccdf_org.ssgproject.content_profile_stig" "family=dpkg" \
+    "dpkg_status=synthesized" "dpkg_status_packages=11" "image=gcr.io/distroless/cc-debian12:latest" \
+    > "${dir}/scan-plan.env"
+summarize "${dir}" || fail "dpkg-synth: summarize exited $?"
+check_json dpkg-synth "${dir}" 'p["target"]["dpkg_status"] == {"state": "synthesized", "packages": 11, "source": "/var/lib/dpkg/status.d"}'
+check_summary dpkg-synth "${dir}" "  dpkg-status:       synthesized from /var/lib/dpkg/status.d (11 packages)"
+if grep -q "^WARNING: the target has /var/lib/dpkg/status.d/" "${dir}/summary.txt"; then
+    fail "dpkg-synth: must not warn when the status file was synthesized"
+fi
+
+dir="$(mktemp -d)"
+ssg_results > "${dir}/results.xml"
+printf '%s\n' "target_base=debian12" "scanner=s" "datastream=ssg-debian12-ds.xml" \
+    "profile=xccdf_org.ssgproject.content_profile_stig" "family=dpkg" \
+    "dpkg_status=missing" "dpkg_status_packages=" "rootfs_path=/tmp/rootfs" \
+    > "${dir}/scan-plan.env"
+summarize "${dir}" || fail "dpkg-missing: summarize exited $?"
+check_json dpkg-missing "${dir}" 'p["target"]["dpkg_status"]["state"] == "missing" and p["target"]["dpkg_status"]["packages"] is None'
+check_summary dpkg-missing "${dir}" "WARNING: the target has /var/lib/dpkg/status.d/ but no /var/lib/dpkg/status"
 
 # --- no scan-plan.env: provenance.json still written from results.xml ----
 dir="$(mktemp -d)"
