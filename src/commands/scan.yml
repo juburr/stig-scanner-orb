@@ -63,8 +63,11 @@ parameters:
     default: ""
     description: >
       Override the XCCDF profile id. Defaults to the DISA STIG profile
-      where the datastream has one. Useful for scanning against CIS,
-      PCI-DSS, ANSSI, etc. (`oscap info <datastream>` lists profiles).
+      where the datastream has one (ubuntu2204, rhel8/9/10); otherwise
+      CIS Level 1 Server for debian12, Chainguard GPOS for wolfi, and
+      standard for fedora. Useful for scanning against CIS, PCI-DSS,
+      ANSSI, etc. (`oscap info <datastream>` lists profiles; the README
+      lists debian12's).
   output_dir:
     type: string
     default: "build/stig"

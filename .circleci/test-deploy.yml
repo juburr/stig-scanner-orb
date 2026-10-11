@@ -230,7 +230,8 @@ workflows:
       - stig-scanner-orb/scan:
           name: smoke-debian12-auto
           # Also exercises `target_base: auto` (os-release ID=debian, 12 ->
-          # debian12) on top of the debian12 datastream + anssi profile.
+          # debian12) on top of the debian12 datastream + its default CIS
+          # Level 1 Server profile.
           image: debian:12-slim
           target_base: auto
           checkout: false
@@ -240,6 +241,7 @@ workflows:
                 command: |
                   set -e
                   grep -q "target-base:    debian12" build/stig/summary.txt
+                  grep -q "profile=xccdf_org.ssgproject.content_profile_cis_level1_server" build/stig/scan-plan.env
                   pass=$(awk '/^  pass / {print $2}' build/stig/summary.txt)
                   na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
                   echo "pass=${pass:-0} notapplicable=${na:-0}"

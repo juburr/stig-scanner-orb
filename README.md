@@ -52,7 +52,7 @@ One gate is on by default: a scan in which **zero rules evaluate** to pass or fa
 | `target_base` | Scanner image | Datastream | Default profile |
 |---|---|---|---|
 | `wolfi` | Chainguard openscap | `ssg-chainguard-gpos-ds.xml` | Chainguard GPOS |
-| `debian12` | Chainguard openscap | `ssg-debian12-ds.xml` | ANSSI-NP-NT28 high |
+| `debian12` | Chainguard openscap | `ssg-debian12-ds.xml` | CIS Level 1 Server ([why](#debian-12-profiles)) |
 | `ubuntu2204` | Chainguard openscap | `ssg-ubuntu2204-ds.xml` | DISA STIG |
 | `rhel8` | compliance-operator openscap-ocp | `ssg-rhel8-ds.xml` | DISA STIG |
 | `rhel9` | compliance-operator openscap-ocp | `ssg-rhel9-ds.xml` | DISA STIG |
@@ -66,11 +66,40 @@ Both scanner images are pinned by digest; see [Reproducibility and provenance](#
 
 Tested in CI against `ubi9/ubi`, `ubi9/ubi-minimal`, `ubi8/ubi`, `ubi8/ubi-minimal`, `gcr.io/distroless/cc-debian12`, `debian:12-slim`, `ubuntu:22.04`, `fedora`, and `cgr.dev/chainguard/static`.
 
+### Debian 12 profiles
+
+There is no DISA STIG for Debian. `ssg-debian12-ds.xml` (SSG 0.1.82 in the pinned image) ships 13 profiles, and since 2.0.0 the `debian12` default is **CIS Level 1 Server**. Rule results measured with the pinned content (distroless with its dpkg status synthesized, see below):
+
+| Profile (`xccdf_org.ssgproject.content_profile_…`) | Title | Selected rules | `debian:12-slim` pass / fail (evaluated) | `distroless/cc-debian12` pass / fail (evaluated) |
+|---|---|---|---|---|
+| `anssi_bp28_enhanced` | ANSSI-BP-028 v2.0 (enhanced) | 324 | 38 / 3 (41) | 38 / 1 (39) |
+| `anssi_bp28_high` | ANSSI-BP-028 v2.0 (high) | 399 | 38 / 3 (41) | 38 / 1 (39) |
+| `anssi_bp28_intermediary` | ANSSI-BP-028 v2.0 (intermediary) | 225 | 37 / 1 (38) | 37 / 0 (37) |
+| `anssi_bp28_minimal` | ANSSI-BP-028 v2.0 (minimal) | 36 | 16 / 1 (17) | 16 / 0 (16) |
+| `anssi_np_nt28_average` | ANSSI DAT-NT28 Average (legacy) | 44 | 19 / 0 (19) | 18 / 1 (19) |
+| `anssi_np_nt28_high` | ANSSI DAT-NT28 High (legacy; default before 2.0.0) | 49 | 19 / 0 (19) | 18 / 1 (19) |
+| `anssi_np_nt28_minimal` | ANSSI DAT-NT28 Minimal (legacy) | 24 | 18 / 0 (18) | 17 / 1 (18) |
+| `anssi_np_nt28_restrictive` | ANSSI DAT-NT28 Restrictive (legacy) | 48 | 19 / 0 (19) | 18 / 1 (19) |
+| `cis_level1_server` | **CIS Debian 12 v1.1.0, Level 1 Server (default)** | 403 | 129 / 7 (136) | 123 / 5 (128) |
+| `cis_level1_workstation` | CIS Debian 12 v1.1.0, Level 1 Workstation | 394 | 126 / 7 (133) | 120 / 5 (125) |
+| `cis_level2_server` | CIS Debian 12 v1.1.0, Level 2 Server | 507 | 131 / 7 (138) | 125 / 5 (130) |
+| `cis_level2_workstation` | CIS Debian 12 v1.1.0, Level 2 Workstation | 504 | 130 / 7 (137) | 124 / 5 (129) |
+| `standard` | Standard System Security Profile | 44 | 17 / 0 (17) | 17 / 0 (17) |
+
+Why CIS Level 1 Server:
+
+- **It is the accepted fallback when no STIG exists.** DoD falls back to SRGs where no STIG exists, and the DoD Cloud Computing SRG accepts industry baselines such as CIS Benchmarks in place of STIGs at Impact Level 2. It is also the profile paired with the RHEL host STIG elsewhere in this README. Whether a given benchmark satisfies your control baseline is still your authorizing official's call.
+- **It is versioned.** It is generated from the control file for CIS Debian 12 Benchmark v1.1.0 (2024-09-26). The pre-2.0.0 default, `anssi_np_nt28_high`, is a hand-curated rule list for ANSSI's DAT-NT28 guide, the name ANSSI-BP-028 went by before its 2022 v2.0 rewrite. SSG ships v2.0 separately as `anssi_bp28_*`.
+- **It evaluates about 7× as many rules:** 136 against `debian:12-slim`, against 19 for the old default.
+- **Level 1 Server rather than the alternatives:** containers are servers, and Level 2 mostly adds host controls (`notapplicable` rises from 267 to 369) for two more evaluated rules.
+
+To keep the 1.x result, set `profile_id: xccdf_org.ssgproject.content_profile_anssi_np_nt28_high`. If you need ANSSI for French-government requirements, use the current `anssi_bp28_*` profiles rather than the legacy `anssi_np_nt28_*` ones.
+
 ### Distroless images
 
 Google distroless images (`gcr.io/distroless/*-debian12`) ship `/etc/os-release` (`ID=debian`, `VERSION_ID=12`), so `auto` resolves them to `debian12`. They do not ship `/var/lib/dpkg/status`: each installed package is a stanza in its own file under `/var/lib/dpkg/status.d/`. OpenSCAP's dpkg probe reads only the status file, so without it every package check comes back `error`, and "package X must not be installed" rules are never evaluated.
 
-- **Image mode:** the orb builds `/var/lib/dpkg/status` from the `status.d/` stanzas in its scratch copy of the rootfs (never in the image), adding the `Status: install ok installed` line dpkg would have recorded. `summary.txt` shows `dpkg-status: synthesized … (N packages)`, and `provenance.json` records `target.dpkg_status`. Against `cc-debian12` this turns 5 `error` results into evaluated rules with the default profile, and 27 with CIS Level 1.
+- **Image mode:** the orb builds `/var/lib/dpkg/status` from the `status.d/` stanzas in its scratch copy of the rootfs (never in the image), adding the `Status: install ok installed` line dpkg would have recorded. `summary.txt` shows `dpkg-status: synthesized … (N packages)`, and `provenance.json` records `target.dpkg_status`. Against `cc-debian12` this turns 27 `error` results into evaluated rules with the default CIS Level 1 Server profile (5 with the legacy `anssi_np_nt28_high`).
 - **`rootfs_path` mode:** the orb never modifies your tree. It records `dpkg_status: missing` and prints a warning in the log and `summary.txt`. To fix it, add the file to your extracted tree before the scan:
   ```sh
   d=/path/to/rootfs/var/lib/dpkg

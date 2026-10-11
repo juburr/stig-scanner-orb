@@ -19,6 +19,14 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 - **`fail_on_finding` also counts `error` and `unknown`.** Non-ignored `error`
   and `unknown` results now trip the gate alongside `fail`. `ignore_findings`
   entries apply to them too.
+- **`debian12` default profile is now CIS Level 1 Server**
+  (`xccdf_org.ssgproject.content_profile_cis_level1_server`, CIS Debian 12
+  Benchmark v1.1.0) instead of `anssi_np_nt28_high`. There is no DISA STIG for
+  Debian, the ANSSI DAT-NT28 profile is the pre-2022 hand-curated predecessor
+  of ANSSI-BP-028 v2.0, and against `debian:12-slim` it evaluated 19 rules
+  versus 136 for CIS L1 Server. Expect more `fail` results on Debian targets.
+  To keep the old behavior, set
+  `profile_id: xccdf_org.ssgproject.content_profile_anssi_np_nt28_high`.
 - **`summary.txt` layout.** It now states both gate settings and the evaluated
   rule count, always prints the `pass`/`fail`/`error`/`unknown`/
   `notapplicable`/`notchecked` rows (including zeros), and lists rules under
