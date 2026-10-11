@@ -107,6 +107,12 @@ image_repo_digests() {
     docker image inspect --format '{{join .RepoDigests ","}}' "$1"
 }
 
+# Every container this script starts runs with --network none: extraction,
+# datastream donation, hashing and oscap-chroot all work on local files.
+# The only network traffic in a scan is the Docker daemon's image pulls
+# (README: "Info for security teams"). tests/container_isolation_test.sh
+# enforces this.
+
 DONOR_ID=""
 DONOR_REPO_DIGESTS=""
 DONOR_USED_FOR=""
@@ -144,7 +150,7 @@ cleanup() {
         # parameterizable for air-gap) as a root-privileged rm helper; the
         # host then only has to drop an empty directory.
         if [ -n "${DONOR_ID}" ]; then
-            docker run --rm -u 0:0 \
+            docker run --rm --network none -u 0:0 \
                 -v "${ROOTFS_DIR}:/cleanup" \
                 --entrypoint sh \
                 "${DONOR_ID}" -c \
@@ -193,7 +199,7 @@ if [ -n "${IMAGE}" ]; then
     # and would abort the extraction (and thus every image-mode scan).
     # --exclude='dev/*' skips device nodes (mknod can fail in some
     # rootless setups; SCAP probes don't read device nodes anyway).
-    docker export "${CID}" | docker run --rm -i -u 0:0 \
+    docker export "${CID}" | docker run --rm -i --network none -u 0:0 \
         -v "${ROOTFS_DIR}:/target" \
         --entrypoint tar \
         "${DONOR_ID}" \
@@ -432,7 +438,7 @@ if [ "${FAMILY}" = "dpkg" ] && [ "${CLEANUP_ROOTFS}" = "1" ]; then
         }
         END { flush() }
     '
-    dpkg_result="$(docker run --rm -u 0:0 \
+    dpkg_result="$(docker run --rm --network none -u 0:0 \
         -v "${ROOTFS_DIR}:/target" \
         -e STANZA_AWK="${stanza_awk}" \
         --entrypoint sh \
@@ -522,7 +528,7 @@ else
         # atomically up front, so the trap-based cleanup() above can
         # always find and remove it on any failure.
         DATASTREAM_TMP="$(mktemp "${DATASTREAM_HOST_DIR}/.${DATASTREAM}.tmp.XXXXXX")"
-        docker run --rm -u 0:0 \
+        docker run --rm --network none -u 0:0 \
             -v "${DATASTREAM_HOST_DIR}:/out" \
             -e DS="${DATASTREAM}" \
             -e TMP_NAME="$(basename "${DATASTREAM_TMP}")" \
@@ -560,7 +566,7 @@ mount_args=( -v "${ROOTFS_DIR}:/target:ro" -v "${OUTPUT_DIR_ABS}:/out" ${ds_moun
 
 # Hash the datastream as the scanner sees it: same image, same mount, same
 # path oscap-chroot evaluates below.
-DATASTREAM_SHA256="$(docker run --rm ${ds_mount_args[@]+"${ds_mount_args[@]}"} \
+DATASTREAM_SHA256="$(docker run --rm --network none ${ds_mount_args[@]+"${ds_mount_args[@]}"} \
     --entrypoint sha256sum "${SCANNER_ID}" "${DATASTREAM_IN_SCANNER_PATH}" 2>/dev/null \
     | awk '{print $1}')" || DATASTREAM_SHA256=""
 case "${DATASTREAM_SHA256}" in
@@ -576,7 +582,7 @@ echo "==> Running oscap-chroot"
 # output-less scanner run look successful.
 rm -f "${OUTPUT_DIR_ABS}/results.xml" "${OUTPUT_DIR_ABS}/report.html"
 set +e
-docker run --rm -u 0:0 \
+docker run --rm --network none -u 0:0 \
     "${mount_args[@]}" \
     -e PROFILE="${PROFILE}" \
     -e DS_PATH="${DATASTREAM_IN_SCANNER_PATH}" \

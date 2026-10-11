@@ -283,15 +283,63 @@ Entries in `ignore_findings` are matched case-insensitively against:
 
 Ignored `fail`, `error`, and `unknown` results still appear in the summary and the HTML report. They are removed from the `fail_on_finding` count, not the audit trail. Ignoring them does not waive `require_evaluated_rules`: a result that actually failed was evaluated.
 
-## 🛡️ Air-gap
+## 🔐 Info for security teams
 
-Every image and content reference is parameterized:
+### Required external access
 
-- `scanner_image` overrides the runtime scanner (point at a mirror; mirror by digest so the pinned content carries over).
-- `donor_image` overrides the extraction helper and where datastreams are copied out of.
-- `datastream_path` skips the donor flow entirely; mount your own datastream into the runner first.
+All network access during a scan is image pulls by the runner's Docker daemon. The orb downloads nothing else: no datastreams (they ship inside the pinned Chainguard image), no remote OVAL (`oscap` runs without `--fetch-remote-resources`; the Debian datastream's reference to debian.org security OVAL is skipped and logged), no packages, no telemetry. Every helper and scanner container runs with `--network none`.
 
-For RHEL-only consumers who don't want a Chainguard dependency at all, mirror `quay.io/compliance-operator/openscap-ocp` and supply datastreams via `datastream_path`.
+Outbound HTTPS (443) from the runner, by host:
+
+| Host | Why | Needed when |
+|---|---|---|
+| `cgr.dev` | Registry and token endpoint (`cgr.dev/token`) for the pinned Chainguard openscap image: scanner for `wolfi`/`debian12`/`ubuntu2204`, root-privileged extraction helper in image mode, and datastream donor for RPM targets. Anonymous pull. | Every scan except `rootfs_path` + RPM target + `datastream_path`. |
+| `9236a389bd48b984df91adc1bc924620.r2.cloudflarestorage.com` | Chainguard's blob storage. `cgr.dev` answers layer downloads with a 307 redirect here. Listed in [Chainguard's network requirements](https://edu.chainguard.dev/chainguard/administration/network-requirements). | Whenever `cgr.dev` is needed. |
+| `quay.io` | Registry and token endpoint (`quay.io/v2/auth`) for the pinned compliance-operator scanner. Anonymous pull. | `rhel8`, `rhel9`, `rhel10`, `fedora` targets. |
+| `cdn01.quay.io` (Red Hat also documents `cdn.quay.io` and `cdn02`–`cdn06.quay.io`; `*.quay.io` covers all) | quay.io's blob CDN; layer downloads 302-redirect here. `registry.access.redhat.com` blobs are served from the same CDN. | With `quay.io`, and for UBI targets pulled from `registry.access.redhat.com`. |
+| The target image's registry, plus its blob host | Only if the target is not already in the local daemon (`image_tarball` or an earlier `docker pull` avoids it). Measured examples: `registry.access.redhat.com` → blobs from `cdn01.quay.io` (no auth); `gcr.io` → token at `gcr.io/v2/token`, blobs served from `gcr.io` itself; `cgr.dev` → as above. | `image` mode with a target not yet loaded. |
+
+The scanner and helper images are pulled by digest (see [Pinned images](#pinned-images)), so Docker rejects any content that doesn't match the pin. The target image is pulled by whatever reference you pass; `provenance.json` records the registry digest of every image that ran, target included.
+
+Not the orb's traffic, but present in any CircleCI job: the `checkout` step talks to your VCS host, and `store_artifacts` uploads to CircleCI. Set `checkout: false` if the scan job doesn't need your source tree.
+
+### What runs, and with which privileges
+
+- The scan job needs the **machine executor** (a VM with a local Docker daemon). The orb mounts no Docker socket into any container and uses no `--privileged`, `--pid=host`, or host networking.
+- The extraction, datastream-donation, dpkg-synthesis and scan containers run as root (`-u 0:0`) *inside* the container, so the extracted rootfs keeps the image's numeric UIDs/GIDs and OpenSCAP can read every file. Each sees only what it needs: the extraction and dpkg-synthesis helpers get the scratch rootfs directory, the donation helper gets the datastream cache directory, and the scanner gets the rootfs **read-only**, the output directory, and (RPM targets) the datastream cache read-only. The datastream-hashing container runs as the scanner image's default user with only the datastream cache mounted, read-only.
+- Results are `chown`ed back to the runner's UID/GID. The scratch rootfs is removed at the end of the step, including on failure.
+- `/etc/os-release` from the target image is parsed as data with `awk`, never sourced, and symlinks that would point outside the extracted rootfs are rejected.
+
+### Air-gapped use
+
+Mirror the pinned images **by digest** (a multi-arch-preserving copy keeps the same digest, so provenance still matches the pins), point the orb at the mirrors, and make the target image available locally:
+
+```sh
+# e.g. with crane; `skopeo copy --all --preserve-digests` works too
+crane copy cgr.dev/chainguard/openscap@sha256:f5e08bc14cc659268a7807d7ec573ff3cc56b62b9358313db8df76909018b55e \
+  registry.internal/chainguard/openscap:latest-dev
+crane copy quay.io/compliance-operator/openscap-ocp@sha256:4c49e8c1af801051d9dbe5d33e371440948cbffce1dbc4379daf909b1288869a \
+  registry.internal/compliance-operator/openscap-ocp:1.3.6
+```
+
+```yaml
+- stig-scanner-orb/scan:
+    image: registry.internal/myapp@sha256:...           # or image_tarball: from the workspace
+    target_base: rhel9
+    scanner_image: registry.internal/compliance-operator/openscap-ocp:1.3.6@sha256:4c49e8c1af801051d9dbe5d33e371440948cbffce1dbc4379daf909b1288869a
+    donor_image: registry.internal/chainguard/openscap:latest-dev@sha256:f5e08bc14cc659268a7807d7ec573ff3cc56b62b9358313db8df76909018b55e
+```
+
+Which images a scan needs, by mode (`datastream_path` replaces only the *datastream* role of the Chainguard image, never the extraction-helper role):
+
+| Mode | Chainguard openscap (`donor_image` / `scanner_image`) | compliance-operator (`scanner_image`) | `datastream_path` |
+|---|---|---|---|
+| `image`, non-RPM target | scanner + extraction helper | — | optional |
+| `image`, RPM target | extraction helper + datastream donor | scanner | optional; drops only the donor role |
+| `rootfs_path`, non-RPM target | scanner | — | optional |
+| `rootfs_path`, RPM target | datastream donor | scanner | supply it to need **no** Chainguard image at all |
+
+With `datastream_path`, the file you supply is evaluated as-is, and its sha256 and benchmark/SSG version land in `provenance.json`, so record where it came from in your evidence. A non-RPM `scanner_image` mirror must keep the Chainguard layout (datastreams under `/usr/share/xml/scap/ssg/content/`), or set `datastream_path`. On CircleCI server, also import the orb into your installation.
 
 ## 🛠️ Local development
 

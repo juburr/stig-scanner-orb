@@ -39,6 +39,17 @@ for ref in ${refs}; do
     fi
 done
 
+# Every openscap / openscap-ocp digest the README mentions anywhere (the
+# air-gap mirroring example included) must be one of the current pins, so
+# a bump can't leave a stale digest behind in the docs.
+pinned_digests="$(printf '%s\n' "${refs}" | sed -n 's/.*@sha256:\([0-9a-f]*\)$/\1/p')"
+while IFS= read -r digest; do
+    [ -n "${digest}" ] || continue
+    if ! printf '%s\n' "${pinned_digests}" | grep -qx "${digest}"; then
+        fail "README mentions openscap digest ${digest}, which is not a current pin"
+    fi
+done < <(grep -oE 'openscap(-ocp)?[^@[:space:]`]*@sha256:[0-9a-f]{64}' "${README}" | sed 's/.*@sha256://' | sort -u)
+
 # A quoted image default ending in a floating tag, e.g. "...:latest-dev".
 if grep -rnE '(openscap:latest-dev|openscap-ocp:latest)"' "${ROOT}/src"; then
     fail "floating scanner/donor default found in src/ (see matches above)"

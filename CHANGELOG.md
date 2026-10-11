@@ -59,8 +59,17 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 - Smoke coverage for `ubi9/ubi-minimal`, `ubi8/ubi-minimal` (CIS L1), and
   `gcr.io/distroless/cc-debian12` in both image and `rootfs_path` mode.
 
+- **"Info for security teams" README section**: every host a scan contacts
+  (measured, including registry blob CDNs: Chainguard's Cloudflare R2 host and
+  `cdn01.quay.io`), what each container can see, and what an air-gapped
+  install needs per mode. Corrects the old air-gap note: `datastream_path`
+  removes the Chainguard image only in `rootfs_path` mode, because image mode
+  still uses it as the extraction helper.
+
 ### Changed
 
+- Every helper and scanner container now runs with `--network none`; a scan's
+  only network traffic is the Docker daemon's image pulls. A test enforces it.
 - Every helper and scanner container now runs from the resolved local image
   id, so the recorded image is the one that ran even if a tag moves mid-scan.
 - Donated datastreams are cached per donor image id, so a cached file is
