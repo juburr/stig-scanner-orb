@@ -31,8 +31,9 @@ parameters:
       Selects the (scanner_image, datastream, profile) triple. `auto`
       reads /etc/os-release from the target rootfs, falling back to
       filesystem-shape hints (apk DB → wolfi, rpm DB → rhel9, dpkg
-      status → debian12). For distroless images with no os-release,
-      set this explicitly.
+      status or the distroless status.d/ layout → debian12) when the
+      image has no os-release. If none of those match, set this
+      explicitly.
   scanner_image:
     type: string
     default: ""
