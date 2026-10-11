@@ -1,23 +1,23 @@
 description: >
-  Scan a RHEL 9 container with CIS Level 1, a profile that evaluates
-  rules that apply to a container, and fail the job on any non-ignored
-  fail, error, or unknown result. The DISA STIG host profile does not
-  do this: against a container it is mostly notapplicable, the job
-  fails closed, and require_evaluated_rules: false only records that
-  baseline. It is not evidence of compliance. Replace ignore_findings
-  with ids copied from summary.txt after a baseline run; an id that
-  matches nothing has no effect.
+  Scan a UBI 9 image against the DISA STIG for RHEL 9 and fail the job
+  on any non-ignored fail, error, or unknown result. The ignore list
+  waives two triaged findings that do not apply to a container image:
+  multiple DNS servers in /etc/resolv.conf (the container runtime
+  writes that file) and the rootfiles tmpfiles.d entry (systemd-tmpfiles
+  does not run in a container). Entries can be short DISA ids, full
+  XCCDF rule ids, or CCE ids; copy them from summary.txt after a
+  baseline run. Ignored results stay listed in summary.txt and the HTML
+  report.
 
 usage:
   version: 2.1
   orbs:
-    stig-scanner-orb: juburr/stig-scanner-orb@1.0.0
+    stig-scanner-orb: juburr/stig-scanner-orb@2.0.0
   workflows:
     scan:
       jobs:
         - stig-scanner-orb/scan:
-            image: registry.access.redhat.com/ubi9/ubi:latest
+            image: registry.access.redhat.com/ubi9/ubi-minimal:latest
             target_base: rhel9
-            profile_id: xccdf_org.ssgproject.content_profile_cis_server_l1
             fail_on_finding: true
-            ignore_findings: "xccdf_org.ssgproject.content_rule_example_replace_me"
+            ignore_findings: "SV-257948r1045004,xccdf_org.ssgproject.content_rule_rootfiles_configured"

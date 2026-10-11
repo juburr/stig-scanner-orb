@@ -52,9 +52,9 @@ parameters:
     default: true
     description: >
       Fail the job when zero rules evaluate to pass, fail, fixed, or
-      informational. Set false only to record a host-STIG
-      notapplicable baseline. The summary states that this is not
-      evidence of compliance.
+      informational. Set false only on a job that intentionally
+      records an all-notapplicable baseline. The summary states that
+      such a result is not evidence of compliance.
   ignore_findings:
     type: string
     default: ""

@@ -2,8 +2,8 @@ description: >
   Parse results.xml, write a human-readable summary.txt, apply the
   optional ignore-list, and enforce the gates. fail_on_finding covers
   non-ignored fail, error, and unknown results. require_evaluated_rules
-  fails the job when nothing evaluated to pass or fail, so an
-  all-notapplicable host STIG cannot pass as a clean scan.
+  fails the job when nothing evaluated to pass or fail, so a
+  mis-dispatched, all-notapplicable scan cannot pass as a clean one.
 
 parameters:
   output_dir:
@@ -23,10 +23,11 @@ parameters:
     default: true
     description: >
       Fail the job when zero rules evaluate to pass, fail, fixed, or
-      informational. A DISA host STIG against a container is typically
-      entirely notapplicable. That OpenSCAP result is real, and it is
-      not evidence of compliance. Set false only to record that
-      baseline on purpose. The summary says so either way.
+      informational. An all-notapplicable scan usually means the scan
+      was mis-dispatched (wrong target_base, a scanner missing the probe
+      family the datastream needs) and is not evidence of compliance.
+      Set false only on a job that intentionally records an
+      all-notapplicable baseline. The summary says so either way.
   ignore_findings:
     type: string
     default: ""

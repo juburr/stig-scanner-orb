@@ -14,12 +14,14 @@ This CircleCI orb uses the same process outlined by Chainguard in their [STIGs f
 
 The orb includes optional failure gates, ignore lists to exclude findings from the failure gates, summarized outputs, and the ability to emit artifacts to use as ATO evidence or to attach to your container as in-toto attestations using Cosign.
 
+Release notes, including the breaking changes in 2.0.0, are in [CHANGELOG.md](CHANGELOG.md).
+
 ## 🚀 Getting Started
 
 ```yaml
 version: 2.1
 orbs:
-  stig-scanner-orb: juburr/stig-scanner-orb@1.0.0
+  stig-scanner-orb: juburr/stig-scanner-orb@2.0.0
 
 workflows:
   scan:
@@ -29,7 +31,9 @@ workflows:
           target_base: wolfi
 ```
 
-That's enough to produce `report.html`, `results.xml`, and `summary.txt` as job artifacts. `fail_on_finding` is off by default, so evaluated `fail` results are reported without failing the build and you can triage a baseline before turning that gate on. A scan that evaluates zero rules to pass or fail still fails the job. That is what a host STIG profile does against a container. Set `require_evaluated_rules: false` only when you mean to record that notapplicable baseline, and read the warning in `summary.txt`: the job is then not evidence of compliance.
+That's enough to produce `report.html`, `results.xml`, and `summary.txt` as job artifacts. `fail_on_finding` is off by default, so evaluated `fail` results are reported without failing the build and you can triage a baseline before turning that gate on.
+
+One gate is on by default: a scan in which **zero rules evaluate** to pass or fail fails the job (`require_evaluated_rules: true`). An all-`notapplicable` result is what you get from a mis-dispatched scan (wrong `target_base`, or a scanner without the probes the datastream needs), and before 2.0.0 that was a green build. See [Gates](#-gates).
 
 ## 🧰 What it does
 
@@ -58,21 +62,83 @@ That's enough to produce `report.html`, `results.xml`, and `summary.txt` as job 
 
 `auto` recognizes RHEL, Rocky, Alma, Oracle Linux, Fedora, Debian 12, Ubuntu 22.04, Wolfi, and Chainguard via the target's `/etc/os-release`, with filesystem-shape fallbacks (`apk`, `rpm`, `dpkg`) for distroless images that lack one. For `scratch` images that ship neither `/etc/os-release` nor a package database, set `target_base` explicitly.
 
+## 🚦 Gates
+
+`summarize` applies two independent gates and states both settings in `summary.txt`:
+
+| Gate | Default | Fails the job when |
+|---|---|---|
+| `require_evaluated_rules` | `true` | Zero rules evaluated to `pass`, `fail`, `fixed`, or `informational`. |
+| `fail_on_finding` | `false` | Any non-ignored rule is `fail`, `error`, or `unknown`. |
+
+`error` and `unknown` count as findings because the check did not produce a compliance answer. `notchecked` is listed in the summary but does not trip `fail_on_finding`; a scan that is *only* `notchecked` still fails `require_evaluated_rules`. Ignoring a failure removes it from the `fail_on_finding` count but not from "evaluated": a triaged baseline is still an evaluated scan.
+
+`require_evaluated_rules` exists because an all-`notapplicable` scan looks clean and is not. Each of these produces 0 evaluated rules and, before 2.0.0, a green build:
+
+- `target_base` forced to the wrong OS (e.g. `rhel9` against a Wolfi image): the datastream's platform check never matches, so every rule is `notapplicable`.
+- A scanner built without the probe family the datastream needs (e.g. an `oscap` without `librpm` against a RHEL target), which is why RPM targets use a separate scanner image.
+- A target whose package database the probes cannot read.
+
+### Recording an intentional notapplicable baseline
+
+Sometimes you need a profile's result on file even though it evaluates nothing against your image: an assessor asks to see that the host STIG was run, and you want the all-`notapplicable` result recorded rather than skipped. Do that with an explicit, per-job opt-out:
+
+- Set `require_evaluated_rules: false` on **that one scan job only**.
+- Pair it with a second scan of the same image using a profile that does evaluate rules (CIS Level 1 for RHEL), left at the default `require_evaluated_rules: true`. If the CIS job ever goes hollow, the workflow still fails.
+- Check the opted-out job's `summary.txt`. It records `require-evaluated-rules: false` and, when nothing evaluated, says the result is not evidence of compliance.
+
+Only opt out after a baseline run shows `Evaluated rules: 0` for that image. On a scan that does evaluate rules the opt-out changes nothing today, but it switches off the alarm for the day the scan breaks. As the next section shows, against UBI images the RHEL host STIG evaluates 49–70 rules, so a UBI STIG job does not need it.
+
+```yaml
+workflows:
+  ato-evidence:
+    jobs:
+      # DISA STIG: DISA-identified (SV-/CCE-) results for the
+      # container-applicable subset of the host benchmark.
+      - stig-scanner-orb/scan:
+          name: ubi9-disa-stig
+          image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+          target_base: rhel9
+          # Add ONLY if this image's summary.txt shows "Evaluated rules: 0"
+          # and you still need that baseline on file:
+          # require_evaluated_rules: false
+      # CIS Level 1 Server: second control set, default gate left on.
+      - stig-scanner-orb/scan:
+          name: ubi9-cis-l1
+          image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+          target_base: rhel9
+          profile_id: xccdf_org.ssgproject.content_profile_cis_server_l1
+```
+
+The same pair is published as the `scan-rhel-stig-with-cis` orb example.
+
 ## ⚠️ RHEL host STIGs evaluated against containers
 
-Heads up: the **DISA STIG for RHEL N profile is a host-level benchmark**. A typical container image has no sshd, no auditd, no kernel parameters of its own, no firewalld, no `/etc/login.defs` modifications — so the majority of rules in the profile will report `notapplicable` regardless of which scanner you use.
+The **DISA STIG for RHEL N profile is a host-level benchmark**. A container image has no sshd, no auditd, no kernel parameters of its own, no firewalld, no bootloader, so most rules in the profile report `notapplicable` regardless of which scanner you use. What remains is the container-applicable subset: file permissions and ownership, package-removal checks, crypto policy, umask defaults, repository GPG settings.
 
-Concretely, scanning `rockylinux:9` with the DISA STIG for RHEL 9 profile produces roughly **0 pass / 0 fail / 485 notapplicable / 1045 notselected**. That is the correct OpenSCAP result, and it is not evidence that the image meets the STIG. The job fails that scan unless you set `require_evaluated_rules: false`. The summary then states the opt-out in the artifact itself.
+Measured with SSG content 0.1.82 (rule results; `evaluated` = pass + fail):
 
-`fail_on_finding` also treats non-ignored `error` and `unknown` results as findings. `notchecked` is listed and does not by itself trip that gate; a scan that is only `notchecked` still fails `require_evaluated_rules`.
+| Image | Profile | pass | fail | notapplicable | evaluated |
+|---|---|---|---|---|---|
+| `ubi9/ubi` | DISA STIG | 62 | 8 | 406 | 70 |
+| `ubi9/ubi-minimal` | DISA STIG | 60 | 6 | 410 | 66 |
+| `ubi9/ubi-minimal` | CIS L1 Server | 64 | 5 | 226 | 69 |
+| `ubi8/ubi` | DISA STIG | 44 | 7 | 341 | 51 |
+| `ubi8/ubi-minimal` | DISA STIG | 43 | 6 | 343 | 49 |
+| `ubi8/ubi-minimal` | CIS L1 Server | 74 | 6 | 260 | 80 |
 
-If you want container-applicable signal against a RHEL-family image, override `profile_id` to one of:
+Two consequences for compliance evidence:
 
-- `xccdf_org.ssgproject.content_profile_cis_server_l1` — CIS Level 1, more file-permission and package rules that actually apply to containers.
+- **A STIG run against a container is not an all-`notapplicable` baseline.** It produces real `fail` results with DISA identifiers (e.g. `configure_crypto_policy`, high severity). Triage them like any other finding.
+- **A clean STIG run covers only 10–15% of the profile.** The ~400 `notapplicable` rules are host controls (audit, SSH, kernel, boot), which an assessor will expect to see inherited from the host platform rather than satisfied by the image.
+
+For a second container-relevant control set, override `profile_id` to one of:
+
+- `xccdf_org.ssgproject.content_profile_cis_server_l1` — CIS Level 1 Server; on RHEL 8 images it evaluates more rules than the STIG.
 - `xccdf_org.ssgproject.content_profile_pci-dss` — narrower scope, more container-relevant rules per scope.
 - `xccdf_basic_profile_.check` (only on Wolfi targets) — purpose-built for container scanning, not a host benchmark.
 
-A v1.1 container-tailored RHEL STIG tailoring file is on the roadmap; until then, document the N/A baseline in your compliance evidence and pair the scan with CIS for actionable signal.
+A container-tailored RHEL STIG tailoring file is on the roadmap.
 
 ## 🎛️ Job parameters
 
@@ -88,7 +154,7 @@ A v1.1 container-tailored RHEL STIG tailoring file is on the roadmap; until then
 | `profile_id` | string | `""` | Override the XCCDF profile id (e.g. switch to CIS). |
 | `donor_image` | string | `cgr.dev/chainguard/openscap:latest-dev` | Image to copy datastreams out of for RPM targets. Override for air-gap. |
 | `fail_on_finding` | boolean | `false` | When true, exit 1 on any non-ignored `fail`, `error`, or `unknown` result. |
-| `require_evaluated_rules` | boolean | `true` | Fail the job when zero rules evaluate to pass, fail, fixed, or informational. Set false only to record a host-STIG notapplicable baseline. |
+| `require_evaluated_rules` | boolean | `true` | Fail the job when zero rules evaluate to pass, fail, fixed, or informational. Set false only on a job that intentionally records an all-notapplicable baseline (see [Gates](#-gates)). |
 | `ignore_findings` | string | `""` | Comma-separated rule IDs to subtract from the fail/error/unknown gate count. |
 | `output_dir` | string | `build/stig` | Where reports and summary land. |
 | `resource_class` | string | `medium` | Pass-through to the machine executor. |
@@ -153,7 +219,7 @@ bash src/scripts/summarize.sh
 
 The same scripts CircleCI runs in pipeline are runnable directly via `bash` — the `subst` shim no-ops outside CircleCI, so literal parameter values pass through unchanged.
 
-## 🚧 What's not in v1
+## 🚧 Not yet supported
 
 - `oscap-docker container` mode (live process / runtime inspection). Use `image` mode for now; `container` mode lands when there's a concrete consumer use case.
 - A container-tailored RHEL STIG tailoring file (see ⚠️ above).

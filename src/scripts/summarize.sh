@@ -5,9 +5,10 @@
 #
 #   * fail_on_finding — non-ignored fail, error, and unknown results.
 #   * require_evaluated_rules — at least one rule evaluated to pass,
-#     fail, fixed, or informational. A host STIG against a container is
-#     often entirely notapplicable; that scan is not evidence of
-#     compliance and fails closed unless the caller opts out.
+#     fail, fixed, or informational. An all-notapplicable scan usually
+#     means mis-dispatch (wrong target_base, a scanner missing the probe
+#     family the datastream needs, an unreadable package DB). It is not
+#     evidence of compliance and fails closed unless the caller opts out.
 
 set -euo pipefail
 
@@ -348,10 +349,11 @@ fi
 failed=0
 if [ "${EVALUATED}" -eq 0 ] && [ "${REQUIRE_EVALUATED_RULES}" = "true" ]; then
     echo "==> require_evaluated_rules=true and 0 rules evaluated to pass or fail — failing the build."
-    echo "    A host STIG profile against a container is often entirely notapplicable."
-    echo "    That is not evidence of compliance. Set require_evaluated_rules=false only"
-    echo "    to record that baseline on purpose, or select a profile that evaluates"
-    echo "    container-applicable rules."
+    echo "    That is not evidence of compliance. It usually means the scan was"
+    echo "    mis-dispatched: check target_base, the scanner image (RPM targets need"
+    echo "    rpm probes), and that the target's package database is readable."
+    echo "    If this profile genuinely has no rule that applies to this image, set"
+    echo "    require_evaluated_rules=false on this job to record the baseline on purpose."
     failed=1
 fi
 if [ "${ACTIONABLE}" -gt 0 ] && [ "${FAIL_ON_FINDING}" = "true" ]; then
