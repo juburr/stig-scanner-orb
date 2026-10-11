@@ -25,6 +25,32 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   separate `Fail`, `Error`, `Unknown`, and `Notchecked` headings. Scripts that
   parsed the old `Failures (...)` heading need updating.
 
+### Added
+
+- **Digest-pinned scanner and donor defaults.** The Chainguard openscap image
+  (`latest-dev@sha256:f5e08bc1…`, SSG 0.1.82, OpenSCAP 1.4.4) and the
+  compliance-operator scanner (`1.3.6@sha256:4c49e8c1…`) are pinned in one
+  place in `scan.sh`, so an orb version always runs the same scanner and
+  content. `scanner_image` / `donor_image` still override them; the
+  `donor_image` default is now `""`, meaning the pin. The README documents the
+  bump procedure, and a test keeps the README's pin table in sync.
+- **Provenance.** `summary.txt` opens with a provenance block and `summarize`
+  writes `provenance.json`: target image reference, registry digest and image
+  id; requested and resolved `target_base` and how it was resolved; profile id
+  and title; scanner and donor references, digests and image ids; the
+  datastream name, source, sha256 (hashed inside the scanner), benchmark and
+  SSG versions; the OpenSCAP version; scan start/end time. `scan-plan.env`
+  carries the raw facts.
+
+### Changed
+
+- Every helper and scanner container now runs from the resolved local image
+  id, so the recorded image is the one that ran even if a tag moves mid-scan.
+- Donated datastreams are cached per donor image id, so a cached file is
+  never reused or attributed across donor images.
+- With `datastream_path` set, the recorded datastream name is the supplied
+  file's name instead of the target's default name.
+
 ### Fixed
 
 - Documentation no longer claims the RHEL host STIG yields 0 evaluated rules

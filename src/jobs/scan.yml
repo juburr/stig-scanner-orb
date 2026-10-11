@@ -28,6 +28,9 @@ parameters:
   scanner_image:
     type: string
     default: ""
+    description: >
+      Override the scanner image. Empty uses the orb's digest-pinned
+      default for the target_base.
   datastream_name:
     type: string
     default: ""
@@ -39,7 +42,10 @@ parameters:
     default: ""
   donor_image:
     type: string
-    default: "cgr.dev/chainguard/openscap:latest-dev"
+    default: ""
+    description: >
+      Extraction helper and datastream source. Empty uses the orb's
+      digest-pinned Chainguard openscap image.
   fail_on_finding:
     type: boolean
     default: false

@@ -14,6 +14,8 @@
 #   5. Pull the resolved scanner image (cacheable).
 #   6. Run oscap-chroot inside the scanner against the extracted rootfs,
 #      writing report.html + results.xml to the output dir.
+#   7. Record what produced them in scan-plan.env: image references and
+#      the digests actually used, the datastream and its sha256.
 
 set -euo pipefail
 
@@ -26,6 +28,20 @@ subst() {
     fi
 }
 
+# --- pinned default images -----------------------------------------------
+# Every default image is pinned by digest, so one orb release always runs
+# the same OpenSCAP build against the same SCAP content. Docker resolves the
+# digest and ignores the tag; the tag is kept only to show what was pinned.
+# scanner_image / donor_image still override these. To move them, follow
+# "Updating the pinned images" in the README.
+#
+# Chainguard openscap, -dev variant (the extraction/donation helpers need a
+# shell). Multi-arch index digest: linux/amd64 + linux/arm64.
+DEFAULT_CHAINGUARD_IMAGE="cgr.dev/chainguard/openscap:latest-dev@sha256:f5e08bc14cc659268a7807d7ec573ff3cc56b62b9358313db8df76909018b55e"
+# compliance-operator openscap-ocp: OpenSCAP 1.3.6, the build its :latest tag
+# also points to. linux/amd64 only.
+DEFAULT_RPM_SCANNER_IMAGE="quay.io/compliance-operator/openscap-ocp:1.3.6@sha256:4c49e8c1af801051d9dbe5d33e371440948cbffce1dbc4379daf909b1288869a"
+
 IMAGE="$(subst "${PARAM_IMAGE:-}")"
 ROOTFS_PATH="$(subst "${PARAM_ROOTFS_PATH:-}")"
 TARGET_BASE="$(subst "${PARAM_TARGET_BASE:-auto}")"
@@ -34,7 +50,8 @@ DATASTREAM_NAME_OVERRIDE="$(subst "${PARAM_DATASTREAM_NAME:-}")"
 DATASTREAM_PATH_OVERRIDE="$(subst "${PARAM_DATASTREAM_PATH:-}")"
 PROFILE_ID_OVERRIDE="$(subst "${PARAM_PROFILE_ID:-}")"
 OUTPUT_DIR="$(subst "${PARAM_OUTPUT_DIR:-build/stig}")"
-DONOR_IMAGE="$(subst "${PARAM_DONOR_IMAGE:-cgr.dev/chainguard/openscap:latest-dev}")"
+DONOR_IMAGE="$(subst "${PARAM_DONOR_IMAGE:-}")"
+[ -n "${DONOR_IMAGE}" ] || DONOR_IMAGE="${DEFAULT_CHAINGUARD_IMAGE}"
 
 # A datastream name is appended to paths in both the donor and scanner
 # containers.  Keep it a filename: accepting path separators would let a
@@ -62,11 +79,50 @@ OUTPUT_DIR_ABS="$(cd "${OUTPUT_DIR}" && pwd)"
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 
+# --- image helpers ---------------------------------------------------------
+# Pull REF unless the local daemon already has it. For a digest-pinned ref
+# a local copy is by definition the right content; a tag-only override is
+# used as found locally, and the recorded image id says which one that was.
+ensure_image() {
+    local ref="$1" what="$2"
+    if ! docker image inspect "${ref}" >/dev/null 2>&1; then
+        echo "==> Pulling ${what}: ${ref}"
+        docker pull "${ref}" >/dev/null
+    fi
+}
+# Local image id. Store-dependent: the config digest on Docker's classic
+# image store, the manifest/index digest on the containerd store. Every
+# container below runs from this id, so the recorded id is the image that
+# actually ran even if a tag moves mid-scan.
+image_id() {
+    docker image inspect --format '{{.Id}}' "$1"
+}
+# Registry digests (repo@sha256:...) the local image is known by, comma-
+# separated. Empty for an image that never came from a registry (built or
+# loaded locally).
+image_repo_digests() {
+    docker image inspect --format '{{join .RepoDigests ","}}' "$1"
+}
+
+DONOR_ID=""
+DONOR_REPO_DIGESTS=""
+DONOR_USED_FOR=""
+resolve_donor() {
+    if [ -z "${DONOR_ID}" ]; then
+        ensure_image "${DONOR_IMAGE}" "helper image"
+        DONOR_ID="$(image_id "${DONOR_IMAGE}")"
+        DONOR_REPO_DIGESTS="$(image_repo_digests "${DONOR_IMAGE}")"
+    fi
+    DONOR_USED_FOR="${DONOR_USED_FOR:+${DONOR_USED_FOR},}$1"
+}
+
 # --- 2. extract target rootfs (if image mode) ----------------------------
 ROOTFS_DIR=""
 CLEANUP_ROOTFS=0
 CID=""
 DATASTREAM_TMP=""
+TARGET_IMAGE_ID=""
+TARGET_REPO_DIGESTS=""
 
 # Single cleanup trap, installed BEFORE any resource is created so an
 # early failure (failed pull / create / export) can't leak the mktemp'd
@@ -84,11 +140,11 @@ cleanup() {
         # the host runner can't rm. Use the donor image (already pulled,
         # parameterizable for air-gap) as a root-privileged rm helper; the
         # host then only has to drop an empty directory.
-        if docker image inspect "${DONOR_IMAGE}" >/dev/null 2>&1; then
+        if [ -n "${DONOR_ID}" ]; then
             docker run --rm -u 0:0 \
                 -v "${ROOTFS_DIR}:/cleanup" \
                 --entrypoint sh \
-                "${DONOR_IMAGE}" -c \
+                "${DONOR_ID}" -c \
                 'rm -rf /cleanup/* /cleanup/.[!.]* /cleanup/..?* 2>/dev/null || true' \
                 >/dev/null 2>&1 || true
         fi
@@ -106,6 +162,8 @@ if [ -n "${IMAGE}" ]; then
             exit 2
         fi
     fi
+    TARGET_IMAGE_ID="$(image_id "${IMAGE}")"
+    TARGET_REPO_DIGESTS="$(image_repo_digests "${IMAGE}")"
     # Pull the donor image first — we use it as a root-privileged tar
     # host so the extracted rootfs preserves the original numeric UID/
     # GID from the image. Host-side `tar -xf` running as the runner
@@ -113,10 +171,7 @@ if [ -n "${IMAGE}" ]; then
     # ownership-based STIG rules (e.g. "/etc/shadow must be owned by
     # root"). The donor image is parameterized via PARAM_DONOR_IMAGE so
     # air-gap consumers point it at their mirror.
-    if ! docker image inspect "${DONOR_IMAGE}" >/dev/null 2>&1; then
-        echo "==> Pulling extraction helper image ${DONOR_IMAGE}"
-        docker pull "${DONOR_IMAGE}" >/dev/null
-    fi
+    resolve_donor extraction
 
     ROOTFS_DIR="$(mktemp -d -t stig-rootfs.XXXXXX)"
     CLEANUP_ROOTFS=1
@@ -125,7 +180,7 @@ if [ -n "${IMAGE}" ]; then
     # images that ship no default CMD/ENTRYPOINT (e.g. cgr.dev/chainguard
     # /static). The container is never started, so the value is
     # cosmetic; we just need create to succeed so we can export it.
-    CID="$(docker create --entrypoint /placeholder "${IMAGE}")"
+    CID="$(docker create --entrypoint /placeholder "${TARGET_IMAGE_ID}")"
     # Pipe the export tar into a docker container running as root, which
     # runs `tar -xf --numeric-owner` so the extracted tree carries the
     # image's original numeric UIDs/GIDs (not the runner's). tar restores
@@ -138,7 +193,7 @@ if [ -n "${IMAGE}" ]; then
     docker export "${CID}" | docker run --rm -i -u 0:0 \
         -v "${ROOTFS_DIR}:/target" \
         --entrypoint tar \
-        "${DONOR_IMAGE}" \
+        "${DONOR_ID}" \
         -C /target -xf - --numeric-owner --exclude='dev/*'
     # Container consumed; drop it now and clear CID so the EXIT trap
     # doesn't try to remove it again. The rootfs cleanup stays armed.
@@ -172,6 +227,8 @@ parse_os_release_field() {
         }
     ' "${file}" 2>/dev/null
 }
+# Prints "<target_base> <source>", source being os-release or package-db
+# (the filesystem-shape fallback).
 detect_target_base() {
     local rootfs="$1"
     local id="" version_id="" has_osr=0 os_release=""
@@ -206,27 +263,27 @@ detect_target_base() {
         version_id="$(parse_os_release_field "${os_release}" VERSION_ID)"
     fi
     case "${id}" in
-        wolfi|chainguard) echo wolfi; return ;;
+        wolfi|chainguard) echo "wolfi os-release"; return ;;
         rhel)
             case "${version_id}" in
-                10|10.*) echo rhel10; return ;;
-                9|9.*)   echo rhel9; return ;;
-                8|8.*)   echo rhel8; return ;;
+                10|10.*) echo "rhel10 os-release"; return ;;
+                9|9.*)   echo "rhel9 os-release"; return ;;
+                8|8.*)   echo "rhel8 os-release"; return ;;
             esac ;;
         rocky|almalinux|ol|oracle)
             case "${version_id}" in
-                10|10.*) echo rhel10; return ;;
-                9|9.*)   echo rhel9; return ;;
-                8|8.*)   echo rhel8; return ;;
+                10|10.*) echo "rhel10 os-release"; return ;;
+                9|9.*)   echo "rhel9 os-release"; return ;;
+                8|8.*)   echo "rhel8 os-release"; return ;;
             esac ;;
-        fedora) echo fedora; return ;;
+        fedora) echo "fedora os-release"; return ;;
         debian)
             case "${version_id}" in
-                12|12.*) echo debian12; return ;;
+                12|12.*) echo "debian12 os-release"; return ;;
             esac ;;
         ubuntu)
             case "${version_id}" in
-                22.04|22.04.*) echo ubuntu2204; return ;;
+                22.04|22.04.*) echo "ubuntu2204 os-release"; return ;;
             esac ;;
     esac
     # If os-release was present but didn't match a supported entry,
@@ -244,19 +301,21 @@ detect_target_base() {
     # as the only available signal. A consumer who lands here on a
     # supported-but-unrecognized image should set target-base explicitly.
     if [ -d "${rootfs}/lib/apk/db" ] || [ -f "${rootfs}/sbin/apk" ]; then
-        echo wolfi; return
+        echo "wolfi package-db"; return
     fi
     if [ -d "${rootfs}/var/lib/rpm" ]; then
-        echo rhel9; return
+        echo "rhel9 package-db"; return
     fi
     if [ -f "${rootfs}/var/lib/dpkg/status" ]; then
-        echo debian12; return
+        echo "debian12 package-db"; return
     fi
     return 1
 }
 
+TARGET_BASE_REQUESTED="${TARGET_BASE}"
+TARGET_BASE_SOURCE="parameter"
 if [ "${TARGET_BASE}" = "auto" ]; then
-    if ! TARGET_BASE="$(detect_target_base "${ROOTFS_DIR}")"; then
+    if ! detected="$(detect_target_base "${ROOTFS_DIR}")"; then
         echo "ERROR: could not auto-detect a supported target-base from the rootfs." >&2
         echo "       Either /etc/os-release is missing and no recognized package DB" >&2
         echo "       is present, or os-release names an OS/version this orb does not" >&2
@@ -264,42 +323,44 @@ if [ "${TARGET_BASE}" = "auto" ]; then
         echo "         wolfi, debian12, ubuntu2204, rhel8, rhel9, rhel10, fedora" >&2
         exit 2
     fi
-    echo "==> auto-detected target-base: ${TARGET_BASE}"
+    TARGET_BASE="${detected% *}"
+    TARGET_BASE_SOURCE="${detected#* }"
+    echo "==> auto-detected target-base: ${TARGET_BASE} (from ${TARGET_BASE_SOURCE})"
 fi
 
 case "${TARGET_BASE}" in
     wolfi)
-        SCANNER="cgr.dev/chainguard/openscap:latest-dev"
+        SCANNER="${DEFAULT_CHAINGUARD_IMAGE}"
         DATASTREAM="ssg-chainguard-gpos-ds.xml"
         PROFILE="xccdf_basic_profile_.check"
         FAMILY="apk" ;;
     debian12)
-        SCANNER="cgr.dev/chainguard/openscap:latest-dev"
+        SCANNER="${DEFAULT_CHAINGUARD_IMAGE}"
         DATASTREAM="ssg-debian12-ds.xml"
         PROFILE="xccdf_org.ssgproject.content_profile_anssi_np_nt28_high"
         FAMILY="dpkg" ;;
     ubuntu2204)
-        SCANNER="cgr.dev/chainguard/openscap:latest-dev"
+        SCANNER="${DEFAULT_CHAINGUARD_IMAGE}"
         DATASTREAM="ssg-ubuntu2204-ds.xml"
         PROFILE="xccdf_org.ssgproject.content_profile_stig"
         FAMILY="dpkg" ;;
     rhel8)
-        SCANNER="quay.io/compliance-operator/openscap-ocp:latest"
+        SCANNER="${DEFAULT_RPM_SCANNER_IMAGE}"
         DATASTREAM="ssg-rhel8-ds.xml"
         PROFILE="xccdf_org.ssgproject.content_profile_stig"
         FAMILY="rpm" ;;
     rhel9)
-        SCANNER="quay.io/compliance-operator/openscap-ocp:latest"
+        SCANNER="${DEFAULT_RPM_SCANNER_IMAGE}"
         DATASTREAM="ssg-rhel9-ds.xml"
         PROFILE="xccdf_org.ssgproject.content_profile_stig"
         FAMILY="rpm" ;;
     rhel10)
-        SCANNER="quay.io/compliance-operator/openscap-ocp:latest"
+        SCANNER="${DEFAULT_RPM_SCANNER_IMAGE}"
         DATASTREAM="ssg-rhel10-ds.xml"
         PROFILE="xccdf_org.ssgproject.content_profile_stig"
         FAMILY="rpm" ;;
     fedora)
-        SCANNER="quay.io/compliance-operator/openscap-ocp:latest"
+        SCANNER="${DEFAULT_RPM_SCANNER_IMAGE}"
         DATASTREAM="ssg-fedora-ds.xml"
         PROFILE="xccdf_org.ssgproject.content_profile_standard"
         FAMILY="rpm" ;;
@@ -311,6 +372,9 @@ esac
 [ -n "${SCANNER_IMAGE_OVERRIDE}" ] && SCANNER="${SCANNER_IMAGE_OVERRIDE}"
 [ -n "${DATASTREAM_NAME_OVERRIDE}" ] && DATASTREAM="${DATASTREAM_NAME_OVERRIDE}"
 [ -n "${PROFILE_ID_OVERRIDE}" ] && PROFILE="${PROFILE_ID_OVERRIDE}"
+# A consumer-supplied file is what gets evaluated, whatever the default
+# name for this target was; record its real name.
+[ -n "${DATASTREAM_PATH_OVERRIDE}" ] && DATASTREAM="$(basename "${DATASTREAM_PATH_OVERRIDE}")"
 
 echo "==> Scan plan"
 echo "    target-base:   ${TARGET_BASE}"
@@ -328,6 +392,7 @@ echo "    output:        ${OUTPUT_DIR_ABS}"
 
 DATASTREAM_HOST_DIR=""
 DATASTREAM_IN_SCANNER_PATH=""
+DATASTREAM_SOURCE=""
 
 if [ -n "${DATASTREAM_PATH_OVERRIDE}" ]; then
     if [ ! -f "${DATASTREAM_PATH_OVERRIDE}" ]; then
@@ -336,6 +401,7 @@ if [ -n "${DATASTREAM_PATH_OVERRIDE}" ]; then
     fi
     DATASTREAM_HOST_DIR="$(cd "$(dirname "${DATASTREAM_PATH_OVERRIDE}")" && pwd)"
     DATASTREAM_IN_SCANNER_PATH="/ds/$(basename "${DATASTREAM_PATH_OVERRIDE}")"
+    DATASTREAM_SOURCE="datastream_path"
     echo "==> Using consumer-supplied datastream: ${DATASTREAM_PATH_OVERRIDE}"
 elif [ "${FAMILY}" != "rpm" ]; then
     # Non-RPM target families resolve to a Chainguard-shape scanner that
@@ -347,13 +413,18 @@ elif [ "${FAMILY}" != "rpm" ]; then
     # image. If a consumer is mirroring a non-Chainguard-shape image for
     # a non-RPM target, they should set datastream-path explicitly.
     DATASTREAM_IN_SCANNER_PATH="/usr/share/xml/scap/ssg/content/${DATASTREAM}"
+    DATASTREAM_SOURCE="bundled"
     echo "==> Using datastream bundled inside scanner image (target family: ${FAMILY})"
 else
-    DATASTREAM_HOST_DIR="${HOME}/.cache/stig-scanner-orb/datastreams"
+    resolve_donor datastream
+    DATASTREAM_SOURCE="donated"
+    # Key the cache by the donor's image id, not just the filename: a file
+    # cached from an earlier donor image would otherwise be reused (and
+    # attributed to the current donor) after the pin moves.
+    DATASTREAM_HOST_DIR="${HOME}/.cache/stig-scanner-orb/datastreams/${DONOR_ID#sha256:}"
     mkdir -p "${DATASTREAM_HOST_DIR}"
     if [ ! -f "${DATASTREAM_HOST_DIR}/${DATASTREAM}" ]; then
         echo "==> Donating ${DATASTREAM} from ${DONOR_IMAGE}"
-        docker pull "${DONOR_IMAGE}" >/dev/null
         # Reserve the temp name on the host, not inside the container: a
         # container's entrypoint `sh -c` is always PID 1 in its own PID
         # namespace, so a name derived from the container's own $$ is the
@@ -371,7 +442,7 @@ else
             -e HOST_UID="${HOST_UID}" \
             -e HOST_GID="${HOST_GID}" \
             --entrypoint sh \
-            "${DONOR_IMAGE}" -c '
+            "${DONOR_ID}" -c '
                 set -e
                 cp "/usr/share/xml/scap/ssg/content/${DS}" "/out/${TMP_NAME}"
                 test -s "/out/${TMP_NAME}"
@@ -387,15 +458,30 @@ else
 fi
 
 # --- 5. pull scanner image -----------------------------------------------
-if ! docker image inspect "${SCANNER}" >/dev/null 2>&1; then
-    echo "==> Pulling scanner image: ${SCANNER}"
-    docker pull "${SCANNER}" >/dev/null
-fi
+ensure_image "${SCANNER}" "scanner image"
+SCANNER_ID="$(image_id "${SCANNER}")"
+SCANNER_REPO_DIGESTS="$(image_repo_digests "${SCANNER}")"
 
 # --- 6. run oscap-chroot -------------------------------------------------
-mount_args=( -v "${ROOTFS_DIR}:/target:ro" -v "${OUTPUT_DIR_ABS}:/out" )
+ds_mount_args=()
 if [ -n "${DATASTREAM_HOST_DIR}" ]; then
-    mount_args+=( -v "${DATASTREAM_HOST_DIR}:/ds:ro" )
+    ds_mount_args=( -v "${DATASTREAM_HOST_DIR}:/ds:ro" )
+fi
+# ${a[@]+"${a[@]}"}: an empty array is an unbound variable under set -u
+# in bash < 4.4 (e.g. the macOS system bash used for local runs).
+mount_args=( -v "${ROOTFS_DIR}:/target:ro" -v "${OUTPUT_DIR_ABS}:/out" ${ds_mount_args[@]+"${ds_mount_args[@]}"} )
+
+# Hash the datastream as the scanner sees it: same image, same mount, same
+# path oscap-chroot evaluates below.
+DATASTREAM_SHA256="$(docker run --rm ${ds_mount_args[@]+"${ds_mount_args[@]}"} \
+    --entrypoint sha256sum "${SCANNER_ID}" "${DATASTREAM_IN_SCANNER_PATH}" 2>/dev/null \
+    | awk '{print $1}')" || DATASTREAM_SHA256=""
+case "${DATASTREAM_SHA256}" in
+    *[!0-9a-f]*) DATASTREAM_SHA256="" ;;
+esac
+if [ "${#DATASTREAM_SHA256}" -ne 64 ]; then
+    echo "WARNING: could not hash ${DATASTREAM_IN_SCANNER_PATH} inside the scanner image; datastream_sha256 will be empty." >&2
+    DATASTREAM_SHA256=""
 fi
 
 echo "==> Running oscap-chroot"
@@ -410,7 +496,7 @@ docker run --rm -u 0:0 \
     -e HOST_UID="${HOST_UID}" \
     -e HOST_GID="${HOST_GID}" \
     --entrypoint /bin/sh \
-    "${SCANNER}" -c '
+    "${SCANNER_ID}" -c '
         oscap-chroot /target xccdf eval \
             --profile "${PROFILE}" \
             --report /out/report.html \
@@ -439,16 +525,33 @@ if [ ! -s "${OUTPUT_DIR_ABS}/results.xml" ] || [ ! -s "${OUTPUT_DIR_ABS}/report.
     exit 1
 fi
 
-# Persist the scan plan alongside results so summarize.sh / artifact
-# consumers know what produced these reports.
+# --- 7. record what produced these reports ------------------------------
+# summarize.sh turns this into the provenance block of summary.txt and
+# provenance.json. One key=value per line; list values are comma-separated.
+# *_image_id is the local, store-dependent id; *_repo_digests are the
+# registry digests to cite.
 {
     echo "target_base=${TARGET_BASE}"
+    echo "target_base_requested=${TARGET_BASE_REQUESTED}"
+    echo "target_base_source=${TARGET_BASE_SOURCE}"
     echo "scanner=${SCANNER}"
+    echo "scanner_image_id=${SCANNER_ID}"
+    echo "scanner_repo_digests=${SCANNER_REPO_DIGESTS}"
     echo "datastream=${DATASTREAM}"
+    echo "datastream_source=${DATASTREAM_SOURCE}"
+    echo "datastream_sha256=${DATASTREAM_SHA256}"
+    if [ -n "${DONOR_USED_FOR}" ]; then
+        echo "donor_image=${DONOR_IMAGE}"
+        echo "donor_image_id=${DONOR_ID}"
+        echo "donor_repo_digests=${DONOR_REPO_DIGESTS}"
+        echo "donor_used_for=${DONOR_USED_FOR}"
+    fi
     echo "profile=${PROFILE}"
     echo "family=${FAMILY}"
     if [ -n "${IMAGE}" ]; then
         echo "image=${IMAGE}"
+        echo "image_id=${TARGET_IMAGE_ID}"
+        echo "image_repo_digests=${TARGET_REPO_DIGESTS}"
     else
         echo "rootfs_path=${ROOTFS_PATH}"
     fi
