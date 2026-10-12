@@ -42,8 +42,8 @@ N/A rows by justification category (DISA skeleton matching the content):
 
 | Image | Not_Applicable | host | GUI | package not installed | other |
 |---|---|---|---|---|---|
-| ubi9/ubi | 366 | 331 | 23 | 11 | 1 (OVAL check returned notapplicable) |
-| ubi8/ubi | 314 | 292 | 12 | 8 | 2 |
+| ubi9/ubi | 366 | 330 | 23 | 11 | 2 (1 OVAL check returned notapplicable; 1 opaque compound gate, generic wording) |
+| ubi8/ubi | 314 | 290 | 12 | 8 | 4 (1 check-level; 3 opaque compound gates) |
 | ubuntu:22.04 | 158 | 147 | 5 | 6 | 0 |
 
 The 23 GUI rows on RHEL 9 match the 23 DISA rules whose own check text says

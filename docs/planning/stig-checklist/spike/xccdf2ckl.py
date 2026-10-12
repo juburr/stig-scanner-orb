@@ -123,10 +123,10 @@ def gate_terms(gates):
 
 
 def classify_na(gates):
-    """One category per unmet level. Host wins: every arch-gated and most
-    package-gated host rules in SSG are also kernel-gated, and a rule that
-    *requires* a package (audit, aide, openssh-server) is kernel-gated, so it
-    never lands in "package absent"."""
+    """Category for gate terms known to be false (a single-term gate, or the
+    known-false terms of a compound). Host wins: a rule that *requires* a
+    package (audit, aide, openssh-server) is kernel-gated in SSG, so it never
+    lands in "package absent"."""
     terms = gate_terms(gates)
     if not terms:
         return "check"
@@ -285,69 +285,127 @@ def arch_term_value(term, arch):
 
 def build_model(res, disa, plan, runner_arch=None):
     # OpenSCAP's architecture platforms read the scanning host's /proc, not
-    # the target. Image mode records the target platform; rootfs_path doesn't.
-    target_arch = norm_arch((plan.get("image_platform") or "").partition("/")[2] or None)
+    # the target. Image mode records the target platform (os/arch[/variant]);
+    # rootfs_path doesn't. Compare architectures only, keep the full platform
+    # for provenance.
+    target_platform = plan.get("image_platform") or None
+    target_arch = norm_arch(target_platform.split("/")[1]) if target_platform and target_platform.count("/") >= 1 else None
     runner_arch = norm_arch(runner_arch)
+    true_p = res["true_platforms"]
 
-    def arch_trusted(gates):
-        """OpenSCAP's verdict on these gates holds for the target only if
-        every architecture term in them has the same, known value on the
-        runner (what OpenSCAP evaluated) and on the target. A false compound
-        like not_s390x_arch_and_system_with_kernel doesn't say which term
-        failed, so the arch term must be decidable for the target too."""
-        return all(
-            arch_term_value(t, runner_arch) is not None
-            and arch_term_value(t, runner_arch) == arch_term_value(t, target_arch)
-            for t in gate_terms(gates) if t.endswith("_arch"))
+    # Platforms known to have evaluated *false*: OpenSCAP walks top-down, so
+    # the outermost level of a processed (selected) rule with no true
+    # platform was evaluated, and every platform on it came out false.
+    known_false = set()
+    for rid, result in res["results"].items():
+        if result != "notselected" and rid in res["rules"]:
+            known_false.update(unmet_gates(res["rules"][rid], true_p))
 
-    def arch_failed(gates):
-        """With trusted gates: does some arch term rule the target out?"""
-        return any(arch_term_value(t, target_arch) is False for t in gate_terms(gates) if t.endswith("_arch"))
+    def term_state(t):
+        """True / False / None (unknown) for a non-arch gate term, looked up
+        as a standalone platform; compound ids say nothing about their parts."""
+        return True if "#" + t in true_p else False if "#" + t in known_false else None
+
+    def arch_trusted(terms):
+        """OpenSCAP's verdict on these arch terms holds for the target only if
+        each has the same, known value on the runner and on the target."""
+        return all(arch_term_value(t, runner_arch) is not None
+                   and arch_term_value(t, runner_arch) == arch_term_value(t, target_arch)
+                   for t in terms)
+
+    def classify_gate(g):
+        """Category for one false platform id at a rule's deciding level."""
+        if "_or_" in g:
+            return "platform"  # opaque: results.xml has no CPE logic
+        terms = gate_terms([g])
+        arch_ts = [t for t in terms if t.endswith("_arch")]
+        other = [t for t in terms if not t.endswith("_arch")]
+        if len(terms) == 1 and not arch_ts:
+            return classify_na([g])  # the gate itself is the term: known false
+        # A non-arch term known false decides the N/A by itself.
+        false_other = [t for t in other if term_state(t) is False]
+        if false_other:
+            return classify_na(["#" + "_and_".join(false_other)])
+        if arch_ts and all(term_state(t) is True for t in other):
+            # Only the arch terms can have failed.
+            if not arch_trusted(arch_ts):
+                return "arch?"
+            return "arch" if any(arch_term_value(t, target_arch) is False for t in arch_ts) else "platform"
+        if arch_ts and not arch_trusted(arch_ts):
+            return "arch?"
+        return "platform"  # which term failed is unknown: claim no reason
+
+    def classify_level(gates):
+        if not gates:
+            return "check"
+        cats = {classify_gate(g) for g in gates}
+        if "arch?" in cats:
+            return "arch?"
+        return cats.pop() if len(cats) == 1 else "platform"
+
+    def target_verdict(rule):
+        """For a rule OpenSCAP evaluated (got past every gate on the runner):
+        'na' when some level's every platform has an arch term false for the
+        target, 'uncertain' when an arch term can't be decided for it, else None."""
+        for level in rule["platform_levels"]:
+            if all(any(arch_term_value(t, target_arch) is False for t in gate_terms([p]) if t.endswith("_arch"))
+                   for p in level):
+                return "na", level
+        arch_ts = [t for level in rule["platform_levels"] for t in gate_terms(level) if t.endswith("_arch")]
+        return (None, None) if arch_trusted(arch_ts) else ("uncertain", None)
+
     by_vid = collections.defaultdict(list)
     for rid, result in res["results"].items():
         r = res["rules"].get(rid)
         if result == "notselected" or not r:
             continue
-        for vid in r["vids"]:
+        # SSG < 0.1.82 has no #vulnerability_id references: derive V-n from SV-n.
+        for vid in r["vids"] or [f"V-{n}" for n in r["svs"]]:
             by_vid[vid].append(rid)
 
     prov = []
     if plan:
         prov.append(f"Scanner: {plan.get('scanner_repo_digests') or plan.get('scanner')}; "
                     f"datastream {plan.get('datastream')} sha256 {plan.get('datastream_sha256')}")
-        prov.append(f"Target: {plan.get('image_repo_digests') or plan.get('image') or plan.get('rootfs_path')}")
+        target = plan.get("image_repo_digests") or plan.get("image") or plan.get("rootfs_path")
+        prov.append(f"Target: {target}" + (f" [{target_platform}]" if target_platform else "")
+                    + (f"; scanned on {runner_arch}" if runner_arch else ""))
     prov.append(f"Content: {res['benchmark_id']} {res['benchmark_version']}, profile {res['profile_id']}; "
                 f"scan {res['start']} .. {res['end']} ({res['test_system']})")
     prov_txt = "\n".join(prov)
+    arch_note = f"[architecture gate evaluated on the scanning host ({runner_arch}); target architecture {target_arch or 'unknown'}]"
 
     def vuln_from_ssg(vid, rids):
         details, comments, ruleids = [], [], set()
-        na_cats = set()
+        na_cats, effective = set(), []
         for rid in sorted(rids):
             r, result = res["rules"][rid], res["results"][rid]
             if vid[2:] in r["svs"]:
                 ruleids.add(r["svs"][vid[2:]])
             line = f"{rid.replace('xccdf_org.ssgproject.content_rule_', '')}: {result}"
-            uncertain = False
+            eff = result
             if result == "notapplicable":
-                gates = unmet_gates(r, res["true_platforms"])
-                if not arch_trusted(gates):
-                    cat, uncertain = "arch?", True
-                elif arch_failed(gates):
-                    cat = "arch"
-                else:
-                    cat = classify_na(gates)  # any arch term held for the target
+                gates = unmet_gates(r, true_p)
+                cat = classify_level(gates)
                 na_cats.add((cat, tuple(gates)))
                 if gates:
                     line += f" (platform not met: {', '.join(g.lstrip('#') for g in gates)})"
-            else:
-                # Evaluated past every gate: an untrusted arch term means the
-                # rule may not apply to the target at all.
-                uncertain = not all(arch_trusted(level) for level in r["platform_levels"])
-            if uncertain:
-                line += f" [architecture gate evaluated on the scanning host ({runner_arch}); target architecture {target_arch or 'unknown'}]"
+                if cat == "arch?":
+                    line += " " + arch_note
+            elif result != "notselected":
+                verdict, level = target_verdict(r)
+                if verdict == "na":
+                    # OpenSCAP passed an arch gate on the runner that the
+                    # target fails: the requirement doesn't apply to it.
+                    eff = "notapplicable"
+                    na_cats.add(("arch", tuple(level)))
+                    line += f" -> notapplicable for the target ({target_arch}): an architecture gate passed on the scanning host ({runner_arch}) is false for it"
+                elif verdict == "uncertain":
+                    eff = "notchecked"
+                    line += " -> not reviewed " + arch_note
+            effective.append((rid, eff))
             details.append(line)
-        status = aggregate([(rid, res["results"][rid]) for rid in rids])
+        status = aggregate(effective)
         if status == "Not_Applicable" and any(c == "arch?" for c, _ in na_cats):
             status = "Not_Reviewed"
             comments = [f"Not reviewed: this N/A rests on a CPU-architecture check that OpenSCAP evaluated against "
@@ -355,6 +413,10 @@ def build_model(res, disa, plan, runner_arch=None):
                         f"{target_arch or 'unknown'}. Verify applicability manually."]
         elif status == "Not_Applicable":
             comments = [justification(c, list(g)) for c, g in sorted(na_cats)]
+        elif status == "Not_Reviewed" and any(e == "notchecked" and res["results"][rid] != "notchecked" for rid, e in effective):
+            comments = [f"Not reviewed: OpenSCAP evaluated this requirement past a CPU-architecture check on the scanning "
+                        f"host ({runner_arch}), which can't be decided for the target ({target_arch or 'architecture unknown'}). "
+                        f"The automated result is kept in the finding details; verify manually."]
         # The N/A category travels in the model, so reporting never has to
         # parse it back out of the justification prose.
         na_category = "+".join(sorted({c.partition(":")[0] for c, _ in na_cats})) if status == "Not_Applicable" else None
@@ -399,13 +461,22 @@ def build_model(res, disa, plan, runner_arch=None):
             first = res["rules"][sorted(rids)[0]]
             sev = max((res["rules"][r]["severity"] for r in rids), key=lambda s: {"high": 3, "medium": 2, "low": 1}.get(s, 0))
             status, detail, comment, ssg_rule_ids, na_category = vuln_from_ssg(vid, rids)
-            # SSG-only text follows ComplianceAsCode's own convention:
-            # discussion <- rationale, fix text <- description.
+            # SSG-only text follows ComplianceAsCode's own convention
+            # (discussion <- rationale, fix text <- description), from *every*
+            # contributing rule, failing ones first, so a fix for the rule that
+            # actually failed is never hidden behind another rule's text.
+            order = sorted(rids, key=lambda x: (res["results"][x] != "fail", x))
+            rules_ = [res["rules"][x] for x in order]
+            def labeled(field):
+                if len(rules_) == 1:
+                    return rules_[0][field]
+                return "\n\n".join(f"[{r['id'].replace('xccdf_org.ssgproject.content_rule_', '')}] {r[field]}" for r in rules_)
             vulns.append({
                 "vid": vid, "group_title": first["srg"] or "", "rule_id": sorted(ssg_rule_ids)[0], "severity": sev,
-                "weight": "10.0", "rule_ver": first["stig_id"] or "", "rule_title": first["title"],
-                "discussion": first["rationale"], "check_content": "Automated OpenSCAP check: " + ", ".join(sorted(rids)),
-                "check_ref": "M", "fix_text": first["description"], "ccis": [], "legacy": [], "documentable": "false",
+                "weight": "10.0", "rule_ver": first["stig_id"] or "",
+                "rule_title": " / ".join(dict.fromkeys(r["title"] for r in rules_)),
+                "discussion": labeled("rationale"), "check_content": "Automated OpenSCAP check: " + ", ".join(sorted(rids)),
+                "check_ref": "M", "fix_text": labeled("description"), "ccis": [], "legacy": [], "documentable": "false",
                 "status": status, "finding_details": detail, "comments": comment, "na_category": na_category,
             })
     stig["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, f"stig-scanner-orb:{stig['benchmark_id']}:{stig['version']}:{stig['releaseinfo']}"))
@@ -559,7 +630,8 @@ def main():
     stig, vulns = build_model(res, disa, plan, a.runner_arch)
     asset = {
         "ROLE": "None", "ASSET_TYPE": "Computing", "MARKING": "CUI", "HOST_NAME": a.host_name,
-        "TARGET_COMMENT": "Container image " + (plan.get("image_repo_digests") or plan.get("image") or ""),
+        "TARGET_COMMENT": "Container image " + (plan.get("image_repo_digests") or plan.get("image") or "")
+                          + (f" [{plan['image_platform']}]" if plan.get("image_platform") else ""),
         "TECH_AREA": "", "TARGET_KEY": "", "WEB_OR_DATABASE": "false",
     }
     now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
