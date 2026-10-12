@@ -3,7 +3,8 @@
 # a stub `docker` on PATH fails the first image call, which happens only
 # after detection has printed its result, so each case stops right there.
 # A pass-through `circleci env subst` stub keeps scan.sh's subst() from
-# depending on whatever circleci binary the host has.
+# depending on whatever circleci binary the host has, and a no-op `sleep`
+# skips the pull-retry backoff the failing stub would otherwise trigger.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -17,9 +18,10 @@ fail() {
 
 stub="$(mktemp -d)"
 printf '#!/bin/sh\nexit 1\n' > "${stub}/docker"
+printf '#!/bin/sh\nexit 0\n' > "${stub}/sleep"
 # shellcheck disable=SC2016  # $1..$3 belong to the generated stub
 printf '#!/bin/sh\n[ "$1 $2" = "env subst" ] && printf "%%s\\n" "$3"\n' > "${stub}/circleci"
-chmod +x "${stub}/docker" "${stub}/circleci"
+chmod +x "${stub}/docker" "${stub}/circleci" "${stub}/sleep"
 
 # expect NAME WANT ROOTFS — WANT is "<base> (from <source>)" or "ERROR".
 expect() {
@@ -65,6 +67,17 @@ expect "rpm db" "rhel9 (from package-db)" "$(mk var/lib/rpm/)"
 expect "dpkg status" "debian12 (from package-db)" "$(mk var/lib/dpkg/status)"
 expect "distroless status.d" "debian12 (from package-db)" "$(mk var/lib/dpkg/status.d/libc6)"
 expect "nothing recognizable" "ERROR" "$(mk usr/bin/)"
+
+# Hints are only trusted if they resolve inside the rootfs: an absolute
+# symlink would otherwise be tested against this host's filesystem.
+r="$(mk var/lib/dpkg/)"; ln -s /etc "${r}/var/lib/dpkg/status.d"
+expect "status.d symlinked out of the rootfs" "ERROR" "${r}"
+r="$(mk var/lib/)"; ln -s /var/lib/dpkg "${r}/var/lib/dpkg"
+expect "dpkg dir symlinked out of the rootfs" "ERROR" "${r}"
+r="$(mk var/lib/)"; ln -s /etc "${r}/var/lib/rpm"
+expect "rpm db symlinked out of the rootfs" "ERROR" "${r}"
+r="$(mk var/lib/dpkg/ usr/share/dpkg/status.d/libc6)"; ln -s ../../../usr/share/dpkg/status.d "${r}/var/lib/dpkg/status.d"
+expect "relative symlink inside the rootfs" "debian12 (from package-db)" "${r}"
 
 if [ "${failures}" -ne 0 ]; then
     echo "${failures} detection case(s) failed." >&2

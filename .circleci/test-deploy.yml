@@ -426,6 +426,7 @@ workflows:
                   p = json.load(open("build/stig/provenance.json"))
                   d = p["target"]["dpkg_status"]
                   assert d["state"] == "synthesized" and d["packages"] > 0, d
+                  assert "dpkg-status" in p["donor"]["used_for"], p["donor"]
                   '
           filters: *filters
       - stig-scanner-orb/scan:
