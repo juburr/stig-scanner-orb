@@ -27,6 +27,9 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   versus 136 for CIS L1 Server. Expect more `fail` results on Debian targets.
   To keep the old behavior, set
   `profile_id: xccdf_org.ssgproject.content_profile_anssi_np_nt28_high`.
+  CIS L1 is not a DISA-accepted STIG substitute; see the README for what it
+  is, and for a known SSG 0.1.82 defect in its banner rules that affects
+  `rootfs_path` scans of Debian hosts (container images are unaffected).
 - **`summary.txt` layout.** It now states both gate settings and the evaluated
   rule count, always prints the `pass`/`fail`/`error`/`unknown`/
   `notapplicable`/`notchecked` rows (including zeros), and lists rules under

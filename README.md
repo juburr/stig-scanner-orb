@@ -88,12 +88,14 @@ There is no DISA STIG for Debian. `ssg-debian12-ds.xml` (SSG 0.1.82 in the pinne
 
 Why CIS Level 1 Server:
 
-- **It is the accepted fallback when no STIG exists.** DoD falls back to SRGs where no STIG exists, and the DoD Cloud Computing SRG accepts industry baselines such as CIS Benchmarks in place of STIGs at Impact Level 2. It is also the profile paired with the RHEL host STIG elsewhere in this README. Whether a given benchmark satisfies your control baseline is still your authorizing official's call.
+- **It is the most widely used benchmark with automated content for Debian, not a DISA-accepted substitute.** Where no STIG exists, DoD's fallback is the applicable SRG, which ships no automated content for Debian. The DoD Cloud Computing SRG names CIS Benchmarks directly, but only as an option for cloud service providers at Impact Level 2. That allowance doesn't cover a mission owner's own images, and at IL4 and above a commercial equivalent is assessed case by case. Treat CIS Level 1 results as the best automated evidence available for Debian. Whether they satisfy your control baseline is your authorizing official's call. CIS Level 1 is also the profile paired with the RHEL host STIG elsewhere in this README.
 - **It is versioned.** It is generated from the control file for CIS Debian 12 Benchmark v1.1.0 (2024-09-26). The pre-2.0.0 default, `anssi_np_nt28_high`, is a hand-curated rule list for ANSSI's DAT-NT28 guide, the name ANSSI-BP-028 went by before its 2022 v2.0 rewrite. SSG ships v2.0 separately as `anssi_bp28_*`.
 - **It evaluates about 7× as many rules:** 136 against `debian:12-slim`, against 19 for the old default.
 - **Level 1 Server rather than the alternatives:** containers are servers, and Level 2 mostly adds host controls (`notapplicable` rises from 267 to 369) for two more evaluated rules.
 
 To keep the 1.x result, set `profile_id: xccdf_org.ssgproject.content_profile_anssi_np_nt28_high`. If you need ANSSI for French-government requirements, use the current `anssi_bp28_*` profiles rather than the legacy `anssi_np_nt28_*` ones.
+
+Known content defect: in SSG 0.1.82, the CIS banner rules `banner_etc_issue_cis`, `banner_etc_issue_net_cis` and `banner_etc_motd_cis` pass on Debian's stock `Debian GNU/Linux 12` banners. Their OVAL pattern is case-sensitive and never matches that text ([ComplianceAsCode/content#15150](https://github.com/ComplianceAsCode/content/issues/15150), open). The rules apply only to systems with a kernel package and no `/.dockerenv`, so image scans report them `notapplicable` (measured on `debian:12-slim`) and are unaffected. If you scan a Debian host or VM tree with `rootfs_path`, check those three controls by hand until the pin moves to content with the fix. The legacy ANSSI profile selects no banner rules, so it would not evaluate these controls either.
 
 ### Distroless images
 
