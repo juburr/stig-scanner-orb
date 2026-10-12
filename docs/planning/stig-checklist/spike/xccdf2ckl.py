@@ -12,6 +12,7 @@ import collections
 import datetime as dt
 import html
 import json
+import os
 import re
 import sys
 import uuid
@@ -454,7 +455,20 @@ def main():
     ap.add_argument("--stem", default="checklist")
     a = ap.parse_args()
 
+    # Never leave a previous run's checklist behind for this run to "publish".
+    for ext in ("ckl", "cklb"):
+        try:
+            os.remove(f"{a.out_dir}/{a.stem}.{ext}")
+        except FileNotFoundError:
+            pass
+
     res = parse_results(a.results)
+    # Gate on the evaluated profile, not on SV references: SSG reuses rules
+    # across profiles, so e.g. RHEL 9 CIS L1 selects 160 rules that carry
+    # DISA references and would otherwise yield a partial "STIG" checklist.
+    if not re.search(r"_profile_stig(_gui)?$", res["profile_id"]):
+        print(json.dumps({"outcome": "skipped", "reason": f"profile {res['profile_id']} is not a DISA STIG profile"}))
+        return 0
     plan = {}
     if a.plan:
         for line in open(a.plan, encoding="utf-8"):

@@ -169,9 +169,16 @@ datastream sha256, target digest, scan time).
   platform `cpe:/o:notapplicable` with a per-rule rationale. That maps to a
   **GPOS SRG** checklist, not an OS STIG, and the SRG release it targets
   (v3r2) is behind DISA's current GPOS SRG (V3R4). Planned as its own PR.
-- `debian12` (CIS, no STIG) and `fedora` (`standard`) have nothing to map. So
-  does any `profile_id` override with no DISA ids, e.g. the RHEL CIS
-  profile. The checklist step must skip these cleanly.
+- `debian12` (CIS, no STIG) and `fedora` (`standard`) have nothing to map.
+- **A non-STIG `profile_id` override must be skipped by profile, not by
+  looking for SV ids** (found in PR review, then measured). DISA references
+  live on the rules, and SSG reuses rules across profiles. In the pinned
+  `ssg-rhel9-ds.xml`, CIS L1 Server selects 160 rules carrying DISA
+  references (152 V-IDs), and PCI-DSS selects 145. The spike generator
+  keyed off references alone, so it would have emitted a partial
+  "RHEL_9_STIG" checklist for the supported `profile_id: …cis_server_l1`
+  path. It now refuses any profile other than `…_profile_stig` /
+  `…_profile_stig_gui`, and the plan gates on the profile (D11).
 
 ## Not yet verified
 

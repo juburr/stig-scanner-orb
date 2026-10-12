@@ -56,9 +56,10 @@ check-level.
 | D5 | **N/A reasons are derived** from OpenSCAP's platform evaluation. Compare the rule's gates with the `TestResult` platforms, walking outermost group → rule. Compound gate ids are split on `_and_`. The result maps to fixed category wording (below). | Exact, needs no per-release list. The top-down walk prevents false "not installed" claims (spike 3). |
 | D6 | DISA metadata in steps: **SSG-only** (PR 1) → **user-supplied DISA manual XCCDF** (PR 2) → **bundled compact DISA data** for each pinned datastream's release (PR 3, pending the redistribution decision). | Ship value with no new inputs first. SSG-only lacks CCIs (removed on purpose upstream in 2025), DISA wording, and manual-only rows (9 on RHEL 9 V2R9). CCIs must come from each STIG's own idents: deriving them from SRG ids matches only 60–89%. |
 | D7 | **Release drift.** With a DISA skeleton newer than the content, a result is carried forward only where the check text is unchanged (needs PR 3's matched-release data); otherwise the row is Not_Reviewed with a note. Before PR 3, results are carried and every bumped row is annotated. | DISA is a quarter ahead of SSG 0.1.82 on every product today. Of 206 RHEL 9 V2R9→V2R10 revision bumps, 153 changed no visible text; ~26 changed the check (spike 6). |
-| D8 | A new `checklist` step runs between `scan` and `summarize` and **never fails the step**. It writes `checklist.ckl`/`.cklb` plus `checklist-meta.json`. `summarize` reports the outcome and fails the job only if a checklist was required and not produced. | `summarize` stays the single writer of `summary.txt`/`provenance.json` and the single gatekeeper. A gate failure never suppresses the checklist; a checklist bug never hides the summary. |
+| D8 | A new `checklist` step runs between `scan` and `summarize` and **never fails the step**. It first deletes any `checklist.ckl`, `checklist.cklb` and `checklist-meta.json` already in `output_dir`. Only then does it decide whether, and in which formats, to generate. It always writes a fresh `checklist-meta.json` recording the outcome (`generated` / `skipped` + reason / `failed` + error) and the sha256 of the `results.xml` it read. `summarize` receives the same `checklist` mode (D11) and enforces it: <ul><li>`auto` fails the job on `failed` and accepts `skipped`;</li><li>`require` fails on anything but `generated`;</li><li>`none` ignores checklists.</li></ul>A meta that is missing, or whose `results.xml` hash doesn't match the current file, counts as `failed`. | `summarize` stays the single writer of `summary.txt`/`provenance.json` and the single gatekeeper. A gate failure never suppresses the checklist, and a checklist bug never hides the summary. Deleting first and binding the meta to `results.xml` means a reused `output_dir` can't publish or report a previous scan's checklist. |
 | D9 | Asset: `HOST_NAME` defaults to a sanitized image reference (`repo:tag`, ≤255 chars) or the `rootfs_path` basename, overridden by `checklist_asset_name`. `TARGET_COMMENT` gets the digest and platform. Header comment is neutral (`<!--stig-scanner-orb :: <version>-->`), not "DISA STIG Viewer". | STIG Manager requires a non-empty host name and keys the asset on it; containers have none. No consumer checks the header comment. |
 | D10 | No shipped container tailoring file. PR 4 adds a `tailoring_file` passthrough, and the generator tells "deselected by tailoring" apart from "no automated check". | Tailoring is still useful for values, the ~66 ungated rules, and site-specific additions. |
+| D11 | **Gate on the evaluated profile, not on the presence of SV ids.** A checklist is generated only when the `TestResult` profile is a recognized DISA STIG profile. For pinned content, that means a `(benchmark id, profile id)` pair in the fingerprint table, e.g. `xccdf_org.ssgproject.content_profile_stig`. PR 4's tailored profiles resolve through `extends`. The profile's selected SV ids must also match the table's release. Otherwise the step skips with a reason. For content not in the table (`datastream_path`), the profile id must end in `_profile_stig` or `_profile_stig_gui`, and the release is marked `unverified`. Mode: `checklist: auto` (default) / `require` / `none`, passed to both the checklist step and `summarize`. | DISA references live on the *rules*, not the profile. In the pinned RHEL 9 content, CIS L1 selects 160 rules with DISA references (152 V-IDs) and PCI-DSS selects 145. "Any SV id present" would emit a partial, mislabeled `RHEL_9_STIG` checklist on the supported `profile_id: …cis_server_l1` path. `require` lets a pipeline insist on the artifact, e.g. to catch a `profile_id` typo. |
 
 ### N/A categories and wording
 
@@ -130,17 +131,28 @@ files and parameters and changes no existing behaviour.
 - **New** command `src/commands/checklist.yml`. `src/jobs/scan.yml` calls it
   between `scan` and `summarize`. Parameters, using the CLAUDE.md
   four-place convention:
-  - `checklist`: enum `auto` | `none`, default `auto`. `auto` emits when the
-    results carry DISA SV ids and skips (exit 0, logged) otherwise.
+  - `checklist`: enum `auto` | `require` | `none`, default `auto` (D11).
+    - `auto` generates for a recognized STIG profile and skips (exit 0,
+      logged, reason in the meta) otherwise.
+    - `require` makes a skip fail the job too.
+    - The job also passes this value to `summarize`, which gets a matching
+      `checklist` parameter (D8).
   - `checklist_formats`: string, default `ckl,cklb`.
   - `checklist_asset_name`: string, default `""` (D9).
-- **Outputs** in `output_dir`:
+- **Outputs** in `output_dir`. All three are deleted at the start of every
+  run, whatever the mode (D8).
   - `checklist.ckl`, `checklist.cklb`;
-  - `checklist-meta.json`: STIG id, version, release, benchmark date, release source `fingerprint`/`label`, row counts by status, N/A counts by category, generator version.
+  - `checklist-meta.json`, always written:
+    - outcome (`generated`/`skipped`/`failed`), reason, mode;
+    - sha256 of the `results.xml` it read;
+    - profile id; STIG id, version, release, benchmark date;
+    - release source (`fingerprint`/`label`);
+    - formats written, row counts by status, N/A counts by category;
+    - generator version.
 
-  `summarize.sh` reads the meta and adds a `Checklist:` block to
-  `summary.txt` and a `checklist` object to `provenance.json` (update
-  `tests/provenance_test.sh`).
+  `summarize.sh` checks the meta's `results.xml` hash, enforces the mode, and
+  adds a `Checklist:` block to `summary.txt` and a `checklist` object to
+  `provenance.json` (update `tests/provenance_test.sh`).
 - **Tests** (`tests/checklist_test.sh`, no docker, runs in `test-scripts`).
   Small synthetic `results.xml` fixtures cover:
   - the top-down gate walk (the shadow-utils case) and compound gate ids;
@@ -148,7 +160,16 @@ files and parameters and changes no existing behaviour.
   - many-to-one and one-to-many mapping;
   - V-ID derived from SV when `#vulnerability_id` is absent;
   - every status-mapping branch and the `notselected` skip;
-  - the non-STIG skip;
+  - the profile gate: a CIS-profile fixture whose selected rules *do* carry
+    SV references must skip, and an unknown `_profile_stig` must generate
+    with release `unverified`;
+  - mode enforcement in `summarize`:
+    - `auto` + skipped passes; `auto` + failed fails;
+    - `require` + skipped fails;
+    - a missing meta, or one whose `results.xml` hash doesn't match, fails;
+  - stale outputs: a pre-seeded `checklist.ckl`/`.cklb`/meta from an
+    earlier "scan" is gone after a skip, after `none`, and after a run with
+    `checklist_formats: cklb`;
   - escaping of hostile strings in the asset name and rule text;
   - golden CKL/CKLB output for one tiny fixture, with UUIDs and timestamps injected;
   - the fingerprint table matching every pinned STIG datastream. It reads
@@ -161,16 +182,22 @@ files and parameters and changes no existing behaviour.
     of distinct V-IDs in the results. No hard-coded counts (CLAUDE.md
     smoke rule).
   - `smoke-debian12-auto`, `smoke-rhel9-cis`, `smoke-fedora`: checklist
-    skipped, not failed. `smoke-wolfi`: skipped until PR 6.
+    skipped, not failed, and no checklist files in `output_dir`.
+    `smoke-rhel9-cis` is the regression test for D11, since its rules carry
+    SV references. `smoke-wolfi`: skipped until PR 6.
+  - Negative test (like `smoke-hollow`): `checklist: require` on the CIS
+    profile must fail `summarize`.
   - New `checklist-validator` job (docker `cimg/node`; pinned versions via
     a committed lockfile; smoke artifacts via workspace). It runs three
     checks:
     1. STIG Manager's `reviewsFromCkl`/`reviewsFromCklb` (as in
-       `spike/validate.mjs`) with `unreviewed: 'always'`, asserting parsed
+       `spike/validate.mjs`) with `unreviewed: 'always'`. The check fails on
+       any parser-reported error or a missing revision, and asserts parsed
        reviews == rows written.
     2. DISA's CKLB schema, downloaded at test time with its sha256 pinned
-       (`8b88205d…`), validated raw-minus-`version` and patched (as in
-       `spike/cklb_schema_check.py`).
+       (`8b88205d…`), as in `spike/cklb_schema_check.py`. It fails on any
+       error against the patched schema, and on any raw-schema error other
+       than the documented extension fields.
     3. *Optional, non-blocking at first:* MITRE `sv3-runner`, which opens
        the `.cklb` in real STIG Viewer 3 headless.
 
@@ -266,6 +293,9 @@ Chainguard's GPOS datastream uses DISA GPOS SRG rule ids as XCCDF rule ids
 and N/A rules are gated on `cpe:/o:notapplicable` with a per-rule rationale.
 
 - Emit a GPOS SRG checklist: 198 rows on `chainguard/static`.
+  - Add the Chainguard benchmark/profile pair
+    (`xccdf_basic_profile_.check`) to the D11 table, so the profile gate
+    admits it.
   - STIG id and release come from a fingerprint against the GPOS SRG. The
     content says v3r2; DISA's current GPOS SRG is V3R4.
   - N/A COMMENTS use Chainguard's rationale, labelled as the vendor's.
