@@ -42,13 +42,15 @@ def combine_instances(rs):
     rule's precedence: any fail, else any unevaluated, else all N/A, else
     pass. An unrecognized result string was already mapped to unknown, so it
     can never read as a pass."""
-    rs = [r for r in rs if r != "notselected"] or ["notselected"]
+    rs = [r for r in rs if r != "notselected"]
+    if not rs:
+        return "notselected"
     for r in ("fail", "error", "unknown", "notchecked", "informational"):
         if r in rs:
             return r
     if all(r == "notapplicable" for r in rs):
         return "notapplicable"
-    return "pass" if "pass" in rs else rs[0]
+    return "pass" if "pass" in rs else "fixed"  # what's left is pass/fixed/notapplicable
 
 
 def parse_results(path):
@@ -133,7 +135,10 @@ def unmet_gates(rule, true_platforms):
 
 # Gate names are SSG CPE platform ids; compound ones join terms with "_and_"
 # (e.g. "package_pam_and_system_with_kernel"). Classify on the terms.
-HOST_TERMS = re.compile(r"^(system_with_kernel|machine|not_container|not_bootc_and_not_container|bootc|grub2|uefi|not_osbuild|.*kernel.*)$")
+# not_bootc / not_osbuild are deliberately absent: being a bootc (image-mode)
+# system or an osbuild build is not "receives this from its host", and the
+# plan treats a kernel-bearing bootc image as a host.
+HOST_TERMS = re.compile(r"^(system_with_kernel|machine|not_container|grub2|uefi|.*kernel.*)$")
 GUI_PACKAGES = {"gdm", "gnome-shell", "dconf", "xorg-x11-server-common", "xwayland"}
 
 
@@ -141,7 +146,7 @@ def gate_terms(gates):
     terms = []
     for g in gates:
         g = g.lstrip("#")
-        terms += [g] if g == "not_bootc_and_not_container" else g.split("_and_")
+        terms += g.split("_and_")
     return terms
 
 
@@ -351,10 +356,16 @@ def build_model(res, disa, plan, runner_arch=None):
         if result == "notapplicable" and rid in res["rules"]:
             known_false.update(unmet_gates(res["rules"][rid], true_p))
 
+    # A true "_and_" compound proves each of its terms true (e.g. a true
+    # not_bootc_and_package_dnf proves not_bootc); a false one says nothing
+    # about any single term, and an "_or_" id says nothing either way.
+    true_terms = {t for p in true_p if p.startswith("#") and "_or_" not in p for t in gate_terms([p])}
+
     def term_state(t):
-        """True / False / None (unknown) for a non-arch gate term, looked up
-        as a standalone platform; compound ids say nothing about their parts."""
-        return True if "#" + t in true_p else False if "#" + t in known_false else None
+        """True / False / None (unknown) for a non-arch gate term."""
+        if "#" + t in true_p or t in true_terms:
+            return True
+        return False if "#" + t in known_false else None
 
     def arch_trusted(terms):
         """OpenSCAP's verdict on these arch terms holds for the target only if
@@ -379,6 +390,11 @@ def build_model(res, disa, plan, runner_arch=None):
         false_other = [t for t in other if term_state(t) is False]
         if false_other:
             return classify_na(["#" + "_and_".join(false_other)])
+        # The compound is false, so if every other term is known true, the
+        # one remaining term is the false one.
+        unknown = [t for t in other if term_state(t) is None]
+        if not arch_ts and len(unknown) == 1:
+            return classify_na(["#" + unknown[0]])
         if arch_ts and all(term_state(t) is True for t in other):
             # Only the arch terms can have failed.
             if not arch_trusted(arch_ts):
@@ -538,19 +554,20 @@ def build_model(res, disa, plan, runner_arch=None):
             if rids:
                 status, detail, comment, ssg_rule_ids, na_category = vuln_from_ssg(g["vid"], rids)
                 if ssg_rule_ids != {g["rule_id"]}:
-                    # The requirement was revised after the release the content
-                    # targets, and nothing here proves the check is unchanged,
-                    # so don't carry the verdict: keep it as evidence only.
-                    # Every contributing rule must cite the skeleton's revision:
-                    # a mixed set still evaluates part of the older requirement.
-                    stale = sorted(ssg_rule_ids - {g["rule_id"]})
+                    # The content's revision of the requirement differs from the
+                    # skeleton's (the skeleton may be newer *or* older), and
+                    # nothing here proves the check is unchanged, so don't carry
+                    # the verdict: keep it as evidence only. Every contributing
+                    # rule must cite the skeleton's revision: a mixed set still
+                    # evaluates part of another revision.
+                    other_revs = sorted(ssg_rule_ids - {g["rule_id"]})
                     detail += (f"\n\nRevision mismatch: the scanner content maps this check to "
                                f"{', '.join(sorted(ssg_rule_ids))}; this checklist's STIG release has {g['rule_id']}, "
-                               f"so {', '.join(stale)} {'is' if len(stale) == 1 else 'are'} stale. "
+                               f"so {', '.join(other_revs)} {'is a different revision' if len(other_revs) == 1 else 'are different revisions'}. "
                                f"Automated result across the content's revisions: {status}.")
                     status, na_category = "Not_Reviewed", None
-                    comment = (f"Not reviewed: this STIG release revised the requirement ({g['rule_id']}), and the "
-                               f"automated result comes from content aligned to an earlier revision. Re-verify.")
+                    comment = (f"Not reviewed: this checklist's STIG release has {g['rule_id']}, and the automated result "
+                               f"comes from content aligned to a different revision of this requirement. Re-verify.")
             else:
                 status, detail, comment = "Not_Reviewed", "", "No automated check for this requirement in the scanner content; manual review required."
             vulns.append({**g, "status": status, "finding_details": detail, "comments": comment, "na_category": na_category})

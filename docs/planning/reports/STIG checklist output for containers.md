@@ -12,7 +12,7 @@ What each consumer actually enforces matters more than any schema, and the answe
 
 | Consumer (Oct 2026) | CKL | CKLB | What makes it throw | What it silently drops or mangles |
 |---|---|---|---|---|
-| STIG Viewer 3.8.1 | Import V2 Checklist; exports CKL | Native; no schema validation on load | VULN missing `Vuln_Num` or `Rule_ID`; missing `title` SI_DATA; fewer than 2 SI_DATA/STIG_DATA children; CKLB with no `stigs` or no per-STIG `rules` array | Unknown STATUS becomes undefined; omitting `SEVERITY_OVERRIDE` creates a bogus override |
+| STIG Viewer 3.8.1 | Import V2 Checklist; exports CKL | Native; no schema validation on load | VULN missing `Vuln_Num` or `Rule_ID`; missing `title` SI_DATA; a `STIG_INFO` with fewer than 2 `SI_DATA` elements, or a `VULN` with fewer than 2 `STIG_DATA` (xml2js `explicitArray:false` then yields an object, so `.find` throws). An `SI_DATA` with no `SID_DATA` child (STIG Viewer 2's empty `customname`) imports fine; CKLB with no `stigs` or no per-STIG `rules` array | Unknown STATUS becomes undefined; omitting `SEVERITY_OVERRIDE` creates a bogus override |
 | STIG Manager 1.6.17 (parser `stig-manager-client-modules` 1.6.8) | Yes | Yes | Empty `HOST_NAME`/`host_name`; missing `stigid`, `version` or `releaseinfo` SI_DATA; missing `FINDING_DETAILS`/`COMMENTS` elements; CKLB with no `stig_id` | Wrong-case STATUS, missing `Rule_ID` or `rule_id_src` → row dropped; CKLB without `stigs[].version` → revision recorded as `V0R5` |
 | eMASS | `disaStigViewerCklCklb` scan type | Same scan type | Not public (CAC-gated docs) | Not public |
 | Vulnerator 6.1.9 | Yes | No (issue open since 2023) | n/a | n/a |
