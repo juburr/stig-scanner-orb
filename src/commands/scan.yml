@@ -20,9 +20,10 @@ parameters:
     type: string
     default: ""
     description: >
-      Path to an already-extracted filesystem tree (e.g. an RPM
-      unpacked into a tmpdir, or a mounted VM disk). Mutually
-      exclusive with image.
+      Path to an already-extracted, offline filesystem tree (e.g. an
+      RPM unpacked into a tmpdir, or a mounted VM disk). Never a live
+      filesystem such as /: a tree containing a Unix socket is refused.
+      Mutually exclusive with image.
   target_base:
     type: enum
     enum: ["auto", "wolfi", "debian12", "ubuntu2204", "rhel8", "rhel9", "rhel10", "fedora"]

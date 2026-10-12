@@ -3,7 +3,8 @@
 # a stub `docker` on PATH fails the first image call, which happens only
 # after detection has printed its result, so each case stops right there.
 # A pass-through `circleci env subst` stub keeps scan.sh's subst() from
-# depending on whatever circleci binary the host has.
+# depending on whatever circleci binary the host has, and a no-op `sleep`
+# skips the pull-retry backoff the failing stub would otherwise trigger.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -17,9 +18,10 @@ fail() {
 
 stub="$(mktemp -d)"
 printf '#!/bin/sh\nexit 1\n' > "${stub}/docker"
+printf '#!/bin/sh\nexit 0\n' > "${stub}/sleep"
 # shellcheck disable=SC2016  # $1..$3 belong to the generated stub
 printf '#!/bin/sh\n[ "$1 $2" = "env subst" ] && printf "%%s\\n" "$3"\n' > "${stub}/circleci"
-chmod +x "${stub}/docker" "${stub}/circleci"
+chmod +x "${stub}/docker" "${stub}/circleci" "${stub}/sleep"
 
 # expect NAME WANT ROOTFS — WANT is "<base> (from <source>)" or "ERROR".
 expect() {

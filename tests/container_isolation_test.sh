@@ -22,7 +22,42 @@ if [ "${runs}" -eq 0 ]; then
     echo "FAIL: found no docker run invocations; the pattern is stale" >&2
     exit 1
 fi
+
+# A rootfs_path holding a Unix socket (a live filesystem, e.g. one with
+# /run/docker.sock) must be refused before any container sees it. No
+# docker: the stub fails any call, and the socket check runs before one.
+# The no-op sleep skips the pull-retry backoff after the stub fails.
+stub="$(mktemp -d)"
+printf '#!/bin/sh\nexit 1\n' > "${stub}/docker"
+printf '#!/bin/sh\nexit 0\n' > "${stub}/sleep"
+# shellcheck disable=SC2016  # $1..$3 belong to the generated stub
+printf '#!/bin/sh\n[ "$1 $2" = "env subst" ] && printf "%%s\\n" "$3"\n' > "${stub}/circleci"
+chmod +x "${stub}/docker" "${stub}/circleci" "${stub}/sleep"
+tree="$(mktemp -d)"
+mkdir -p "${tree}/etc" "${tree}/run"
+printf 'ID=debian\nVERSION_ID="12"\n' > "${tree}/etc/os-release"
+scan_rootfs() {
+    PATH="${stub}:${PATH}" PARAM_ROOTFS_PATH="${tree}" PARAM_TARGET_BASE=auto \
+        PARAM_OUTPUT_DIR="$(mktemp -d)" bash "${ROOT}/src/scripts/scan.sh" 2>&1
+}
+out="$(scan_rootfs || true)"
+case "${out}" in
+    *"contains a Unix socket"*)
+        echo "FAIL: a socket-free rootfs_path was refused: ${out}" >&2
+        failures=$((failures + 1)) ;;
+esac
+# Bind relative to the directory: socket paths are length-limited.
+(cd "${tree}/run" && python3 -c 'import socket; socket.socket(socket.AF_UNIX).bind("docker.sock")')
+rc=0
+out="$(scan_rootfs)" || rc=$?
+case "${rc}:${out}" in
+    "2:"*"contains a Unix socket: ${tree}/run/docker.sock"*) ;;
+    *)
+        echo "FAIL: a rootfs_path holding a socket was not refused (exit ${rc}): ${out}" >&2
+        failures=$((failures + 1)) ;;
+esac
+
 if [ "${failures}" -ne 0 ]; then
     exit 1
 fi
-echo "container isolation ok: ${runs} docker run invocation(s), all --network none"
+echo "container isolation ok: ${runs} docker run invocation(s), all --network none; socket-bearing rootfs_path refused"

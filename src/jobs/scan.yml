@@ -16,7 +16,10 @@ parameters:
   rootfs_path:
     type: string
     default: ""
-    description: Filesystem path to scan via oscap-chroot.
+    description: >
+      Offline, already-extracted filesystem path to scan via
+      oscap-chroot. Never a live filesystem such as /: a tree
+      containing a Unix socket is refused.
   image_tarball:
     type: string
     default: ""

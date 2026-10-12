@@ -27,6 +27,9 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   versus 136 for CIS L1 Server. Expect more `fail` results on Debian targets.
   To keep the old behavior, set
   `profile_id: xccdf_org.ssgproject.content_profile_anssi_np_nt28_high`.
+  CIS L1 is not a DISA-accepted STIG substitute; see the README for what it
+  is, and for a known SSG 0.1.82 defect in its banner rules that affects
+  `rootfs_path` scans of Debian hosts (container images are unaffected).
 - **`summary.txt` layout.** It now states both gate settings and the evaluated
   rule count, always prints the `pass`/`fail`/`error`/`unknown`/
   `notapplicable`/`notchecked` rows (including zeros), and lists rules under
@@ -74,6 +77,10 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 
 - Every helper and scanner container now runs with `--network none`; a scan's
   only network traffic is the Docker daemon's image pulls. A test enforces it.
+- A `rootfs_path` that contains a Unix socket is refused (exit 2). A
+  read-only bind mount does not stop a process from connecting to a socket,
+  so a live tree such as `/` would have exposed `/run/docker.sock` to the
+  scanner. Extracted image trees never contain sockets.
 - The cleanup trap warns when it cannot remove the scratch rootfs or the
   datastream snapshot (e.g. the Docker daemon is gone, so the root-privileged
   removal helper can't run) instead of failing silently.
