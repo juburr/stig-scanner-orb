@@ -50,6 +50,10 @@ jobs:
             echo "pass=${pass:-0} notapplicable=${na:-0}"
             test "${pass:-0}" -gt 50 || { echo "expected >50 pass rules"; exit 1; }
             test "${na:-0}" -gt 50 || { echo "expected >50 notapplicable rules"; exit 1; }
+            if grep -q "not evidence of compliance" build/stig/summary.txt; then
+              echo "wolfi scan was hollow; expected evaluated rules"
+              exit 1
+            fi
       - store_artifacts:
           path: build/stig
           destination: smoke-wolfi
@@ -89,12 +93,75 @@ jobs:
           name: Gate ON, ignore all real failures → expect exit 0
           command: |
             set -e
-            fails=$(grep -oE 'SV-[0-9]+r[0-9]+' build/stig/summary.txt | sort -u | tr '\n' ',' | sed 's/,$//')
+            # Short ids from the Fail, Error, and Unknown sections. SV-only
+            # matching would miss an error result whose id is not a DISA id,
+            # and fail_on_finding now counts those.
+            fails=$(awk '
+              /^Fail \(/ || /^Error \(/ || /^Unknown \(/ {section=1; next}
+              /^Notchecked \(/ || /^[A-Za-z]/ {section=0}
+              section && $1 == "-" {
+                if ($2 == "[IGNORED]") print $3; else print $2
+              }
+            ' build/stig/summary.txt | sort -u | paste -sd, -)
             test -n "$fails" || { echo "no failures parsed; smoke-wolfi precondition broken"; exit 1; }
             PARAM_OUTPUT_DIR="build/stig" \
             PARAM_FAIL_ON_FINDING="true" \
             PARAM_IGNORE_FINDINGS="$fails" \
             bash src/scripts/summarize.sh >/dev/null 2>&1
+
+  smoke-hollow:
+    description: >
+      Real-scanner proof that require_evaluated_rules fails closed. Scans
+      a Wolfi image with target_base forced to rhel9: the RHEL platform
+      check never matches, so every selected rule is notapplicable. A
+      mis-dispatched target or a scanner without rpm probes produces the
+      same all-notapplicable result, and before this gate it was a green
+      build.
+    machine:
+      image: ubuntu-2404:current
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: Pull a Wolfi target
+          command: docker pull cgr.dev/chainguard/static:latest
+      - stig-scanner-orb/scan:
+          image: cgr.dev/chainguard/static:latest
+          target_base: rhel9
+          output_dir: build/stig
+      - run:
+          name: Default gate on a hollow scan → expect exit 1
+          command: |
+            set +e
+            PARAM_OUTPUT_DIR="build/stig" bash src/scripts/summarize.sh
+            rc=$?
+            set -e
+            test "$rc" -eq 1 || { echo "expected exit 1, got $rc"; exit 1; }
+            grep -q "^Evaluated rules: 0$" build/stig/summary.txt
+            grep -q "not evidence of compliance" build/stig/summary.txt
+      - run:
+          name: Explicit opt-out → expect exit 0, warning still recorded
+          command: |
+            set -e
+            PARAM_OUTPUT_DIR="build/stig" \
+            PARAM_REQUIRE_EVALUATED_RULES="false" \
+            bash src/scripts/summarize.sh
+            grep -q "require_evaluated_rules=false" build/stig/summary.txt
+            grep -q "not evidence of compliance" build/stig/summary.txt
+
+  test-summarize-fixtures:
+    description: >
+      Gate logic against fixture results.xml: hollow scans fail closed,
+      error and unknown count toward fail_on_finding, and an ignored
+      failure baseline is not treated as unevaluated.
+    docker:
+      - image: cimg/base:stable
+    resource_class: small
+    steps:
+      - checkout
+      - run:
+          name: Run summarize gate fixtures
+          command: bash tests/summarize_gate_test.sh
 
 workflows:
   test-deploy:
@@ -102,6 +169,10 @@ workflows:
       - smoke-wolfi:
           filters: *filters
       - smoke-gate:
+          filters: *filters
+      - smoke-hollow:
+          filters: *filters
+      - test-summarize-fixtures:
           filters: *filters
       # Broader coverage: every supported family + every input mode, each
       # exercised through the real `stig-scanner-orb/scan` JOB (so the
@@ -156,18 +227,20 @@ workflows:
           # from registry.access.redhat.com (not Docker Hub) to dodge
           # anonymous pull-rate limits.
           #
-          # NOTE: the DISA STIG for RHEL profile is a HOST benchmark, so
-          # against a container it yields ~0 pass / 0 fail / ~485 N/A (see
-          # README + docs/spike-results.md). We assert the documented N/A
-          # baseline and the RPM dispatch markers — NOT a pass count, which
-          # is 0 here. For pass/fail signal on the RPM path see
-          # smoke-rhel9-cis below.
+          # NOTE: the DISA STIG for RHEL profile is a HOST benchmark. Most
+          # of it (~400 rules) is notapplicable against a container, but
+          # the container-applicable subset (file permissions/ownership,
+          # package-removal checks, crypto policy) does evaluate: ~70 rules
+          # against ubi9. require_evaluated_rules stays at its default, so
+          # the job itself fails if the scan ever goes hollow (e.g. a
+          # scanner without rpm probes). Assert evaluated > 0 and the N/A
+          # baseline; never a pass-count threshold, which drifts with SSG.
           image: registry.access.redhat.com/ubi9/ubi:latest
           target_base: rhel9
           checkout: false
           post-steps:
             - run:
-                name: Assert RPM dispatch + host-STIG N/A baseline
+                name: Assert RPM dispatch + evaluated host-STIG subset
                 command: |
                   set -e
                   test -f build/stig/results.xml
@@ -176,17 +249,21 @@ workflows:
                   grep -q "datastream=ssg-rhel9-ds.xml" build/stig/scan-plan.env
                   grep -q "family=rpm" build/stig/scan-plan.env
                   na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
-                  echo "notapplicable=${na:-0}"
+                  ev=$(awk '/^Evaluated rules:/ {print $3}' build/stig/summary.txt)
+                  echo "evaluated=${ev:-0} notapplicable=${na:-0}"
                   test "${na:-0}" -gt 50
+                  test "${ev:-0}" -gt 0
+                  if grep -q "not evidence of compliance" build/stig/summary.txt; then
+                    echo "host-STIG scan was hollow; expected evaluated rules"
+                    exit 1
+                  fi
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-rhel9-cis
-          # profile_id override coverage on the RPM path. The DISA STIG
-          # profile is a host benchmark (≈0 evaluated rules against a
-          # container); CIS Level 1 has file-permission and package rules
-          # that DO evaluate, so this proves both that the override flows
-          # through to the scan and that the RPM path can produce
-          # actionable pass/fail signal.
+          # profile_id override coverage on the RPM path. CIS Level 1 is
+          # the profile consumers pair with the host STIG for broader
+          # container-applicable signal, so this proves both that the
+          # override flows through to the scan and that it evaluates rules.
           image: registry.access.redhat.com/ubi9/ubi:latest
           target_base: rhel9
           profile_id: xccdf_org.ssgproject.content_profile_cis_server_l1
@@ -203,6 +280,10 @@ workflows:
                   # CIS (unlike the host STIG profile) evaluates container-
                   # applicable rules, so at least some pass/fail must appear.
                   test "$(( ${pass:-0} + ${fail:-0} ))" -gt 0
+                  if grep -q "not evidence of compliance" build/stig/summary.txt; then
+                    echo "CIS scan was hollow; expected evaluated rules"
+                    exit 1
+                  fi
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-rhel8-auto
@@ -210,8 +291,8 @@ workflows:
           # donation path; the most common DoD RHEL target) AND
           # target_base: auto on the RPM family (os-release ID=rhel,
           # VERSION_ID 8 -> rhel8). ubi8 from the Red Hat registry dodges
-          # Docker Hub pull-rate limits. Same host-STIG N/A baseline as
-          # rhel9.
+          # Docker Hub pull-rate limits. Same host-STIG shape as rhel9:
+          # mostly notapplicable, ~50 evaluated rules, default gate on.
           image: registry.access.redhat.com/ubi8/ubi:latest
           target_base: auto
           checkout: false
@@ -224,8 +305,14 @@ workflows:
                   grep -q "datastream=ssg-rhel8-ds.xml" build/stig/scan-plan.env
                   grep -q "family=rpm" build/stig/scan-plan.env
                   na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
-                  echo "notapplicable=${na:-0}"
+                  ev=$(awk '/^Evaluated rules:/ {print $3}' build/stig/summary.txt)
+                  echo "evaluated=${ev:-0} notapplicable=${na:-0}"
                   test "${na:-0}" -gt 50
+                  test "${ev:-0}" -gt 0
+                  if grep -q "not evidence of compliance" build/stig/summary.txt; then
+                    echo "host-STIG scan was hollow; expected evaluated rules"
+                    exit 1
+                  fi
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-fedora
@@ -235,10 +322,10 @@ workflows:
           #
           # We assert the dispatch markers + a complete, parseable scan
           # rather than a pass/N-A count: the fedora 'standard' profile's
-          # result distribution against a container isn't pinned by the
-          # spike, and SSG content drift would make a hard count threshold
-          # flaky. The scan step itself fails on any oscap error, so valid
-          # outputs here already prove the second RPM path works end-to-end.
+          # result distribution against a container isn't pinned, and SSG
+          # content drift would make a hard count threshold flaky. The
+          # default require_evaluated_rules gate still fails the job if the
+          # scan evaluates nothing (~12 rules evaluate today).
           image: quay.io/fedora/fedora:latest
           target_base: fedora
           checkout: false
@@ -319,6 +406,8 @@ workflows:
             - orb-tools/pack
             - smoke-wolfi
             - smoke-gate
+            - smoke-hollow
+            - test-summarize-fixtures
             - smoke-ubuntu2204
             - smoke-debian12-auto
             - smoke-rhel8-auto

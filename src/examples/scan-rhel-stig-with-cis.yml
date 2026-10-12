@@ -1,0 +1,30 @@
+description: >
+  Scan one UBI 9 image twice, as two jobs: the DISA STIG for RHEL 9 and
+  CIS Level 1 Server. The STIG run gives DISA-identified results for the
+  container-applicable subset of a host benchmark (against UBI 9 about
+  65 rules evaluate; the other ~400 are notapplicable host controls).
+  CIS Level 1 adds a second control set. Both jobs keep
+  require_evaluated_rules at its default (true), so a hollow scan fails
+  the workflow instead of passing as clean evidence. If a baseline run
+  shows "Evaluated rules: 0" for your image under the STIG and you
+  still need that result on file, set require_evaluated_rules: false on
+  the STIG job only and leave the CIS job at the default; summary.txt
+  then records the opt-out and states the result is not evidence of
+  compliance.
+
+usage:
+  version: 2.1
+  orbs:
+    stig-scanner-orb: juburr/stig-scanner-orb@2.0.0
+  workflows:
+    ato-evidence:
+      jobs:
+        - stig-scanner-orb/scan:
+            name: ubi9-disa-stig
+            image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+            target_base: rhel9
+        - stig-scanner-orb/scan:
+            name: ubi9-cis-l1
+            image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+            target_base: rhel9
+            profile_id: xccdf_org.ssgproject.content_profile_cis_server_l1

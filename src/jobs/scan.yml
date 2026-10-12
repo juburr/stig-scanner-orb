@@ -43,6 +43,18 @@ parameters:
   fail_on_finding:
     type: boolean
     default: false
+    description: >
+      When true, exit 1 if any non-ignored result is fail, error, or
+      unknown. Default false so evaluated findings can be triaged
+      first. Does not waive an unevaluated scan.
+  require_evaluated_rules:
+    type: boolean
+    default: true
+    description: >
+      Fail the job when zero rules evaluate to pass, fail, fixed, or
+      informational. Set false only on a job that intentionally
+      records an all-notapplicable baseline. The summary states that
+      such a result is not evidence of compliance.
   ignore_findings:
     type: string
     default: ""
@@ -93,6 +105,7 @@ steps:
   - summarize:
       output_dir: <<parameters.output_dir>>
       fail_on_finding: <<parameters.fail_on_finding>>
+      require_evaluated_rules: <<parameters.require_evaluated_rules>>
       ignore_findings: <<parameters.ignore_findings>>
   # Upload after summarize so summary.txt is captured. `when: always`
   # ensures the artifacts still upload when fail_on_finding triggers a
