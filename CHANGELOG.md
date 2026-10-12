@@ -67,8 +67,42 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 - Smoke coverage for `ubi9/ubi-minimal`, `ubi8/ubi-minimal` (CIS L1), and
   `gcr.io/distroless/cc-debian12` in both image and `rootfs_path` mode.
 
+- **"Info for security teams" README section**: every host a scan contacts
+  (measured, including registry blob CDNs: Chainguard's Cloudflare R2 host and
+  `cdn01.quay.io`), what each container can see, and what an air-gapped
+  install needs per mode. Corrects the old air-gap note: `datastream_path`
+  removes the Chainguard image only in `rootfs_path` mode, because image mode
+  still uses it as the extraction helper.
+
 ### Changed
 
+- Every helper and scanner container now runs with `--network none`; a scan's
+  only network traffic is the Docker daemon's image pulls. A test enforces it.
+- A `rootfs_path` that contains a socket, FIFO or device node is refused (exit 2;
+  extract trees without `dev/`). A
+  read-only bind mount does not stop a process from connecting to a socket,
+  so a live tree such as `/` would have exposed `/run/docker.sock` to the
+  scanner. Extracted image trees never contain sockets. If the runner user
+  can't read the whole tree, the check reruns as root in the helper image
+  (`donor.used_for` gains `rootfs-check`) and fails closed if it can't finish.
+  A symlinked `rootfs_path` is checked where it points.
+- A `rootfs_path` that overlaps `output_dir` (either inside the other) is
+  refused before `output_dir` is created, so the orb doesn't write into the
+  caller's tree; so is a `TMPDIR` inside it, before any scratch dir is made.
+  The comparison is by physical path; a bind-mount alias isn't detected.
+- The scanner no longer mounts `output_dir`. It writes into a fresh private
+  staging directory, its only writable mount, and the host copies
+  `results.xml` and `report.html` out, refusing anything that isn't a
+  regular file (a symlink would be followed on the host). A shared `output_dir` (`/tmp`, one
+  holding sockets, one containing the scratch rootfs) is never exposed to
+  it, and it `chown`s only the two files it writes.
+- Mounts nested inside a `rootfs_path` are bound recursively read-only
+  (`--mount …,bind-recursive=readonly`, Docker 25+ on kernel 5.12+), as is any
+  `rootfs_path` whose mounts can't be inspected; the scan fails on hosts that
+  can't, rather than leaving the submounts writable.
+- The cleanup trap warns when it cannot remove the scratch rootfs, the
+  datastream snapshot or the scanner output staging dir (e.g. the Docker daemon is gone, so the root-privileged
+  removal helper can't run) instead of failing silently.
 - Every helper and scanner container now runs from the resolved local image
   id, so the recorded image is the one that ran even if a tag moves mid-scan.
 - Donated and `datastream_path` datastreams are copied into a private per-scan

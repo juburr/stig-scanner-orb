@@ -16,7 +16,11 @@ parameters:
   rootfs_path:
     type: string
     default: ""
-    description: Filesystem path to scan via oscap-chroot.
+    description: >
+      Offline, already-extracted filesystem path to scan via
+      oscap-chroot. Never a live filesystem such as /: a tree
+      containing a socket, FIFO or device node (extract without dev/),
+      or overlapping output_dir or TMPDIR, is refused.
   image_tarball:
     type: string
     default: ""
@@ -44,8 +48,9 @@ parameters:
     type: string
     default: ""
     description: >
-      Extraction helper and datastream source. Empty uses the orb's
-      digest-pinned Chainguard openscap image.
+      Root-privileged helper and datastream source. Empty uses the orb's
+      digest-pinned Chainguard openscap image. An override needs a shell
+      and a POSIX userland (tar, find, awk, cp, ...; busybox is enough).
   fail_on_finding:
     type: boolean
     default: false
@@ -96,7 +101,8 @@ steps:
       name: Reserve output directory
       environment:
         PARAM_OUTPUT_DIR: <<parameters.output_dir>>
-      command: mkdir -p "$(circleci env subst "${PARAM_OUTPUT_DIR}")"
+        PARAM_ROOTFS_PATH: <<parameters.rootfs_path>>
+      command: <<include(scripts/reserve-output.sh)>>
   - scan:
       image: <<parameters.image>>
       rootfs_path: <<parameters.rootfs_path>>

@@ -78,6 +78,52 @@ if [ -z "${IMAGE}" ] && [ -z "${ROOTFS_PATH}" ]; then
     exit 2
 fi
 
+# paths_overlap A B: true if A and B (physical paths) are the same
+# directory or one contains the other.
+paths_overlap() {
+    case "${1%/}/" in "${2%/}/"*) return 0 ;; esac
+    case "${2%/}/" in "${1%/}/"*) return 0 ;; esac
+    return 1
+}
+
+# phys_path PATH: the physical absolute path PATH names, which need not
+# exist yet. Walks it a component at a time from /: existing directories
+# are resolved with pwd -P, and "." / ".." are applied to that physical
+# path, which is what mkdir -p does with the directories it creates.
+phys_path() {
+    local p="$1" cur="/" rest comp
+    case "${p}" in /*) ;; *) p="${PWD}/${p}" ;; esac
+    rest="${p#/}/"
+    while [ -n "${rest}" ]; do
+        comp="${rest%%/*}"
+        rest="${rest#*/}"
+        case "${comp}" in
+            ""|.) ;;
+            ..) cur="${cur%/*}"; [ -n "${cur}" ] || cur="/" ;;
+            *)
+                if [ -d "${cur%/}/${comp}" ]; then
+                    cur="$(cd "${cur%/}/${comp}" && pwd -P)"
+                else
+                    cur="${cur%/}/${comp}"
+                fi ;;
+        esac
+    done
+    printf '%s\n' "${cur}"
+}
+
+# In rootfs_path mode the reports stay out of the scanned tree, and the
+# tree out of the reports dir, so the orb doesn't write into the caller's
+# tree. Checked before output-dir is created, so a refused scan hasn't
+# already made a directory inside the tree. The comparison is by physical
+# path: a bind-mount alias of the tree that the caller set up themselves
+# is not detected (the scanner never sees output-dir either way).
+if [ -n "${ROOTFS_PATH}" ] && [ -d "${ROOTFS_PATH}" ] \
+        && paths_overlap "$(phys_path "${OUTPUT_DIR}")" "$(cd "${ROOTFS_PATH}" && pwd -P)"; then
+    echo "ERROR: output-dir '${OUTPUT_DIR}' overlaps rootfs-path '${ROOTFS_PATH}'." >&2
+    echo "       Keep the output dir outside the scanned tree (and vice versa)." >&2
+    exit 2
+fi
+
 mkdir -p "${OUTPUT_DIR}"
 OUTPUT_DIR_ABS="$(cd "${OUTPUT_DIR}" && pwd)"
 HOST_UID="$(id -u)"
@@ -135,6 +181,12 @@ image_platform() {
     docker image inspect --format '{{.Os}}/{{.Architecture}}{{if .Variant}}/{{.Variant}}{{end}}' "$1"
 }
 
+# Every container this script starts runs with --network none: extraction,
+# datastream donation, hashing and oscap-chroot all work on local files.
+# The only network traffic in a scan is the Docker daemon's image pulls
+# (README: "Info for security teams"). tests/container_isolation_test.sh
+# enforces this.
+
 DONOR_ID=""
 DONOR_REPO_DIGESTS=""
 DONOR_PLATFORM=""
@@ -149,11 +201,43 @@ resolve_donor() {
     DONOR_USED_FOR="${DONOR_USED_FOR:+${DONOR_USED_FOR},}$1"
 }
 
+# has_nested_mounts DIR: 0 if a mount point sits strictly below DIR, 1 if
+# none does, 2 if that can't be determined (no readable
+# /proc/self/mountinfo, e.g. a non-Linux host, or awk failed). The kernel
+# octal-escapes space, tab, newline and backslash in mount points (\040
+# \011 \012 \134); decode every \ooo. DIR goes in via ENVIRON, not awk -v,
+# which would interpret backslashes in it.
+has_nested_mounts() {
+    [ -r /proc/self/mountinfo ] || return 2
+    STIG_MOUNT_ROOT="${1%/}/" awk '
+        function unoct(s,   out, i, c) {
+            out = ""
+            while ((i = index(s, "\\")) > 0) {
+                c = substr(s, i + 1, 3)
+                if (c ~ /^[0-7][0-7][0-7]$/) {
+                    out = out substr(s, 1, i - 1) sprintf("%c", substr(c, 1, 1) * 64 + substr(c, 2, 1) * 8 + substr(c, 3, 1))
+                    s = substr(s, i + 4)
+                } else {
+                    out = out substr(s, 1, i)
+                    s = substr(s, i + 1)
+                }
+            }
+            return out s
+        }
+        BEGIN { root = ENVIRON["STIG_MOUNT_ROOT"] }
+        { mp = unoct($5); m = (mp == "/") ? "/" : mp "/" }
+        index(m, root) == 1 && m != root { found = 1; exit }
+        END { exit !found }
+    ' /proc/self/mountinfo
+}
+
 # --- 2. extract target rootfs (if image mode) ----------------------------
 ROOTFS_DIR=""
 CLEANUP_ROOTFS=0
 CID=""
 DATASTREAM_SNAP_DIR=""
+OUT_STAGE_DIR=""
+ROOTFS_MOUNT=()
 TARGET_IMAGE_ID=""
 TARGET_REPO_DIGESTS=""
 TARGET_PLATFORM=""
@@ -167,6 +251,15 @@ cleanup() {
     fi
     if [ -n "${DATASTREAM_SNAP_DIR}" ]; then
         rm -rf "${DATASTREAM_SNAP_DIR}" 2>/dev/null || true
+        if [ -e "${DATASTREAM_SNAP_DIR}" ]; then
+            echo "WARNING: could not remove the datastream snapshot ${DATASTREAM_SNAP_DIR}; remove it manually." >&2
+        fi
+    fi
+    if [ -n "${OUT_STAGE_DIR}" ]; then
+        rm -rf "${OUT_STAGE_DIR}" 2>/dev/null || true
+        if [ -e "${OUT_STAGE_DIR}" ]; then
+            echo "WARNING: could not remove the scanner output staging dir ${OUT_STAGE_DIR}; remove it manually." >&2
+        fi
     fi
     if [ "${CLEANUP_ROOTFS}" = "1" ] && [ -n "${ROOTFS_DIR}" ] && [ -d "${ROOTFS_DIR}" ]; then
         # The extracted rootfs carries the image's original UIDs/GIDs, so
@@ -175,7 +268,7 @@ cleanup() {
         # parameterizable for air-gap) as a root-privileged rm helper; the
         # host then only has to drop an empty directory.
         if [ -n "${DONOR_ID}" ]; then
-            docker run --rm -u 0:0 \
+            docker run --rm --network none -u 0:0 \
                 -v "${ROOTFS_DIR}:/cleanup" \
                 --entrypoint sh \
                 "${DONOR_ID}" -c \
@@ -183,6 +276,9 @@ cleanup() {
                 >/dev/null 2>&1 || true
         fi
         rmdir "${ROOTFS_DIR}" 2>/dev/null || true
+        if [ -e "${ROOTFS_DIR}" ]; then
+            echo "WARNING: could not remove the scratch rootfs ${ROOTFS_DIR} (it holds root-owned files); remove it with root privileges." >&2
+        fi
     fi
 }
 trap cleanup EXIT
@@ -225,7 +321,7 @@ if [ -n "${IMAGE}" ]; then
     # and would abort the extraction (and thus every image-mode scan).
     # --exclude='dev/*' skips device nodes (mknod can fail in some
     # rootless setups; SCAP probes don't read device nodes anyway).
-    docker export "${CID}" | docker run --rm -i -u 0:0 \
+    docker export "${CID}" | docker run --rm -i --network none -u 0:0 \
         -v "${ROOTFS_DIR}:/target" \
         --entrypoint tar \
         "${DONOR_ID}" \
@@ -239,7 +335,79 @@ else
         echo "ERROR: rootfs-path '${ROOTFS_PATH}' is not a directory." >&2
         exit 2
     fi
-    ROOTFS_DIR="$(cd "${ROOTFS_PATH}" && pwd)"
+    # Physical path: a symlinked rootfs_path (e.g. /tmp/rootfs -> /) is
+    # what Docker bind-mounts, so it is what must be checked; find would
+    # not descend into a symlink given as its starting point.
+    ROOTFS_DIR="$(cd "${ROOTFS_PATH}" && pwd -P)"
+    # Scratch dirs (scanner output staging, datastream snapshot) come from
+    # mktemp under TMPDIR; one inside the tree would write into it.
+    case "$(phys_path "${TMPDIR:-/tmp}")/" in
+        "${ROOTFS_DIR%/}/"*)
+            echo "ERROR: TMPDIR ('${TMPDIR:-/tmp}') is inside rootfs-path '${ROOTFS_PATH}'; set TMPDIR outside the scanned tree." >&2
+            exit 2 ;;
+    esac
+    # -v SRC:DST:ro makes mounts nested in SRC read-only only on kernels
+    # >= 5.12 (best effort); on older ones they stay writable. If the tree
+    # has nested mounts (a mounted VM disk with its own /boot or /var),
+    # require a recursively read-only bind, which errors where unsupported.
+    # Where it can't be told (rc 2), assume nested mounts: the explicit
+    # form still works on any current Docker and fails closed elsewhere.
+    nested_rc=0
+    has_nested_mounts "${ROOTFS_DIR}" || nested_rc=$?
+    if [ "${nested_rc}" -ne 1 ]; then
+        case "${ROOTFS_DIR}" in
+            *,*)
+                echo "ERROR: rootfs-path '${ROOTFS_PATH}' may have nested mounts and has a comma in its path, which --mount can't express." >&2
+                exit 2 ;;
+        esac
+        if [ "${nested_rc}" -eq 0 ]; then
+            echo "==> rootfs-path has nested mounts; requiring a recursively read-only bind (Docker 25+, kernel 5.12+)"
+        else
+            echo "==> can't read /proc/self/mountinfo to look for nested mounts; requiring a recursively read-only bind (Docker 25+, kernel 5.12+)"
+        fi
+        ROOTFS_MOUNT=( --mount "type=bind,source=${ROOTFS_DIR},target=/target,readonly,bind-propagation=rprivate,bind-recursive=readonly" )
+    else
+        ROOTFS_MOUNT=( -v "${ROOTFS_DIR}:/target:ro" )
+    fi
+    # The scanner gets this tree bind-mounted read-only, and a read-only
+    # mount still lets a process connect to a Unix socket inside it. A
+    # live filesystem (rootfs_path: /, or a tree with /run bound into it)
+    # can hold the Docker socket, which would hand the scanner the daemon.
+    # Extracted image trees never contain sockets (tar skips them), so
+    # refuse any, anywhere in the tree (proc/ and sys/ included: in an
+    # arbitrary directory they are ordinary subtrees). Named pipes are an
+    # IPC channel the same way, and device nodes too: ro is not nodev, and
+    # Docker's default device rules allow ptys and the console (a live
+    # tree with /dev/pts bound in). Image mode never extracts dev/ either.
+    find_rc=0
+    sock="$(find "${ROOTFS_DIR}" \( -type s -o -type p -o -type c -o -type b \) -print -quit 2>/dev/null)" || find_rc=$?
+    if [ -z "${sock}" ] && [ "${find_rc}" -ne 0 ]; then
+        # The runner couldn't read the whole tree (e.g. root-owned 0700
+        # directories in a mounted VM disk), but the root scanner can, so
+        # an empty result proves nothing. Repeat the check as root in the
+        # helper image -- never in the scanner image the check protects --
+        # and fail closed if that can't complete either. Plain POSIX find
+        # options only, so any helper with a find works.
+        echo "==> rootfs-path is not fully readable by this user; checking it for sockets, FIFOs and devices as root in the helper image"
+        resolve_donor rootfs-check
+        find_rc=0
+        sock="$(docker run --rm --network none -u 0:0 "${ROOTFS_MOUNT[@]}" \
+            --entrypoint find "${DONOR_ID}" /target \( -type s -o -type p -o -type c -o -type b \) -print)" || find_rc=$?
+        sock="${sock%%$'\n'*}"
+        if [ -z "${sock}" ] && [ "${find_rc}" -ne 0 ]; then
+            echo "ERROR: could not check rootfs-path '${ROOTFS_PATH}' for sockets/FIFOs/devices as root" >&2
+            echo "       (find in the helper image exited ${find_rc}; the helper image needs find)." >&2
+            exit 2
+        fi
+        sock="${sock:+${ROOTFS_DIR%/}${sock#/target}}"
+    fi
+    if [ -n "${sock}" ]; then
+        echo "ERROR: rootfs-path '${ROOTFS_PATH}' contains a socket, FIFO or device node: ${sock}" >&2
+        echo "       Point rootfs-path at an offline extracted tree, not a live filesystem, and" >&2
+        echo "       extract it without dev/ (tar --exclude='dev/*'); the scanner could use such a" >&2
+        echo "       node through its read-only mount." >&2
+        exit 2
+    fi
 fi
 
 # --- 3. resolve target-base → (scanner, datastream, profile, family) -----
@@ -493,7 +661,7 @@ if [ "${FAMILY}" = "dpkg" ] && [ "${CLEANUP_ROOTFS}" = "1" ]; then
         }
         END { flush() }
     '
-    dpkg_result="$(docker run --rm -u 0:0 \
+    dpkg_result="$(docker run --rm --network none -u 0:0 \
         -v "${ROOTFS_DIR}:/target" \
         -e STANZA_AWK="${stanza_awk}" \
         --entrypoint sh \
@@ -578,7 +746,7 @@ snapshot_datastream() {
     local image="$1" src="$2"
     shift 2
     DATASTREAM_SNAP_DIR="$(mktemp -d -t stig-datastream.XXXXXX)"
-    docker run --rm -u 0:0 "$@" \
+    docker run --rm --network none -u 0:0 "$@" \
         -v "${DATASTREAM_SNAP_DIR}:/out" \
         -e SRC="${src}" \
         -e DS="${DATASTREAM}" \
@@ -638,13 +806,19 @@ if [ -n "${DATASTREAM_HOST_DIR}" ]; then
 fi
 # ${a[@]+"${a[@]}"}: an empty array is an unbound variable under set -u
 # in bash < 4.4 (e.g. the macOS system bash used for local runs).
-mount_args=( -v "${ROOTFS_DIR}:/target:ro" -v "${OUTPUT_DIR_ABS}:/out" ${ds_mount_args[@]+"${ds_mount_args[@]}"} )
+[ "${#ROOTFS_MOUNT[@]}" -gt 0 ] || ROOTFS_MOUNT=( -v "${ROOTFS_DIR}:/target:ro" )
+# The scanner writes into a fresh private dir, never into output-dir
+# itself: output-dir is the caller's (it may be shared, hold sockets, or
+# contain the scratch rootfs), and /out is the scanner's one writable
+# mount. The two reports are copied out afterwards.
+OUT_STAGE_DIR="$(mktemp -d -t stig-out.XXXXXX)"
+mount_args=( "${ROOTFS_MOUNT[@]}" -v "${OUT_STAGE_DIR}:/out" ${ds_mount_args[@]+"${ds_mount_args[@]}"} )
 
 # Hash the datastream as the scanner sees it: same image, same mount, same
 # path and same user (root) as oscap-chroot below. The image's default user
 # can be unprivileged (65532 in the Chainguard image) and unable to enter
 # the snapshot directory (mktemp -d, mode 0700) that the root scan reads.
-DATASTREAM_SHA256="$(docker run --rm -u 0:0 ${ds_mount_args[@]+"${ds_mount_args[@]}"} \
+DATASTREAM_SHA256="$(docker run --rm --network none -u 0:0 ${ds_mount_args[@]+"${ds_mount_args[@]}"} \
     --entrypoint sha256sum "${SCANNER_ID}" "${DATASTREAM_IN_SCANNER_PATH}" 2>/dev/null \
     | awk '{print $1}')" || DATASTREAM_SHA256=""
 case "${DATASTREAM_SHA256}" in
@@ -660,7 +834,7 @@ echo "==> Running oscap-chroot"
 # output-less scanner run look successful.
 rm -f "${OUTPUT_DIR_ABS}/results.xml" "${OUTPUT_DIR_ABS}/report.html"
 set +e
-docker run --rm -u 0:0 \
+docker run --rm --network none -u 0:0 \
     "${mount_args[@]}" \
     -e PROFILE="${PROFILE}" \
     -e DS_PATH="${DATASTREAM_IN_SCANNER_PATH}" \
@@ -674,7 +848,7 @@ docker run --rm -u 0:0 \
             --results /out/results.xml \
             "${DS_PATH}"
         rc=$?
-        chown -R "${HOST_UID}:${HOST_GID}" /out 2>/dev/null || true
+        chown "${HOST_UID}:${HOST_GID}" /out/report.html /out/results.xml 2>/dev/null || true
         # oscap exits 2 when the scan completed but at least one rule
         # failed. Treat that as success; the gate decision lives in the
         # summarize step.
@@ -690,6 +864,19 @@ if [ "${oscap_rc}" -ne 0 ]; then
     echo "ERROR: oscap-chroot failed (exit ${oscap_rc})." >&2
     exit "${oscap_rc}"
 fi
+# The scanner controlled the staging dir: copy only regular files. A
+# symlink would be followed here, in the host namespace, and could pull
+# any runner-readable file into the published artifacts.
+for f in results.xml report.html; do
+    src="${OUT_STAGE_DIR}/${f}"
+    if [ -L "${src}" ] || { [ -e "${src}" ] && [ ! -f "${src}" ]; }; then
+        echo "ERROR: the scanner left ${f} as something other than a regular file; not copying it." >&2
+        exit 1
+    fi
+    if [ -s "${src}" ]; then
+        cp "${src}" "${OUTPUT_DIR_ABS}/${f}"
+    fi
+done
 
 if [ ! -s "${OUTPUT_DIR_ABS}/results.xml" ] || [ ! -s "${OUTPUT_DIR_ABS}/report.html" ]; then
     echo "ERROR: oscap-chroot reported success but did not produce non-empty results.xml and report.html." >&2

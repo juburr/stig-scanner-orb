@@ -20,9 +20,11 @@ parameters:
     type: string
     default: ""
     description: >
-      Path to an already-extracted filesystem tree (e.g. an RPM
-      unpacked into a tmpdir, or a mounted VM disk). Mutually
-      exclusive with image.
+      Path to an already-extracted, offline filesystem tree (e.g. an
+      RPM unpacked into a tmpdir, or a mounted VM disk). Never a live
+      filesystem such as /: symlinks are resolved, and a tree containing
+      a socket, FIFO or device node (extract without dev/), or overlapping
+      output_dir or TMPDIR, is refused. Mutually exclusive with image.
   target_base:
     type: enum
     enum: ["auto", "wolfi", "debian12", "ubuntu2204", "rhel8", "rhel9", "rhel10", "fedora"]
@@ -81,8 +83,11 @@ parameters:
       tar -xf preserves UID/GID from the target image) and to copy
       SCAP datastreams out of for RPM-family targets. Empty uses the
       orb's digest-pinned cgr.dev/chainguard/openscap:latest-dev (see
-      the README). Override for air-gap mirrors; it needs a shell, tar,
-      and the SCAP content under /usr/share/xml/scap/ssg/content.
+      the README). Also the root helper for distroless dpkg status
+      synthesis and for the rootfs_path socket check. Override for
+      air-gap mirrors; it needs a shell and a POSIX userland (tar, find,
+      awk, cp, ...; busybox is enough) and the SCAP content under
+      /usr/share/xml/scap/ssg/content.
   no_output_timeout:
     type: string
     default: "30m"
