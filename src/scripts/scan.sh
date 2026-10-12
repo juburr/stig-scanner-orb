@@ -389,9 +389,15 @@ case "${TARGET_BASE}" in
         PROFILE="xccdf_basic_profile_.check"
         FAMILY="apk" ;;
     debian12)
+        # No DISA STIG exists for Debian. CIS Level 1 Server (CIS Debian 12
+        # Benchmark v1.1.0) is the most widely used benchmark with automated
+        # content and evaluates ~7x the rules of the legacy ANSSI DAT-NT28
+        # profile this used before 2.0. Known SSG 0.1.82 defect: its CIS
+        # banner rules pass stock Debian banners on host trees
+        # (ComplianceAsCode#15150; notapplicable in containers). See README.
         SCANNER="${DEFAULT_CHAINGUARD_IMAGE}"
         DATASTREAM="ssg-debian12-ds.xml"
-        PROFILE="xccdf_org.ssgproject.content_profile_anssi_np_nt28_high"
+        PROFILE="xccdf_org.ssgproject.content_profile_cis_level1_server"
         FAMILY="dpkg" ;;
     ubuntu2204)
         SCANNER="${DEFAULT_CHAINGUARD_IMAGE}"
