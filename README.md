@@ -197,7 +197,7 @@ A container-tailored RHEL STIG tailoring file is on the roadmap.
 |---|---|---|---|
 | `image` | string | `""` | Image tag to scan. If not already in the local daemon, the orb will `docker pull` it. Mutually exclusive with `rootfs_path`. |
 | `rootfs_path` | string | `""` | Path to an offline, pre-extracted filesystem: RPM-extracted trees, mounted VM disks, etc. Never a live filesystem such as `/`; a tree containing a Unix socket is refused. |
-| `image_tarball` | string | `""` | Optional `docker load` source before scanning. |
+| `image_tarball` | string | `""` | Optional `docker load` source before scanning. `image` is still required: set it to a tag the archive contains. |
 | `target_base` | enum | `auto` | See dispatch table above. |
 | `scanner_image` | string | `""` | Override the pinned scanner. For air-gap mirrors; pin overrides by digest too. |
 | `datastream_name` | string | `""` | Override the bundled datastream filename. |
@@ -304,7 +304,7 @@ Outbound HTTPS (443) from the runner, by host:
 | `cdn01.quay.io` (Red Hat also documents `cdn.quay.io` and `cdn02`–`cdn06.quay.io`; `*.quay.io` covers all) | quay.io's blob CDN; layer downloads 302-redirect here. `registry.access.redhat.com` blobs are served from the same CDN. | With `quay.io`, and for UBI targets pulled from `registry.access.redhat.com`. |
 | The target image's registry, plus its token and blob hosts | Only if the target is not already in the local daemon (`image_tarball` or an earlier `docker pull` avoids it). Measured examples: Docker Hub (e.g. `ubuntu:22.04`, `debian:12-slim`) → registry `registry-1.docker.io`, token at `auth.docker.io`, blobs 307-redirect to `production.cloudfront.docker.com` (see [Docker's allowlist](https://docs.docker.com/desktop/setup/allow-list/)); `registry.access.redhat.com` → blobs from `cdn01.quay.io` (no auth); `gcr.io` → token at `gcr.io/v2/token`, blobs served from `gcr.io` itself; `cgr.dev` → as above. For any other registry, also allow the token host named as `realm` in its `WWW-Authenticate` header and wherever it redirects blob downloads. | `image` mode with a target not yet loaded. |
 
-The default scanner and helper images are pulled by digest (see [Pinned images](#pinned-images)), so Docker rejects any content that doesn't match the pin. A `scanner_image` or `donor_image` override gets that check only if you pin it by digest too (`name:tag@sha256:…`, as in the air-gap example below); a tag-only override is used as is. The target image is pulled by whatever reference you pass. Either way, `provenance.json` records the registry digest of every image that ran, target included, so what ran is identifiable after the fact.
+The default scanner and helper images are pulled by digest (see [Pinned images](#pinned-images)), so Docker rejects any content that doesn't match the pin. A `scanner_image` or `donor_image` override gets that check only if you pin it by digest too (`name:tag@sha256:…`, as in the air-gap example below); a tag-only override is used as is. The target image is pulled by whatever reference you pass. Either way, `provenance.json` records each image's local image id and, for an image that came from a registry, its registry digest (`repo_digests`), target included, so what ran is identifiable after the fact. A locally built image has no registry digest, and one loaded from `image_tarball` may not either. Its `repo_digests` is then empty, and the evidence has only the local image id, which no registry can confirm.
 
 Not the orb's traffic, but present in any CircleCI job: the `checkout` step talks to your VCS host, and `store_artifacts` uploads to CircleCI. Set `checkout: false` if the scan job doesn't need your source tree.
 
@@ -329,7 +329,8 @@ crane copy quay.io/compliance-operator/openscap-ocp@sha256:4c49e8c1af801051d9dbe
 
 ```yaml
 - stig-scanner-orb/scan:
-    image: registry.internal/myapp@sha256:...           # or image_tarball: from the workspace
+    image: registry.internal/myapp:1.2.3              # with image_tarball, a tag the archive contains
+    image_tarball: /tmp/workspace/myapp.tar           # optional: docker load the target instead of pulling it
     target_base: rhel9
     scanner_image: registry.internal/compliance-operator/openscap-ocp:1.3.6@sha256:4c49e8c1af801051d9dbe5d33e371440948cbffce1dbc4379daf909b1288869a
     donor_image: registry.internal/chainguard/openscap:latest-dev@sha256:f5e08bc14cc659268a7807d7ec573ff3cc56b62b9358313db8df76909018b55e
