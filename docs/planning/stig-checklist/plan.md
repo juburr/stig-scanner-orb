@@ -56,7 +56,7 @@ check-level.
 | D5 | **N/A reasons are derived** from OpenSCAP's platform evaluation. Compare the rule's gates with the `TestResult` platforms, walking outermost group → rule. Compound gate ids are split on `_and_`. The result maps to fixed category wording (below). | Exact, needs no per-release list. The top-down walk prevents false "not installed" claims (spike 3). |
 | D6 | DISA metadata in steps: **SSG-only** (PR 1) → **user-supplied DISA manual XCCDF** (PR 2) → **bundled compact DISA data** for each pinned datastream's release (PR 3, pending the redistribution decision). | Ship value with no new inputs first. SSG-only lacks CCIs (removed on purpose upstream in 2025), DISA wording, and manual-only rows (9 on RHEL 9 V2R9). CCIs must come from each STIG's own idents: deriving them from SRG ids matches only 60–89%. |
 | D7 | **Release drift.** With a DISA skeleton newer than the content, a result is carried forward only where the check text is unchanged (needs PR 3's matched-release data); otherwise the row is Not_Reviewed with a note. Before PR 3, results are carried and every bumped row is annotated. | DISA is a quarter ahead of SSG 0.1.82 on every product today. Of 206 RHEL 9 V2R9→V2R10 revision bumps, 153 changed no visible text; ~26 changed the check (spike 6). |
-| D8 | A new `checklist` step runs between `scan` and `summarize` and **never fails the step**. It first deletes any `checklist.ckl`, `checklist.cklb` and `checklist-meta.json` already in `output_dir`. Only then does it decide whether, and in which formats, to generate. It always writes a fresh `checklist-meta.json` recording the outcome (`generated` / `skipped` + reason / `failed` + error) and the sha256 of the `results.xml` it read. `summarize` receives the same `checklist` mode (D11) and enforces it: <ul><li>`auto` fails the job on `failed` and accepts `skipped`;</li><li>`require` fails on anything but `generated`;</li><li>`none` ignores checklists.</li></ul>A meta that is missing, or whose `results.xml` hash doesn't match the current file, counts as `failed`. | `summarize` stays the single writer of `summary.txt`/`provenance.json` and the single gatekeeper. A gate failure never suppresses the checklist, and a checklist bug never hides the summary. Deleting first and binding the meta to `results.xml` means a reused `output_dir` can't publish or report a previous scan's checklist. |
+| D8 | A new `checklist` step runs between `scan` and `summarize` and **never fails the step**. <ul><li>**Before the scan**, the job's "Reserve output directory" step (`reserve-output.sh`) deletes any `checklist.ckl`, `checklist.cklb` and `checklist-meta.json` in `output_dir`. A failed scan stops the job before the checklist step, but `store_artifacts` still runs (`when: always`), so cleanup can't wait for the checklist step.</li><li>The checklist step deletes them again before deciding whether, and in which formats, to generate. That covers custom jobs that call the commands directly.</li><li>It always writes a fresh `checklist-meta.json` recording the outcome (`generated` / `skipped` + reason / `failed` + error) and the sha256 of the `results.xml` it read.</li></ul>`summarize` gets a `checklist` parameter that **defaults to `none`**, so the documented `scan` → `summarize` command sequence keeps working unchanged. The `scan` *job* passes its own value (default `auto`, D11) explicitly. `summarize` enforces it: <ul><li>`auto` fails on `failed` and accepts `skipped`;</li><li>`require` fails on anything but `generated`;</li><li>`none` enforces nothing, but still reports a meta whose `results.xml` hash matches.</li></ul>Under `auto`/`require`, a meta that is missing or has a mismatched hash counts as `failed`. | `summarize` stays the single writer of `summary.txt`/`provenance.json` and the single gatekeeper. A gate failure never suppresses the checklist, and a checklist bug never hides the summary. Pre-scan cleanup plus binding the meta to `results.xml` means a reused `output_dir` can't publish or report a previous scan's checklist, even when the new scan fails. |
 | D9 | Asset: `HOST_NAME` defaults to a sanitized image reference (`repo:tag`, ≤255 chars) or the `rootfs_path` basename, overridden by `checklist_asset_name`. `TARGET_COMMENT` gets the digest and platform. Header comment is neutral (`<!--stig-scanner-orb :: <version>-->`), not "DISA STIG Viewer". | STIG Manager requires a non-empty host name and keys the asset on it; containers have none. No consumer checks the header comment. |
 | D10 | No shipped container tailoring file. PR 4 adds a `tailoring_file` passthrough, and the generator tells "deselected by tailoring" apart from "no automated check". | Tailoring is still useful for values, the ~66 ungated rules, and site-specific additions. |
 | D11 | **Gate on the evaluated profile, not on the presence of SV ids.** A checklist is generated only when the `TestResult` profile is a recognized DISA STIG profile. For pinned content, that means a `(benchmark id, profile id)` pair in the fingerprint table, e.g. `xccdf_org.ssgproject.content_profile_stig`. PR 4's tailored profiles resolve through `extends`. The profile's selected SV ids must also match the table's release. Otherwise the step skips with a reason. For content not in the table (`datastream_path`), the profile id must end in `_profile_stig` or `_profile_stig_gui`, and the release is marked `unverified`. Mode: `checklist: auto` (default) / `require` / `none`, passed to both the checklist step and `summarize`. | DISA references live on the *rules*, not the profile. In the pinned RHEL 9 content, CIS L1 selects 160 rules with DISA references (152 V-IDs) and PCI-DSS selects 145. "Any SV id present" would emit a partial, mislabeled `RHEL_9_STIG` checklist on the supported `profile_id: …cis_server_l1` path. `require` lets a pipeline insist on the artifact, e.g. to catch a `profile_id` typo. |
@@ -72,10 +72,10 @@ review is open question 1. Sites can replace them in PR 5.
 
 | Category | Trigger (gate terms at the outermost unmet level) | COMMENTS (draft) |
 |---|---|---|
-| `host` | `system_with_kernel`, `machine`, `not_container`, `not_bootc_and_not_container`, `bootc`, `grub2`, `uefi`, any `*kernel*` term, including compounds like `package_pam_and_system_with_kernel` and every arch gate in current content | "Not Applicable to the container image. This requirement configures the host operating system (kernel, boot loader, audit subsystem, partitions or system services), which a container receives from its host and cannot implement itself. OpenSCAP determined this automatically: platform check `<gate>` was false for the scanned image. Assess it on the container host's / platform's STIG checklist. Ref: DISA Container Hardening Process Guide V1R2, Appendix B." |
+| `host` | `system_with_kernel`, `machine`, `not_container`, `not_bootc_and_not_container`, `bootc`, `grub2`, `uefi`, any `*kernel*` term, including compounds like `package_pam_and_system_with_kernel` or `not_s390x_arch_and_system_with_kernel` (the failed kernel term decides; the arch term isn't relied on) | "Not Applicable to the container image. This requirement configures the host operating system (kernel, boot loader, audit subsystem, partitions or system services), which a container receives from its host and cannot implement itself. OpenSCAP determined this automatically: platform check `<gate>` was false for the scanned image. Assess it on the container host's / platform's STIG checklist. Ref: DISA Container Hardening Process Guide V1R2, Appendix B." |
 | `gui` | only `package_<gui>` terms (`gdm`, …) | "Not Applicable. No graphical user interface is installed in the image (`<pkg>` not installed; OpenSCAP platform check `<gate>` was false). DISA: 'If the system does not have any graphical user interface installed, this requirement is Not Applicable.'" (DISA's own wording; 23 RHEL 9 rules use it.) |
 | `package` | only `package_<name>` terms | "Not Applicable. The `<pkg>` package is not installed in this image, so the configuration this requirement checks does not exist (OpenSCAP platform check `<gate>` was false). If `<pkg>` is added, this requirement applies and must be re-evaluated." Never used for a rule whose requirement *is* to install a package (audit, aide, openssh-server). In SSG those are kernel-gated, so they land in `host`. |
-| `arch` | only `*_arch` terms (none observed in the pinned STIG content) | "Not Applicable. This requirement applies only to another CPU architecture (`<gate>`)." |
+| `arch` | only `*_arch` terms. They're decisive only when every outer gate held, e.g. a bootc image or a `rootfs_path` host tree with `kernel-core`; none in the pinned STIG content on UBI. | "Not Applicable. This requirement applies only to another CPU architecture (`<gate>`)." **Only when the target platform is known and matches the runner's architecture.** OpenSCAP evaluates arch gates against the scanning host's `/proc`, not the target. With an unknown target platform (every `rootfs_path` scan) or a mismatch, the row is **Not_Reviewed**: "this N/A rests on a CPU-architecture check OpenSCAP evaluated against the scanning host (`<runner>`); the target's architecture is `<unknown/X>`; verify manually". Evaluated rules with an arch gate are annotated the same way in FINDING_DETAILS. |
 | `platform` | any other gate | "Not Applicable. OpenSCAP platform check `<gate>` was false for the scanned image." |
 | `check` | no gate unmet; the OVAL check returned notapplicable | "Not Applicable per OpenSCAP: the automated check itself returned notapplicable for this image." |
 
@@ -135,8 +135,11 @@ files and parameters and changes no existing behaviour.
     - `auto` generates for a recognized STIG profile and skips (exit 0,
       logged, reason in the meta) otherwise.
     - `require` makes a skip fail the job too.
-    - The job also passes this value to `summarize`, which gets a matching
-      `checklist` parameter (D8).
+    - `summarize` gets a matching `checklist` parameter that defaults to
+      `none`, for existing standalone callers. `src/jobs/scan.yml` passes the
+      job's value to both commands explicitly (D8).
+  - `reserve-output.sh` also deletes stale checklist outputs, before the
+    scan (D8).
   - `checklist_formats`: string, default `ckl,cklb`.
   - `checklist_asset_name`: string, default `""` (D9).
 - **Outputs** in `output_dir`. All three are deleted at the start of every
@@ -166,10 +169,19 @@ files and parameters and changes no existing behaviour.
   - mode enforcement in `summarize`:
     - `auto` + skipped passes; `auto` + failed fails;
     - `require` + skipped fails;
-    - a missing meta, or one whose `results.xml` hash doesn't match, fails;
-  - stale outputs: a pre-seeded `checklist.ckl`/`.cklb`/meta from an
-    earlier "scan" is gone after a skip, after `none`, and after a run with
-    `checklist_formats: cklb`;
+    - under `auto`/`require`, a missing meta, or one whose `results.xml` hash
+      doesn't match, fails;
+    - the default (`none`) with no meta passes, i.e. the existing
+      `scan` → `summarize` sequence is unchanged;
+  - stale outputs:
+    - a pre-seeded `checklist.ckl`/`.cklb`/meta from an earlier "scan" is
+      gone after a skip, after `none`, and after a run with
+      `checklist_formats: cklb`;
+    - `reserve-output.sh` removes them before a scan that then fails;
+  - architecture: an N/A decided by an `*_arch` gate stays Not_Applicable
+    only when the target platform is known and matches the runner. A
+    mismatch or unknown target (e.g. `rootfs_path`) gives Not_Reviewed, and
+    evaluated arch-gated rules are annotated;
   - escaping of hostile strings in the asset name and rule text;
   - golden CKL/CKLB output for one tiny fixture, with UUIDs and timestamps injected;
   - the fingerprint table matching every pinned STIG datastream. It reads
@@ -191,9 +203,15 @@ files and parameters and changes no existing behaviour.
     a committed lockfile; smoke artifacts via workspace). It runs three
     checks:
     1. STIG Manager's `reviewsFromCkl`/`reviewsFromCklb` (as in
-       `spike/validate.mjs`) with `unreviewed: 'always'`. The check fails on
-       any parser-reported error or a missing revision, and asserts parsed
-       reviews == rows written.
+       `spike/validate.mjs`) with `unreviewed: 'always'` and
+       `unreviewedCommented: 'notchecked'`, so every Not_Reviewed row imports
+       as `notchecked`. The check fails on:
+       - any parser-reported error or a missing revision;
+       - parsed reviews ≠ rows written;
+       - a parsed `result` tally (pass / fail / notapplicable / notchecked)
+         that differs from the status counts in `checklist-meta.json`. This
+         catches a writer regression that changes outcomes without changing
+         the row count.
     2. DISA's CKLB schema, downloaded at test time with its sha256 pinned
        (`8b88205d…`), as in `spike/cklb_schema_check.py`. It fails on any
        error against the patched schema, and on any raw-schema error other
@@ -317,7 +335,7 @@ PR 1's assertions then cover RHEL 10.
 | Release drift: SSG one DISA quarter behind, and STIG Viewer 3 matches revisions strictly. | D4 keeps each checklist internally consistent and honest about its release. PR 2/3 let users target the current release, with per-row drift handling (D7). Pin bumps refresh. Document SV3's "loose" match option. |
 | `rootfs_path` trees built from image layers lack `/.dockerenv`, so the ~35 RHEL 9 rules gated on the container marker (partitions, mounts, sniffer, wireless) evaluate and likely fail. | Existing scan behaviour, not checklist logic. Document it in the README's `rootfs_path` notes. FINDING_DETAILS shows the gate evaluation, so the cause is visible. |
 | An image with `kernel-core` (bootc) turns ~348 host rules back on. | Correct behaviour: such an image is a host. The checklist just reflects it. |
-| Arch gates read the runner's kernel (`/proc`), not the image. | Every arch gate in current STIG content is also kernel-gated, so it falls under `host`. Provenance records the image platform. |
+| Arch gates read the runner's kernel (`/proc`), not the target. A foreign-architecture bootc image or `rootfs_path` tree with `kernel-core` passes the kernel gate, and its arch gates are then judged by the runner. | `scan.sh` records `runner_arch` (`uname -m`, normalized) in `scan-plan.env`. Image mode already records the target `platform`; `rootfs_path` has none, so its target architecture is unknown. The generator trusts an arch-decided N/A only when the two match; otherwise the row is Not_Reviewed and evaluated arch-gated rules are annotated (category table). Covered by the PR 1 architecture tests. |
 | Hostile content in `results.xml` or user DISA files. | Stdlib parsers, expat defaults (no external entities), size caps, writers that escape everything (`ElementTree`, `json`), writes only inside `output_dir`. |
 | Checklist size (RHEL 9 CKL ~2 MB, CKLB ~1.3 MB). | Fine as artifacts; `checklist_formats` can drop one. |
 
