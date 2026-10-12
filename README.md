@@ -99,12 +99,15 @@ To keep the 1.x result, set `profile_id: xccdf_org.ssgproject.content_profile_an
 
 Google distroless images (`gcr.io/distroless/*-debian12`) ship `/etc/os-release` (`ID=debian`, `VERSION_ID=12`), so `auto` resolves them to `debian12`. They do not ship `/var/lib/dpkg/status`: each installed package is a stanza in its own file under `/var/lib/dpkg/status.d/`. OpenSCAP's dpkg probe reads only the status file, so without it every package check comes back `error`, and "package X must not be installed" rules are never evaluated.
 
-- **Image mode:** the orb builds `/var/lib/dpkg/status` from the `status.d/` stanzas in its scratch copy of the rootfs (never in the image), adding the `Status: install ok installed` line dpkg would have recorded. `summary.txt` shows `dpkg-status: synthesized … (N packages)`, and `provenance.json` records `target.dpkg_status`. Against `cc-debian12` this turns 27 `error` results into evaluated rules with the default CIS Level 1 Server profile (5 with the legacy `anssi_np_nt28_high`).
-- **`rootfs_path` mode:** the orb never modifies your tree. It records `dpkg_status: missing` and prints a warning in the log and `summary.txt`. To fix it, add the file to your extracted tree before the scan:
+- **Image mode:** the orb builds `/var/lib/dpkg/status` from the `status.d/` stanzas in its scratch copy of the rootfs (never in the image), adding the `Status: install ok installed` line dpkg would have recorded. `summary.txt` shows `dpkg-status: synthesized … (N packages)`, and `provenance.json` records `target.dpkg_status`. Against `cc-debian12` this turns 27 `error` results into evaluated rules with the default CIS Level 1 Server profile (5 with the legacy `anssi_np_nt28_high`). If the file can't be built (`status.d/` holds no package stanzas, or `/var/lib/dpkg` is a symlink, which the orb won't write through), the scan records `dpkg_status: missing` with the reason and warns, as in `rootfs_path` mode.
+- **`rootfs_path` mode:** the orb never modifies your tree. It records `dpkg_status: missing` and prints a warning in the log and `summary.txt`. To fix it, add the file to your extracted tree before the scan (with the same `Status` line image mode adds):
   ```sh
   d=/path/to/rootfs/var/lib/dpkg
   for f in "$d"/status.d/*; do
-    case "$f" in *.md5sums) ;; *) awk 1 "$f"; echo ;; esac
+    case "$f" in *.md5sums) continue ;; esac
+    if grep -q '^Status:' "$f"; then awk 1 "$f"
+    else awk '{ print } /^Package:/ { print "Status: install ok installed" }' "$f"; fi
+    echo
   done > "$d/status"
   ```
 
@@ -255,7 +258,7 @@ Docker resolves the digest and ignores the tag, which is kept so a reader can se
 
 Cite `repo_digests` as the image digest, together with `platform`: the pinned Chainguard digest is a multi-platform index, which names the amd64 and arm64 builds at once, and the platform says which of its manifests ran (`summary.txt` prints it in brackets after each digest). `image_id` is store-dependent: on Docker's classic image store it is the config digest, on the containerd store it is the manifest or index digest. Every helper and scanner container runs from the resolved image id, so the recorded image is the one that ran even if a tag moved mid-scan.
 
-A donated or `datastream_path` datastream is copied into a private per-scan snapshot directory, and both the hash and the scan read that snapshot, so `datastream.sha256` is the hash of the bytes `oscap` evaluated even if the original file changes mid-scan. Donated datastreams are not cached between scans: a reused file could be stale or modified and still be attributed to the pinned donor. Bundled datastreams are read from inside the digest-pinned scanner image.
+A donated or `datastream_path` datastream is copied into a private per-scan snapshot directory (as root inside a container, so a `datastream_path` only root can read works, as it does for the root-run scan), and both the hash and the scan read that snapshot, so `datastream.sha256` is the hash of the bytes `oscap` evaluated even if the original file changes mid-scan. Donated datastreams are not cached between scans: a reused file could be stale or modified and still be attributed to the pinned donor. Bundled datastreams are read from inside the digest-pinned scanner image.
 
 ### Updating the pinned images
 

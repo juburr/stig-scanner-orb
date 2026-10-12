@@ -257,12 +257,13 @@ provenance = {
         "platform": opt(plan.get("image_platform")),
         "rootfs_path": opt(plan.get("rootfs_path")),
         # Distroless dpkg layout: "synthesized" (status file built from
-        # status.d/ in the scratch copy) or "missing" (rootfs_path tree
-        # left untouched, dpkg probes can't see packages).
+        # status.d/ in the scratch copy) or "missing" (not built, for the
+        # recorded reason; dpkg probes can't see packages).
         "dpkg_status": {
             "state": plan["dpkg_status"],
             "packages": int(plan["dpkg_status_packages"]) if plan.get("dpkg_status_packages", "").isdigit() else None,
             "source": "/var/lib/dpkg/status.d",
+            "reason": plan.get("dpkg_status_reason") or None,
         } if plan.get("dpkg_status") else None,
     },
     "target_base": {
@@ -339,13 +340,15 @@ lines.append("")
 lines.append(f"Evaluated rules: {evaluated}")
 
 if provenance["target"]["dpkg_status"] and provenance["target"]["dpkg_status"]["state"] == "missing":
+    reason = provenance["target"]["dpkg_status"]["reason"]
     lines.append("")
     lines.append(
         "WARNING: the target has /var/lib/dpkg/status.d/ but no /var/lib/dpkg/status "
-        "(distroless layout). OpenSCAP's dpkg probe reads only the status file, so "
-        "package rules report error and package-removal checks were not evaluated. "
-        "The orb builds the file itself only in image mode; for rootfs_path, add it "
-        "to the tree (see README, Distroless images) or scan the image."
+        "(distroless layout), and none was built"
+        + (f" ({reason})" if reason else "")
+        + ". OpenSCAP's dpkg probe reads only the status file, so package rules "
+        "report error and package-removal checks were not evaluated. See README, "
+        "Distroless images."
     )
 
 if rule_results == 0:

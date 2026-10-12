@@ -10,12 +10,12 @@
 #   3b. For dpkg-family targets laid out like Google distroless (per-
 #      package stanzas in /var/lib/dpkg/status.d/, no status file),
 #      synthesize /var/lib/dpkg/status in the extracted scratch copy.
-#   4. For RPM-family targets, copy the datastream out of the Chainguard
+#   4. Pull the resolved scanner image (cacheable).
+#   5. For RPM-family targets, copy the datastream out of the Chainguard
 #      openscap image (which bundles all major datastreams) into a private
 #      per-scan snapshot dir (a datastream_path file is snapshotted the
 #      same way). The compliance-operator scanner that ships rpm probes
 #      doesn't bundle SCAP content, so we donate it from Chainguard.
-#   5. Pull the resolved scanner image (cacheable).
 #   6. Run oscap-chroot inside the scanner against the extracted rootfs,
 #      writing report.html + results.xml to the output dir.
 #   7. Record what produced them in scan-plan.env: image references and
@@ -431,9 +431,11 @@ echo "    output:        ${OUTPUT_DIR_ABS}"
 # `pass`. In image mode the extracted rootfs is our scratch copy, so build
 # the status file there from the stanzas. In rootfs_path mode the tree
 # belongs to the caller and stays untouched; summarize warns instead.
-# Recorded as dpkg_status=synthesized|missing in scan-plan.env.
+# Recorded as dpkg_status=synthesized|missing in scan-plan.env, with the
+# reason when the file could not be built.
 DPKG_STATUS=""
 DPKG_STATUS_PACKAGES=""
+DPKG_STATUS_REASON=""
 if [ "${FAMILY}" = "dpkg" ] && [ "${CLEANUP_ROOTFS}" = "1" ]; then
     # Decide and write inside the helper container, which sees only the
     # scratch rootfs: a symlinked var/lib/dpkg in the target image can't
@@ -474,18 +476,22 @@ if [ "${FAMILY}" = "dpkg" ] && [ "${CLEANUP_ROOTFS}" = "1" ]; then
             set -eu
             d=/target/var/lib/dpkg
             if [ -e "$d/status" ] || [ -L "$d/status" ]; then echo present; exit 0; fi
-            if [ ! -d "$d/status.d" ] || [ "$(readlink -f "$d")" != "$d" ]; then echo absent; exit 0; fi
-            tmp="$d/.status.stig-scanner-orb.tmp"
-            find "$d/status.d" -maxdepth 1 -type f ! -name "*.md5sums" | sort > "$tmp.list"
-            : > "$tmp"
+            if [ ! -d "$d/status.d" ]; then echo absent; exit 0; fi
+            if [ "$(readlink -f "$d")" != "$d" ]; then echo symlinked; exit 0; fi
+            # Build in container-private temporaries, never at a fixed
+            # path in the image, where a planted symlink would redirect
+            # the write. The one write into the rootfs is the final copy
+            # to status, which was just checked to be absent.
+            list="$(mktemp)"
+            tmp="$(mktemp)"
+            find "$d/status.d" -maxdepth 1 -type f ! -name "*.md5sums" | sort > "$list"
             while IFS= read -r f; do
                 awk "$STANZA_AWK" "$f" >> "$tmp"
-            done < "$tmp.list"
-            rm -f "$tmp.list"
+            done < "$list"
             count="$(grep -c "^Package:" "$tmp" || true)"
-            if [ "${count:-0}" -eq 0 ]; then rm -f "$tmp"; echo empty; exit 0; fi
-            chmod 0644 "$tmp"
-            mv "$tmp" "$d/status"
+            if [ "${count:-0}" -eq 0 ]; then echo empty; exit 0; fi
+            cp "$tmp" "$d/status"
+            chmod 0644 "$d/status"
             echo "synthesized ${count}"
         ')"
     case "${dpkg_result}" in
@@ -494,17 +500,34 @@ if [ "${FAMILY}" = "dpkg" ] && [ "${CLEANUP_ROOTFS}" = "1" ]; then
             DPKG_STATUS_PACKAGES="${dpkg_result#synthesized }"
             echo "==> Synthesized /var/lib/dpkg/status from status.d/ (${DPKG_STATUS_PACKAGES} packages) in the scratch rootfs"
             ;;
+        empty)
+            DPKG_STATUS="missing"
+            DPKG_STATUS_REASON="status.d/ holds no package stanzas"
+            ;;
+        symlinked)
+            DPKG_STATUS="missing"
+            DPKG_STATUS_REASON="/var/lib/dpkg is a symlink, which the orb does not write through"
+            ;;
     esac
 elif [ "${FAMILY}" = "dpkg" ] && [ -d "${ROOTFS_DIR}/var/lib/dpkg/status.d" ] \
         && [ ! -e "${ROOTFS_DIR}/var/lib/dpkg/status" ]; then
     DPKG_STATUS="missing"
-    echo "WARNING: ${ROOTFS_PATH} has /var/lib/dpkg/status.d/ but no /var/lib/dpkg/status." >&2
-    echo "         OpenSCAP's dpkg probe reads only the status file, so package rules will" >&2
-    echo "         report 'error'. The orb does not modify a rootfs_path tree; see the README" >&2
-    echo "         (Distroless images) to add the file, or scan the image instead." >&2
+    DPKG_STATUS_REASON="the orb does not modify a rootfs_path tree"
+fi
+if [ "${DPKG_STATUS}" = "missing" ]; then
+    echo "WARNING: the target has /var/lib/dpkg/status.d/ but no /var/lib/dpkg/status," >&2
+    echo "         and none was built (${DPKG_STATUS_REASON})." >&2
+    echo "         OpenSCAP's dpkg probe reads only the status file, so package rules" >&2
+    echo "         will report 'error'. See the README (Distroless images)." >&2
 fi
 
-# --- 4. acquire datastream -----------------------------------------------
+# --- 4. pull scanner image -----------------------------------------------
+ensure_image "${SCANNER}" "scanner image"
+SCANNER_ID="$(image_id "${SCANNER}")"
+SCANNER_REPO_DIGESTS="$(image_repo_digests "${SCANNER_ID}")"
+SCANNER_PLATFORM="$(image_platform "${SCANNER_ID}")"
+
+# --- 5. acquire datastream -----------------------------------------------
 # The Chainguard scanner ships datastreams inside its (immutable, digest-
 # pinned) image; for non-RPM targets oscap-chroot reads
 # /usr/share/xml/scap/ssg/content/<ds> there. Every other source is first
@@ -520,19 +543,45 @@ DATASTREAM_HOST_DIR=""
 DATASTREAM_IN_SCANNER_PATH=""
 DATASTREAM_SOURCE=""
 
+# snapshot_datastream IMAGE_ID SRC [docker run args...]: copy SRC (a path
+# inside IMAGE_ID's container) into a fresh snapshot dir as root, the user
+# oscap-chroot runs as, so any file the scan could read can be snapshotted
+# (e.g. a root-owned 0600 datastream_path written by an earlier root
+# container). The copy is handed to the runner and made read-only.
+snapshot_datastream() {
+    local image="$1" src="$2"
+    shift 2
+    DATASTREAM_SNAP_DIR="$(mktemp -d -t stig-datastream.XXXXXX)"
+    docker run --rm -u 0:0 "$@" \
+        -v "${DATASTREAM_SNAP_DIR}:/out" \
+        -e SRC="${src}" \
+        -e DS="${DATASTREAM}" \
+        -e HOST_UID="${HOST_UID}" \
+        -e HOST_GID="${HOST_GID}" \
+        --entrypoint sh \
+        "${image}" -c '
+            set -e
+            cp "${SRC}" "/out/${DS}"
+            test -s "/out/${DS}"
+            chown "${HOST_UID}:${HOST_GID}" "/out/${DS}"
+            chmod 0444 "/out/${DS}"
+        '
+}
+
 if [ -n "${DATASTREAM_PATH_OVERRIDE}" ]; then
     if [ ! -f "${DATASTREAM_PATH_OVERRIDE}" ]; then
         echo "ERROR: datastream-path '${DATASTREAM_PATH_OVERRIDE}' not found." >&2
         exit 2
     fi
-    DATASTREAM_SNAP_DIR="$(mktemp -d -t stig-datastream.XXXXXX)"
-    if ! cp "${DATASTREAM_PATH_OVERRIDE}" "${DATASTREAM_SNAP_DIR}/${DATASTREAM}"; then
-        echo "ERROR: could not read datastream-path '${DATASTREAM_PATH_OVERRIDE}'." >&2
+    ds_src="$(cd "$(dirname "${DATASTREAM_PATH_OVERRIDE}")" && pwd)/$(basename "${DATASTREAM_PATH_OVERRIDE}")"
+    echo "==> Using consumer-supplied datastream: ${DATASTREAM_PATH_OVERRIDE}"
+    # The scanner image is the one image every scan has.
+    if ! snapshot_datastream "${SCANNER_ID}" /src/datastream.xml \
+        -v "${ds_src}:/src/datastream.xml:ro"; then
+        echo "ERROR: could not read datastream-path '${DATASTREAM_PATH_OVERRIDE}' (or it is empty)." >&2
         exit 2
     fi
-    chmod 0444 "${DATASTREAM_SNAP_DIR}/${DATASTREAM}"
     DATASTREAM_SOURCE="datastream_path"
-    echo "==> Using consumer-supplied datastream: ${DATASTREAM_PATH_OVERRIDE}"
 elif [ "${FAMILY}" != "rpm" ]; then
     # Non-RPM target families resolve to a Chainguard-shape scanner that
     # bundles every major datastream at /usr/share/xml/scap/ssg/content.
@@ -548,32 +597,13 @@ elif [ "${FAMILY}" != "rpm" ]; then
 else
     resolve_donor datastream
     DATASTREAM_SOURCE="donated"
-    DATASTREAM_SNAP_DIR="$(mktemp -d -t stig-datastream.XXXXXX)"
     echo "==> Donating ${DATASTREAM} from ${DONOR_IMAGE}"
-    docker run --rm -u 0:0 \
-        -v "${DATASTREAM_SNAP_DIR}:/out" \
-        -e DS="${DATASTREAM}" \
-        -e HOST_UID="${HOST_UID}" \
-        -e HOST_GID="${HOST_GID}" \
-        --entrypoint sh \
-        "${DONOR_ID}" -c '
-            set -e
-            cp "/usr/share/xml/scap/ssg/content/${DS}" "/out/${DS}"
-            test -s "/out/${DS}"
-            chown "${HOST_UID}:${HOST_GID}" "/out/${DS}"
-            chmod 0444 "/out/${DS}"
-        '
+    snapshot_datastream "${DONOR_ID}" "/usr/share/xml/scap/ssg/content/${DATASTREAM}"
 fi
 if [ -n "${DATASTREAM_SNAP_DIR}" ]; then
     DATASTREAM_HOST_DIR="${DATASTREAM_SNAP_DIR}"
     DATASTREAM_IN_SCANNER_PATH="/ds/${DATASTREAM}"
 fi
-
-# --- 5. pull scanner image -----------------------------------------------
-ensure_image "${SCANNER}" "scanner image"
-SCANNER_ID="$(image_id "${SCANNER}")"
-SCANNER_REPO_DIGESTS="$(image_repo_digests "${SCANNER_ID}")"
-SCANNER_PLATFORM="$(image_platform "${SCANNER_ID}")"
 
 # --- 6. run oscap-chroot -------------------------------------------------
 ds_mount_args=()
@@ -586,8 +616,8 @@ mount_args=( -v "${ROOTFS_DIR}:/target:ro" -v "${OUTPUT_DIR_ABS}:/out" ${ds_moun
 
 # Hash the datastream as the scanner sees it: same image, same mount, same
 # path and same user (root) as oscap-chroot below. The image's default user
-# can be unprivileged (65532 in the Chainguard image) and unable to read a
-# datastream_path kept in a private directory that the root scan still reads.
+# can be unprivileged (65532 in the Chainguard image) and unable to enter
+# the snapshot directory (mktemp -d, mode 0700) that the root scan reads.
 DATASTREAM_SHA256="$(docker run --rm -u 0:0 ${ds_mount_args[@]+"${ds_mount_args[@]}"} \
     --entrypoint sha256sum "${SCANNER_ID}" "${DATASTREAM_IN_SCANNER_PATH}" 2>/dev/null \
     | awk '{print $1}')" || DATASTREAM_SHA256=""
@@ -668,6 +698,7 @@ fi
     if [ -n "${DPKG_STATUS}" ]; then
         echo "dpkg_status=${DPKG_STATUS}"
         echo "dpkg_status_packages=${DPKG_STATUS_PACKAGES}"
+        echo "dpkg_status_reason=${DPKG_STATUS_REASON}"
     fi
     if [ -n "${IMAGE}" ]; then
         echo "image=${IMAGE}"
