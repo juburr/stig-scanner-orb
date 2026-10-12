@@ -205,12 +205,20 @@ JUSTIFICATION = {
     ),
     "arch": "Not Applicable. This requirement applies only to another CPU architecture (OpenSCAP platform check {gates} was false).",
     "platform": "Not Applicable. OpenSCAP platform check {gates} was false for the scanned image.",
+    # Recomputed for the target: OpenSCAP evaluated the gate on the scanning
+    # host, where it held, so don't say OpenSCAP found it false.
+    "arch@target": ("Not Applicable. This requirement applies only to another CPU architecture: platform check {gates} "
+                    "is false for this image's architecture. (It held on the scanning host, where OpenSCAP evaluated it.)"),
+    "platform@target": ("Not Applicable. No alternative of platform check {gates} holds for this image. (One held only on "
+                        "the scanning host, through an architecture term, where OpenSCAP evaluated it.)"),
     "check": "Not Applicable per OpenSCAP: the automated check itself returned notapplicable for this image.",
 }
 
 
 def justification(cat, gates):
     kind, _, arg = cat.partition(":")
+    if arg == "target":
+        kind += "@target"
     return JUSTIFICATION[kind].format(gates=", ".join(g.lstrip("#") for g in gates) or "n/a", pkgs=arg.replace(",", " / "))
 
 
@@ -519,11 +527,18 @@ def build_model(res, disa, plan, runner_arch=None):
             elif result != "notselected":
                 verdict, level = target_verdict(r)
                 if verdict == "na":
-                    # OpenSCAP passed an arch gate on the runner that the
-                    # target fails: the requirement doesn't apply to it.
+                    # Every alternative at this level is false for the target.
+                    # Say "another CPU architecture" only if each is false
+                    # through an arch term; a known-false package (say) beside
+                    # it means the requirement could still apply here.
                     eff = "notapplicable"
-                    na_cats.add(("arch", tuple(level)))
-                    line += f" -> notapplicable for the target ({target_arch}): an architecture gate passed on the scanning host ({runner_arch}) is false for it"
+                    by_arch = all("_or_" not in p and any(arch_term_value(t, target_arch) is False for t in arch_terms(p))
+                                  for p in level)
+                    na_cats.add(("arch:target" if by_arch else "platform:target", tuple(level)))
+                    line += (f" -> notapplicable for the target ({target_arch}): "
+                             + ("an architecture gate passed on the scanning host "
+                                f"({runner_arch}) is false for it" if by_arch else
+                                f"no platform alternative at this level holds for it (scanned on {runner_arch})"))
                 elif verdict == "uncertain":
                     eff = "notchecked"
                     uncertain.add("eval")
@@ -584,7 +599,7 @@ def build_model(res, disa, plan, runner_arch=None):
         stig["unpaired_refs"] = sorted(unpaired)
     else:
         key = res["benchmark_id"].replace("xccdf_org.ssgproject.content_benchmark_", "")
-        bid, title = SSG_STIG_IDS.get(key, (key + "_STIG", res["profile_title"]))
+        bid, title = SSG_STIG_IDS[key]  # main() skips unknown benchmarks
         ver, rel = res["disa_version"] or ("0", "0")
         stig = {"benchmark_id": bid, "title": title, "description": res["profile_title"], "version": ver,
                 "releaseinfo": f"Release: {rel} Benchmark Date: unknown (derived from {res['benchmark_id']} {res['benchmark_version']})",
@@ -757,13 +772,20 @@ def main():
     for sig in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, terminate)
 
-    # Never leave a previous run's checklist behind for this run to "publish".
     meta_path = f"{a.out_dir}/{a.stem}-meta.json"
-    for path in [f"{a.out_dir}/{a.stem}.{e}{p}" for e in ("ckl", "cklb") for p in ("", ".partial")] + [meta_path, meta_path + ".partial"]:
-        try:
-            os.remove(path)
-        except FileNotFoundError:
-            pass
+    outputs = [f"{a.out_dir}/{a.stem}.{e}{p}" for e in ("ckl", "cklb") for p in ("", ".partial")] + [meta_path, meta_path + ".partial"]
+
+    def remove_all(paths):
+        """Remove every path; one failure doesn't stop the rest."""
+        stuck = []
+        for path in paths:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                stuck.append(path)
+        return stuck
 
     results_sha = None
 
@@ -780,6 +802,12 @@ def main():
     # results.xml, malformed DISA file, writer error, termination) still
     # leaves a fresh "failed" meta with the reason (D8), never no meta.
     try:
+        # Never leave a previous run's checklist behind for this run to
+        # "publish". Inside the handler, so a termination or error part-way
+        # still finishes the removal below.
+        stuck = remove_all(outputs)
+        if stuck:
+            raise OSError(f"can't remove previous checklist outputs: {', '.join(stuck)}")
         with open(a.results, "rb") as f:
             results_sha = hashlib.sha256(f.read()).hexdigest()
 
@@ -818,6 +846,11 @@ def main():
             if disa["benchmark_id"] != expected:
                 return emit({"outcome": "failed", "reason": f"the DISA file is {disa['benchmark_id']}, but this scan's "
                              f"content implements {expected}"}, 1)
+        if not disa and res["benchmark_id"].replace("xccdf_org.ssgproject.content_benchmark_", "") not in SSG_STIG_IDS:
+            # A DISA benchmark id can't be derived from an SSG benchmark name,
+            # and consumers merge rows on the exact id: never invent one.
+            return emit({"outcome": "skipped", "reason": f"no known DISA STIG id for {res['benchmark_id']}; "
+                         f"supply the DISA STIG file to name it"}, 0)
         stig, vulns = build_model(res, disa, plan, a.runner_arch)
         # A STIG-named profile still proves nothing about the mapping: content
         # whose references moved to another URL (or a custom datastream without
@@ -867,6 +900,7 @@ def main():
             raise
         print(json.dumps(meta, indent=1, default=list))
     except BaseException as e:
+        remove_all(outputs)  # finish the cleanup; no checklist survives a failure
         try:
             emit({"outcome": "failed", "reason": f"{type(e).__name__}: {e}"[:500]}, 1)
         except Exception:
