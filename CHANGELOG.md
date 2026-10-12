@@ -77,7 +77,7 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 
 - Every helper and scanner container now runs with `--network none`; a scan's
   only network traffic is the Docker daemon's image pulls. A test enforces it.
-- A `rootfs_path` that contains a Unix socket is refused (exit 2). A
+- A `rootfs_path` that contains a Unix socket or FIFO is refused (exit 2). A
   read-only bind mount does not stop a process from connecting to a socket,
   so a live tree such as `/` would have exposed `/run/docker.sock` to the
   scanner. Extracted image trees never contain sockets. If the runner user
@@ -85,7 +85,8 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   (`donor.used_for` gains `rootfs-check`) and fails closed if it can't finish.
   A symlinked `rootfs_path` is checked where it points.
 - A `rootfs_path` that overlaps `output_dir` (either inside the other) is
-  refused, so the caller's tree is never written to.
+  refused before `output_dir` is created, so the caller's tree is never
+  written to.
 - The scanner no longer mounts `output_dir`. It writes into a fresh private
   staging directory, its only writable mount, and the host copies
   `results.xml` and `report.html` out, refusing anything that isn't a
@@ -95,8 +96,8 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 - Mounts nested inside a `rootfs_path` are bound recursively read-only
   (`--mount …,bind-recursive=readonly`, Docker 25+ on kernel 5.12+); the scan
   fails on hosts that can't, rather than leaving the submounts writable.
-- The cleanup trap warns when it cannot remove the scratch rootfs or the
-  datastream snapshot (e.g. the Docker daemon is gone, so the root-privileged
+- The cleanup trap warns when it cannot remove the scratch rootfs, the
+  datastream snapshot or the scanner output staging dir (e.g. the Docker daemon is gone, so the root-privileged
   removal helper can't run) instead of failing silently.
 - Every helper and scanner container now runs from the resolved local image
   id, so the recorded image is the one that ran even if a tag moves mid-scan.

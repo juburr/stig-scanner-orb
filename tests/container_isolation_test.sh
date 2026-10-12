@@ -63,7 +63,7 @@ refused() {
 }
 out="$(scan_rootfs || true)"
 case "${out}" in
-    *"contains a Unix socket"*)
+    *"contains a Unix socket or FIFO"*)
         echo "FAIL: a socket-free rootfs_path was refused: ${out}" >&2
         failures=$((failures + 1)) ;;
 esac
@@ -72,24 +72,36 @@ esac
 refused "output = rootfs" "overlaps rootfs-path" "${tree}" "${tree}"
 refused "output inside rootfs" "overlaps rootfs-path" "${tree}" "${tree}/run"
 refused "rootfs inside output" "overlaps rootfs-path" "${tree}" "$(dirname "${tree}")"
+# Refused before output-dir is created: nothing may be written into the tree.
+refused "new output dir inside rootfs" "overlaps rootfs-path" "${tree}" "${tree}/new/reports"
+if [ -e "${tree}/new" ]; then
+    echo "FAIL: a refused scan created ${tree}/new inside the scanned tree" >&2
+    failures=$((failures + 1))
+fi
 
 # Bind relative to the directory: socket paths are length-limited.
 (cd "${tree}/run" && python3 -c 'import socket; socket.socket(socket.AF_UNIX).bind("docker.sock")')
 real="$(cd "${tree}" && pwd -P)"
-refused "socket in tree" "contains a Unix socket: ${real}/run/docker.sock"
+refused "socket in tree" "contains a Unix socket or FIFO: ${real}/run/docker.sock"
 # A symlinked rootfs_path is checked where it points (find alone would
 # not descend into a symlink given as its starting point).
 link="$(mktemp -d)/rootfs"
 ln -s "${tree}" "${link}"
-refused "symlinked rootfs_path" "contains a Unix socket: ${real}/run/docker.sock" "${link}"
+refused "symlinked rootfs_path" "contains a Unix socket or FIFO: ${real}/run/docker.sock" "${link}"
 # proc/ and sys/ of an arbitrary tree are ordinary directories.
 other="$(mktemp -d)"
 mkdir -p "${other}/etc" "${other}/proc"
 cp "${tree}/etc/os-release" "${other}/etc/"
 (cd "${other}/proc" && python3 -c 'import socket; socket.socket(socket.AF_UNIX).bind("docker.sock")')
-refused "socket under proc/" "contains a Unix socket: $(cd "${other}" && pwd -P)/proc/docker.sock" "${other}"
+refused "socket under proc/" "contains a Unix socket or FIFO: $(cd "${other}" && pwd -P)/proc/docker.sock" "${other}"
+# A named pipe is an IPC channel through a read-only mount just the same.
+fifo="$(mktemp -d)"
+mkdir -p "${fifo}/etc" "${fifo}/run"
+cp "${tree}/etc/os-release" "${fifo}/etc/"
+mkfifo "${fifo}/run/initctl"
+refused "fifo in tree" "contains a Unix socket or FIFO: $(cd "${fifo}" && pwd -P)/run/initctl" "${fifo}"
 
 if [ "${failures}" -ne 0 ]; then
     exit 1
 fi
-echo "container isolation ok: ${runs} docker run invocation(s), all --network none; socket-bearing or overlapping rootfs_path refused"
+echo "container isolation ok: ${runs} docker run invocation(s), all --network none; socket/FIFO-bearing or overlapping rootfs_path refused"

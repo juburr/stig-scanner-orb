@@ -23,7 +23,7 @@ parameters:
       Path to an already-extracted, offline filesystem tree (e.g. an
       RPM unpacked into a tmpdir, or a mounted VM disk). Never a live
       filesystem such as /: symlinks are resolved, and a tree containing
-      a Unix socket, or overlapping output_dir, is refused. Mutually
+      a Unix socket or FIFO, or overlapping output_dir, is refused. Mutually
       exclusive with image.
   target_base:
     type: enum

@@ -207,8 +207,8 @@ jobs:
             set -e
             cat sock.log
             test "$rc" -eq 2 || { echo "expected exit 2, got $rc"; exit 1; }
-            grep -q "checking it for sockets as root in the helper image" sock.log
-            grep -q "contains a Unix socket: /tmp/rootfs-sock/locked/docker.sock" sock.log
+            grep -q "checking it for sockets and FIFOs as root in the helper image" sock.log
+            grep -q "contains a Unix socket or FIFO: /tmp/rootfs-sock/locked/docker.sock" sock.log
       - run:
           name: Same tree without the socket → scan proceeds
           command: |

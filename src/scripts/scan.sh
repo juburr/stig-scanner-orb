@@ -78,6 +78,39 @@ if [ -z "${IMAGE}" ] && [ -z "${ROOTFS_PATH}" ]; then
     exit 2
 fi
 
+# paths_overlap A B: true if A and B (physical paths) are the same
+# directory or one contains the other.
+paths_overlap() {
+    case "${1%/}/" in "${2%/}/"*) return 0 ;; esac
+    case "${2%/}/" in "${1%/}/"*) return 0 ;; esac
+    return 1
+}
+
+# phys_path PATH: the physical absolute path PATH names, which need not
+# exist yet: its deepest existing ancestor is resolved with pwd -P.
+phys_path() {
+    local p="$1" rest=""
+    case "${p}" in /*) ;; *) p="${PWD}/${p}" ;; esac
+    while [ "${p}" != "/" ] && [ "${p%/}" != "${p}" ]; do p="${p%/}"; done
+    while [ ! -d "${p}" ]; do
+        rest="/${p##*/}${rest}"
+        p="${p%/*}"
+        [ -n "${p}" ] || p="/"
+    done
+    printf '%s%s\n' "$(cd "${p}" && pwd -P)" "${rest}"
+}
+
+# In rootfs_path mode the reports stay out of the scanned tree, and the
+# tree out of the reports dir: the caller's tree is never written to.
+# Checked before output-dir is created, so a refused scan hasn't already
+# made a directory inside the tree.
+if [ -n "${ROOTFS_PATH}" ] && [ -d "${ROOTFS_PATH}" ] \
+        && paths_overlap "$(phys_path "${OUTPUT_DIR}")" "$(cd "${ROOTFS_PATH}" && pwd -P)"; then
+    echo "ERROR: output-dir '${OUTPUT_DIR}' overlaps rootfs-path '${ROOTFS_PATH}'." >&2
+    echo "       Keep the output dir outside the scanned tree (and vice versa)." >&2
+    exit 2
+fi
+
 mkdir -p "${OUTPUT_DIR}"
 OUTPUT_DIR_ABS="$(cd "${OUTPUT_DIR}" && pwd)"
 HOST_UID="$(id -u)"
@@ -153,14 +186,6 @@ resolve_donor() {
         DONOR_PLATFORM="$(image_platform "${DONOR_ID}")"
     fi
     DONOR_USED_FOR="${DONOR_USED_FOR:+${DONOR_USED_FOR},}$1"
-}
-
-# paths_overlap A B: true if A and B (physical paths) are the same
-# directory or one contains the other.
-paths_overlap() {
-    case "${1%/}/" in "${2%/}/"*) return 0 ;; esac
-    case "${2%/}/" in "${1%/}/"*) return 0 ;; esac
-    return 1
 }
 
 # has_nested_mounts DIR: true if a mount point sits strictly below DIR
@@ -321,9 +346,10 @@ else
     # can hold the Docker socket, which would hand the scanner the daemon.
     # Extracted image trees never contain sockets (tar skips them), so
     # refuse any, anywhere in the tree (proc/ and sys/ included: in an
-    # arbitrary directory they are ordinary subtrees).
+    # arbitrary directory they are ordinary subtrees). Named pipes are an
+    # IPC channel the same way, so they are refused too.
     find_rc=0
-    sock="$(find "${ROOTFS_DIR}" -type s -print -quit 2>/dev/null)" || find_rc=$?
+    sock="$(find "${ROOTFS_DIR}" \( -type s -o -type p \) -print -quit 2>/dev/null)" || find_rc=$?
     if [ -z "${sock}" ] && [ "${find_rc}" -ne 0 ]; then
         # The runner couldn't read the whole tree (e.g. root-owned 0700
         # directories in a mounted VM disk), but the root scanner can, so
@@ -331,30 +357,23 @@ else
         # helper image -- never in the scanner image the check protects --
         # and fail closed if that can't complete either. Plain POSIX find
         # options only, so any helper with a find works.
-        echo "==> rootfs-path is not fully readable by this user; checking it for sockets as root in the helper image"
+        echo "==> rootfs-path is not fully readable by this user; checking it for sockets and FIFOs as root in the helper image"
         resolve_donor rootfs-check
         find_rc=0
         sock="$(docker run --rm --network none -u 0:0 "${ROOTFS_MOUNT[@]}" \
-            --entrypoint find "${DONOR_ID}" /target -type s -print)" || find_rc=$?
+            --entrypoint find "${DONOR_ID}" /target \( -type s -o -type p \) -print)" || find_rc=$?
         sock="${sock%%$'\n'*}"
         if [ -z "${sock}" ] && [ "${find_rc}" -ne 0 ]; then
-            echo "ERROR: could not check rootfs-path '${ROOTFS_PATH}' for Unix sockets as root" >&2
+            echo "ERROR: could not check rootfs-path '${ROOTFS_PATH}' for sockets/FIFOs as root" >&2
             echo "       (find in the helper image exited ${find_rc}; the helper image needs find)." >&2
             exit 2
         fi
         sock="${sock:+${ROOTFS_DIR%/}${sock#/target}}"
     fi
     if [ -n "${sock}" ]; then
-        echo "ERROR: rootfs-path '${ROOTFS_PATH}' contains a Unix socket: ${sock}" >&2
+        echo "ERROR: rootfs-path '${ROOTFS_PATH}' contains a Unix socket or FIFO: ${sock}" >&2
         echo "       Point rootfs-path at an offline extracted tree, not a live filesystem;" >&2
-        echo "       the scanner could connect to a socket through its read-only mount." >&2
-        exit 2
-    fi
-    # Keep the reports out of the scanned tree and the tree out of the
-    # reports dir: the caller's tree is never written to.
-    if paths_overlap "$(cd "${OUTPUT_DIR_ABS}" && pwd -P)" "${ROOTFS_DIR}"; then
-        echo "ERROR: output-dir '${OUTPUT_DIR}' overlaps rootfs-path '${ROOTFS_PATH}'." >&2
-        echo "       The scanner writes to output-dir; keep it outside the scanned tree (and vice versa)." >&2
+        echo "       the scanner could talk to it through its read-only mount." >&2
         exit 2
     fi
 fi
