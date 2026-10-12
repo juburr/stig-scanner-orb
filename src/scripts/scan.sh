@@ -164,11 +164,29 @@ paths_overlap() {
 }
 
 # has_nested_mounts DIR: true if a mount point sits strictly below DIR
-# (read from /proc/self/mountinfo; false where that doesn't exist).
+# (read from /proc/self/mountinfo; false where that doesn't exist). The
+# kernel octal-escapes space, tab, newline and backslash in mount points
+# (\040 \011 \012 \134); decode every \ooo. DIR goes in via ENVIRON, not
+# awk -v, which would interpret backslashes in it.
 has_nested_mounts() {
     [ -r /proc/self/mountinfo ] || return 1
-    awk -v root="${1%/}/" '
-        { mp = $5; gsub(/\\040/, " ", mp); m = (mp == "/") ? "/" : mp "/" }
+    STIG_MOUNT_ROOT="${1%/}/" awk '
+        function unoct(s,   out, i, c) {
+            out = ""
+            while ((i = index(s, "\\")) > 0) {
+                c = substr(s, i + 1, 3)
+                if (c ~ /^[0-7][0-7][0-7]$/) {
+                    out = out substr(s, 1, i - 1) sprintf("%c", substr(c, 1, 1) * 64 + substr(c, 2, 1) * 8 + substr(c, 3, 1))
+                    s = substr(s, i + 4)
+                } else {
+                    out = out substr(s, 1, i)
+                    s = substr(s, i + 1)
+                }
+            }
+            return out s
+        }
+        BEGIN { root = ENVIRON["STIG_MOUNT_ROOT"] }
+        { mp = unoct($5); m = (mp == "/") ? "/" : mp "/" }
         index(m, root) == 1 && m != root { found = 1; exit }
         END { exit !found }
     ' /proc/self/mountinfo
@@ -777,9 +795,17 @@ if [ "${oscap_rc}" -ne 0 ]; then
     echo "ERROR: oscap-chroot failed (exit ${oscap_rc})." >&2
     exit "${oscap_rc}"
 fi
+# The scanner controlled the staging dir: copy only regular files. A
+# symlink would be followed here, in the host namespace, and could pull
+# any runner-readable file into the published artifacts.
 for f in results.xml report.html; do
-    if [ -s "${OUT_STAGE_DIR}/${f}" ]; then
-        cp "${OUT_STAGE_DIR}/${f}" "${OUTPUT_DIR_ABS}/${f}"
+    src="${OUT_STAGE_DIR}/${f}"
+    if [ -L "${src}" ] || { [ -e "${src}" ] && [ ! -f "${src}" ]; }; then
+        echo "ERROR: the scanner left ${f} as something other than a regular file; not copying it." >&2
+        exit 1
+    fi
+    if [ -s "${src}" ]; then
+        cp "${src}" "${OUTPUT_DIR_ABS}/${f}"
     fi
 done
 

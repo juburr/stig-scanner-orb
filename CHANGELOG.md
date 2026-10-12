@@ -88,7 +88,8 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   refused, so the caller's tree is never written to.
 - The scanner no longer mounts `output_dir`. It writes into a fresh private
   staging directory, its only writable mount, and the host copies
-  `results.xml` and `report.html` out. A shared `output_dir` (`/tmp`, one
+  `results.xml` and `report.html` out, refusing anything that isn't a
+  regular file (a symlink would be followed on the host). A shared `output_dir` (`/tmp`, one
   holding sockets, one containing the scratch rootfs) is never exposed to
   it, and it `chown`s only the two files it writes.
 - Mounts nested inside a `rootfs_path` are bound recursively read-only
