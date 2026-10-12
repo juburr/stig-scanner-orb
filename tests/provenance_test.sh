@@ -63,18 +63,21 @@ target_base_source=os-release
 scanner=quay.io/compliance-operator/openscap-ocp:1.3.6@sha256:4c49e8c1af801051d9dbe5d33e371440948cbffce1dbc4379daf909b1288869a
 scanner_image_id=sha256:416667d6f36890b06dad73de18821bf1dc3a9a1d6b3f5f7804193f92ec752fba
 scanner_repo_digests=quay.io/compliance-operator/openscap-ocp@sha256:4c49e8c1af801051d9dbe5d33e371440948cbffce1dbc4379daf909b1288869a
+scanner_platform=linux/amd64
 datastream=ssg-rhel9-ds.xml
 datastream_source=donated
 datastream_sha256=27fc84bb2ea29619a944d5a75b361961e1ac7a8dadd48f4165f00d106b0ef944
 donor_image=cgr.dev/chainguard/openscap:latest-dev@sha256:f5e08bc14cc659268a7807d7ec573ff3cc56b62b9358313db8df76909018b55e
 donor_image_id=sha256:dbdc45439109a94e109e880a1f537160f54ecd10facae6abfd66d5b95ae20f27
 donor_repo_digests=cgr.dev/chainguard/openscap@sha256:f5e08bc14cc659268a7807d7ec573ff3cc56b62b9358313db8df76909018b55e
+donor_platform=linux/amd64
 donor_used_for=extraction,datastream
 profile=xccdf_org.ssgproject.content_profile_stig
 family=rpm
 image=registry.access.redhat.com/ubi9/ubi-minimal:latest
 image_id=sha256:2029c54baa5a52b4ed6a134ea6280ec6c15f79bdcbbc69e947d4c397e646d875
 image_repo_digests=registry.access.redhat.com/ubi9/ubi-minimal@sha256:5ed244b62bbf4095080144d9d35eb8fcd3d39a9801f94aadd63b9d10978a01ae
+image_platform=linux/arm64
 EOF
 summarize "${dir}" || fail "donated: summarize exited $?"
 check_json donated "${dir}" 'p["schema"] == "stig-scanner-orb/provenance/v1"'
@@ -87,6 +90,9 @@ check_json donated "${dir}" 'p["donor"]["used_for"] == ["extraction", "datastrea
 check_json donated "${dir}" 'p["datastream"]["source"] == "donated" and len(p["datastream"]["sha256"]) == 64'
 check_json donated "${dir}" 'p["datastream"]["ssg_version"] == "0.1.82" and p["datastream"]["benchmark_version"] == "0.1.82"'
 check_json donated "${dir}" 'p["scan"]["start_time"] == "2026-10-11T15:00:00+00:00"'
+check_json donated "${dir}" 'p["target"]["platform"] == "linux/arm64" and p["scanner"]["platform"] == "linux/amd64" and p["donor"]["platform"] == "linux/amd64"'
+check_summary donated "${dir}" "ubi9/ubi-minimal@sha256:5ed244b62bbf4095080144d9d35eb8fcd3d39a9801f94aadd63b9d10978a01ae [linux/arm64]"
+check_summary donated "${dir}" "openscap-ocp@sha256:4c49e8c1af801051d9dbe5d33e371440948cbffce1dbc4379daf909b1288869a [linux/amd64]"
 check_summary donated "${dir}" "  target-digest:     registry.access.redhat.com/ubi9/ubi-minimal@sha256:5ed244b6"
 check_summary donated "${dir}" "  target-base:       rhel9 (requested auto, from os-release)"
 check_summary donated "${dir}" "  donor-digest:      cgr.dev/chainguard/openscap@sha256:f5e08bc1"
@@ -126,6 +132,7 @@ EOF
 summarize "${dir}" || fail "local: summarize exited $?"
 check_json local "${dir}" 'p["target"]["repo_digests"] == [] and p["target"]["image_id"].startswith("sha256:1111")'
 check_json local "${dir}" 'p["donor"] is None'
+check_json local "${dir}" 'p["target"]["platform"] is None and p["scanner"]["platform"] is None'
 check_json local "${dir}" 'p["datastream"]["ssg_version"] is None and p["datastream"]["benchmark_version"] == "3.2.17"'
 check_json local "${dir}" 'p["datastream"]["sha256"] is None'
 check_json local "${dir}" 'p["profile"]["title"] is None'

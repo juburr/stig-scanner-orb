@@ -245,6 +245,7 @@ if plan.get("donor_used_for"):
         "image": plan.get("donor_image"),
         "image_id": opt(plan.get("donor_image_id")),
         "repo_digests": csv_list(plan.get("donor_repo_digests")),
+        "platform": opt(plan.get("donor_platform")),
         "used_for": csv_list(plan.get("donor_used_for")),
     }
 provenance = {
@@ -253,6 +254,7 @@ provenance = {
         "image": opt(plan.get("image")),
         "image_id": opt(plan.get("image_id")),
         "repo_digests": csv_list(plan.get("image_repo_digests")),
+        "platform": opt(plan.get("image_platform")),
         "rootfs_path": opt(plan.get("rootfs_path")),
     },
     "target_base": {
@@ -265,6 +267,7 @@ provenance = {
         "image": opt(plan.get("scanner")),
         "image_id": opt(plan.get("scanner_image_id")),
         "repo_digests": csv_list(plan.get("scanner_repo_digests")),
+        "platform": opt(plan.get("scanner_platform")),
         "openscap_version": openscap_version,
     },
     "donor": donor,
@@ -291,21 +294,25 @@ if plan:
     lines.append(f"  profile:        {plan.get('profile', '')}")
     lines.append("")
 
-def digest_line(digests, image_id, fallback):
+def digest_line(digests, image_id, fallback, platform=None):
     if digests:
-        return ", ".join(digests)
-    return f"{fallback} (image id {image_id})" if image_id else fallback
+        line = ", ".join(digests)
+    else:
+        line = f"{fallback} (image id {image_id})" if image_id else fallback
+    # A multi-platform index digest names every platform at once; the
+    # platform says which of its manifests ran.
+    return f"{line} [{platform}]" if platform else line
 
 if plan:
     t, sc, ds, tb = provenance["target"], provenance["scanner"], provenance["datastream"], provenance["target_base"]
     lines.append("Provenance:")
     if t["image"]:
-        lines.append(f"  target-digest:     {digest_line(t['repo_digests'], t['image_id'], 'none, not pulled from a registry')}")
+        lines.append(f"  target-digest:     {digest_line(t['repo_digests'], t['image_id'], 'none, not pulled from a registry', t['platform'])}")
     lines.append(f"  target-base:       {tb['resolved'] or ''} (requested {tb['requested'] or ''}, from {tb['resolved_from'] or ''})")
-    lines.append(f"  scanner-digest:    {digest_line(sc['repo_digests'], sc['image_id'], 'none')}")
+    lines.append(f"  scanner-digest:    {digest_line(sc['repo_digests'], sc['image_id'], 'none', sc['platform'])}")
     lines.append(f"  openscap:          {sc['openscap_version'] or 'unknown'}")
     if donor:
-        lines.append(f"  donor-digest:      {digest_line(donor['repo_digests'], donor['image_id'], 'none')} (used for {', '.join(donor['used_for'])})")
+        lines.append(f"  donor-digest:      {digest_line(donor['repo_digests'], donor['image_id'], 'none', donor['platform'])} (used for {', '.join(donor['used_for'])})")
     lines.append(f"  datastream-source: {ds['source'] or ''}")
     lines.append(f"  datastream-sha256: {ds['sha256'] or 'unavailable'}")
     bench = f"{ds['benchmark_id'] or 'unknown'} {ds['benchmark_version'] or ''}".rstrip()

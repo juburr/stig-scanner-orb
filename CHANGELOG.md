@@ -46,8 +46,16 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 
 - Every helper and scanner container now runs from the resolved local image
   id, so the recorded image is the one that ran even if a tag moves mid-scan.
-- Donated datastreams are cached per donor image id, so a cached file is
-  never reused or attributed across donor images.
+- Donated and `datastream_path` datastreams are copied into a private per-scan
+  snapshot that both the hash and the scan read, so the recorded sha256 is the
+  hash of the bytes `oscap` evaluated. The old `~/.cache` datastream cache is
+  gone: a reused file could be stale or modified and still be attributed to
+  the pinned donor.
+- `provenance.json` records each image's `platform` (`os/arch`); the pinned
+  Chainguard digest is a multi-platform index, so the digest alone does not
+  say which build ran.
+- Image pulls retry transient registry failures (3 attempts, 10 s / 20 s
+  backoff).
 - With `datastream_path` set, the recorded datastream name is the supplied
   file's name instead of the target's default name.
 

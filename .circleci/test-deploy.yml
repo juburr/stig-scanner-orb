@@ -74,6 +74,8 @@ jobs:
             assert p["datastream"]["benchmark_version"], "no benchmark version"
             assert p["target"]["repo_digests"], "target pulled from cgr.dev must have a repo digest"
             assert p["donor"]["used_for"] == ["extraction"]
+            assert p["scanner"]["platform"].startswith("linux/"), "scanner platform not recorded"
+            assert p["target"]["platform"] == p["scanner"]["platform"], "target/scanner platform mismatch on one runner"
             ' "$pinned"
       - store_artifacts:
           path: build/stig
@@ -283,6 +285,8 @@ workflows:
                   assert p["datastream"]["ssg_version"], "RHEL datastream is SSG content"
                   assert p["donor"]["used_for"] == ["extraction", "datastream"]
                   assert p["target_base"]["resolved"] == "rhel9"
+                  assert p["scanner"]["platform"] == "linux/amd64", p["scanner"]
+                  assert p["donor"]["platform"].startswith("linux/"), p["donor"]
                   '
                   na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
                   ev=$(awk '/^Evaluated rules:/ {print $3}' build/stig/summary.txt)
