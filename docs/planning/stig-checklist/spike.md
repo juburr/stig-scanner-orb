@@ -29,7 +29,8 @@ DISA files came from `https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip/U_<S
 |---|---|---|---|---|---|---|
 | SSG only (no DISA file) | 436 | 62 | 7 | 366 | 1 | n/a |
 | DISA V2R9 skeleton (matches the content) | 445 | 62 | 7 | 366 | 10 | 0 |
-| DISA V2R10 skeleton (newest, 30 Sep 2026) | 445 | 62 | 7 | 366 | 10 | 200 |
+| DISA V2R10 skeleton (newest, 30 Sep 2026), results carried across revisions (first spike run) | 445 | 62 | 7 | 366 | 10 | 200 |
+| DISA V2R10 skeleton, revision-mismatched rows Not_Reviewed (current default, plan D7) | 445 | 24 | 3 | 209 | 209 | 200 |
 
 Ubuntu 22.04: 188 rows SSG-only; DISA V2R8 skeleton 188 rows, 0 mismatches;
 DISA V2R10 skeleton 191 rows (3 new, uncovered), 47 mismatches.
@@ -128,9 +129,13 @@ datastream sha256, target digest, scan time).
 6. **Most revision bumps don't change the check.** Of 206 RHEL 9 V2R9→V2R10
    rule-revision bumps, 153 changed none of the title, discussion,
    check, fix, severity or CCI fields; ~26 changed check or fix text. V2R10 also
-   added 2 Vulns and removed 2. With the matching-release DISA data on hand,
-   the generator can carry a result forward where the check text is unchanged
-   and mark it Not_Reviewed where it changed.
+   added 2 Vulns and removed 2. Without the matching-release text the
+   generator can't tell the two kinds apart. Carrying the result forward
+   would let a changed requirement show as assessed, so a revision mismatch
+   defaults to Not_Reviewed, with the old result kept as evidence (PR
+   review; plan D7). With the matching-release DISA data on hand, the
+   generator can carry a result forward where the check text is unchanged
+   and keep Not_Reviewed where it changed.
 
 7. **SSG 0.1.82 carries no CCIs** (zero `CCI-` strings in `ssg-rhel9-ds.xml`).
    DISA's manual XCCDF has them for every rule (161 distinct CCIs across RHEL 9

@@ -130,7 +130,14 @@ def classify_na(gates):
     terms = gate_terms(gates)
     if not terms:
         return "check"
-    if any(HOST_TERMS.match(t) for t in terms):
+    # An "_or_" inside a compound id hides its logical structure (results.xml
+    # carries no CPE platform-specification), so don't claim a category.
+    if any("_or_" in g for g in gates):
+        return "platform"
+    # Package terms never count as host terms, even when the package name
+    # contains "kernel" (e.g. package_kernel-tools): a rule N/A because such
+    # a package is absent is a "package not installed" row.
+    if any(HOST_TERMS.match(t) for t in terms if not t.startswith("package_")):
         return "host"
     pk = [t[len("package_"):] for t in terms if t.startswith("package_")]
     if pk and len(pk) == len(terms):
@@ -317,8 +324,11 @@ def build_model(res, disa, plan, runner_arch=None):
                         f"{target_arch or 'unknown'}. Verify applicability manually."]
         elif status == "Not_Applicable":
             comments = [justification(c, list(g)) for c, g in sorted(na_cats)]
+        # The N/A category travels in the model, so reporting never has to
+        # parse it back out of the justification prose.
+        na_category = "+".join(sorted({c.partition(":")[0] for c, _ in na_cats})) if status == "Not_Applicable" else None
         head = f"Automated result from OpenSCAP ({len(rids)} SSG rule{'s' if len(rids) > 1 else ''}):"
-        return status, head + "\n" + "\n".join(details) + "\n\n" + prov_txt, "\n".join(dict.fromkeys(comments)), ruleids
+        return status, head + "\n" + "\n".join(details) + "\n\n" + prov_txt, "\n".join(dict.fromkeys(comments)), ruleids, na_category
 
     vulns = []
     if disa:
@@ -329,14 +339,22 @@ def build_model(res, disa, plan, runner_arch=None):
         for g in disa["groups"]:
             rids = by_vid.get(g["vid"], [])
             seen.add(g["vid"])
+            na_category = None
             if rids:
-                status, detail, comment, ssg_rule_ids = vuln_from_ssg(g["vid"], rids)
+                status, detail, comment, ssg_rule_ids, na_category = vuln_from_ssg(g["vid"], rids)
                 if g["rule_id"] not in ssg_rule_ids:
-                    detail += (f"\n\nNote: the scanner content maps this check to {', '.join(sorted(ssg_rule_ids))}; "
-                               f"this checklist's STIG release has {g['rule_id']}. Verify the check still applies.")
+                    # The requirement was revised after the release the content
+                    # targets, and nothing here proves the check is unchanged,
+                    # so don't carry the verdict: keep it as evidence only.
+                    detail += (f"\n\nRevision mismatch: the scanner content maps this check to "
+                               f"{', '.join(sorted(ssg_rule_ids))}; this checklist's STIG release has {g['rule_id']}. "
+                               f"Automated result for the older revision: {status}.")
+                    status, na_category = "Not_Reviewed", None
+                    comment = (f"Not reviewed: this STIG release revised the requirement ({g['rule_id']}), and the "
+                               f"automated result comes from content aligned to an earlier revision. Re-verify.")
             else:
                 status, detail, comment = "Not_Reviewed", "", "No automated check for this requirement in the scanner content; manual review required."
-            vulns.append({**g, "status": status, "finding_details": detail, "comments": comment})
+            vulns.append({**g, "status": status, "finding_details": detail, "comments": comment, "na_category": na_category})
         stig["unmatched_ssg_vids"] = sorted(set(by_vid) - seen)
     else:
         key = res["benchmark_id"].replace("xccdf_org.ssgproject.content_benchmark_", "")
@@ -349,13 +367,15 @@ def build_model(res, disa, plan, runner_arch=None):
             rids = by_vid[vid]
             first = res["rules"][sorted(rids)[0]]
             sev = max((res["rules"][r]["severity"] for r in rids), key=lambda s: {"high": 3, "medium": 2, "low": 1}.get(s, 0))
-            status, detail, comment, ssg_rule_ids = vuln_from_ssg(vid, rids)
+            status, detail, comment, ssg_rule_ids, na_category = vuln_from_ssg(vid, rids)
+            # SSG-only text follows ComplianceAsCode's own convention:
+            # discussion <- rationale, fix text <- description.
             vulns.append({
                 "vid": vid, "group_title": first["srg"] or "", "rule_id": sorted(ssg_rule_ids)[0], "severity": sev,
                 "weight": "10.0", "rule_ver": first["stig_id"] or "", "rule_title": first["title"],
-                "discussion": first["description"], "check_content": "Automated OpenSCAP check: " + ", ".join(sorted(rids)),
-                "check_ref": "M", "fix_text": "", "ccis": [], "legacy": [], "documentable": "false",
-                "status": status, "finding_details": detail, "comments": comment,
+                "discussion": first["rationale"], "check_content": "Automated OpenSCAP check: " + ", ".join(sorted(rids)),
+                "check_ref": "M", "fix_text": first["description"], "ccis": [], "legacy": [], "documentable": "false",
+                "status": status, "finding_details": detail, "comments": comment, "na_category": na_category,
             })
     stig["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, f"stig-scanner-orb:{stig['benchmark_id']}:{stig['version']}:{stig['releaseinfo']}"))
     return stig, vulns
@@ -515,10 +535,7 @@ def main():
     write_ckl(f"{a.out_dir}/{a.stem}.ckl", asset, stig, vulns)
     write_cklb(f"{a.out_dir}/{a.stem}.cklb", asset, stig, vulns, now)
     counts = collections.Counter(v["status"] for v in vulns)
-    na = collections.Counter()
-    for v in vulns:
-        if v["status"] == "Not_Applicable":
-            na[v["comments"].split(":")[0]] += 1
+    na = collections.Counter(v["na_category"] for v in vulns if v["status"] == "Not_Applicable")
     print(json.dumps({"stig": {k: stig[k] for k in ("benchmark_id", "version", "releaseinfo")},
                       "vulns": len(vulns), "status": counts, "na_by_reason": na,
                       "ssg_vids_not_in_disa": stig["unmatched_ssg_vids"]}, indent=1, default=list))
