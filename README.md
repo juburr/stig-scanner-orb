@@ -99,12 +99,15 @@ To keep the 1.x result, set `profile_id: xccdf_org.ssgproject.content_profile_an
 
 Google distroless images (`gcr.io/distroless/*-debian12`) ship `/etc/os-release` (`ID=debian`, `VERSION_ID=12`), so `auto` resolves them to `debian12`. They do not ship `/var/lib/dpkg/status`: each installed package is a stanza in its own file under `/var/lib/dpkg/status.d/`. OpenSCAP's dpkg probe reads only the status file, so without it every package check comes back `error`, and "package X must not be installed" rules are never evaluated.
 
-- **Image mode:** the orb builds `/var/lib/dpkg/status` from the `status.d/` stanzas in its scratch copy of the rootfs (never in the image), adding the `Status: install ok installed` line dpkg would have recorded. `summary.txt` shows `dpkg-status: synthesized … (N packages)`, and `provenance.json` records `target.dpkg_status`. Against `cc-debian12` this turns 27 `error` results into evaluated rules with the default CIS Level 1 Server profile (5 with the legacy `anssi_np_nt28_high`).
-- **`rootfs_path` mode:** the orb never modifies your tree. It records `dpkg_status: missing` and prints a warning in the log and `summary.txt`. To fix it, add the file to your extracted tree before the scan:
+- **Image mode:** the orb builds `/var/lib/dpkg/status` from the `status.d/` stanzas in its scratch copy of the rootfs (never in the image), adding the `Status: install ok installed` line dpkg would have recorded. `summary.txt` shows `dpkg-status: synthesized … (N packages)`, and `provenance.json` records `target.dpkg_status`. Against `cc-debian12` this turns 27 `error` results into evaluated rules with the default CIS Level 1 Server profile (5 with the legacy `anssi_np_nt28_high`). If the file can't be built (`status.d/` holds no package stanzas, or `/var/lib/dpkg` is a symlink, which the orb won't write through), the scan records `dpkg_status: missing` with the reason and warns, as in `rootfs_path` mode.
+- **`rootfs_path` mode:** the orb never modifies your tree. It records `dpkg_status: missing` and prints a warning in the log and `summary.txt`. To fix it, add the file to your extracted tree before the scan (with the same `Status` line image mode adds):
   ```sh
   d=/path/to/rootfs/var/lib/dpkg
   for f in "$d"/status.d/*; do
-    case "$f" in *.md5sums) ;; *) awk 1 "$f"; echo ;; esac
+    case "$f" in *.md5sums) continue ;; esac
+    if grep -q '^Status:' "$f"; then awk 1 "$f"
+    else awk '{ print } /^Package:/ { print "Status: install ok installed" }' "$f"; fi
+    echo
   done > "$d/status"
   ```
 
@@ -255,7 +258,7 @@ Docker resolves the digest and ignores the tag, which is kept so a reader can se
 
 Cite `repo_digests` as the image digest, together with `platform`: the pinned Chainguard digest is a multi-platform index, which names the amd64 and arm64 builds at once, and the platform says which of its manifests ran (`summary.txt` prints it in brackets after each digest). `image_id` is store-dependent: on Docker's classic image store it is the config digest, on the containerd store it is the manifest or index digest. Every helper and scanner container runs from the resolved image id, so the recorded image is the one that ran even if a tag moved mid-scan.
 
-A donated or `datastream_path` datastream is copied into a private per-scan snapshot directory, and both the hash and the scan read that snapshot, so `datastream.sha256` is the hash of the bytes `oscap` evaluated even if the original file changes mid-scan. Donated datastreams are not cached between scans: a reused file could be stale or modified and still be attributed to the pinned donor. Bundled datastreams are read from inside the digest-pinned scanner image.
+A donated or `datastream_path` datastream is copied into a private per-scan snapshot directory (as root inside a container, so a `datastream_path` only root can read works, as it does for the root-run scan), and both the hash and the scan read that snapshot, so `datastream.sha256` is the hash of the bytes `oscap` evaluated even if the original file changes mid-scan. Donated datastreams are not cached between scans: a reused file could be stale or modified and still be attributed to the pinned donor. Bundled datastreams are read from inside the digest-pinned scanner image.
 
 ### Updating the pinned images
 
@@ -306,7 +309,7 @@ Not the orb's traffic, but present in any CircleCI job: the `checkout` step talk
 ### What runs, and with which privileges
 
 - The scan job needs the **machine executor** (a VM with a local Docker daemon). The orb mounts no Docker socket into any container and uses no `--privileged`, `--pid=host`, or host networking.
-- Every container runs as root (`-u 0:0`) *inside* the container, so the extracted rootfs keeps the image's numeric UIDs/GIDs and OpenSCAP (and the datastream hash) can read every file, including a `datastream_path` kept in a private directory. Each sees only what it needs: the extraction and dpkg-synthesis helpers get the scratch rootfs directory, the donation helper gets the per-scan datastream snapshot directory, the datastream-hashing container gets only that snapshot (read-only), and the scanner gets the rootfs **read-only**, the output directory, and, for RPM targets or `datastream_path`, the snapshot read-only.
+- Every container runs as root (`-u 0:0`) *inside* the container, so the extracted rootfs keeps the image's numeric UIDs/GIDs and OpenSCAP can read every file, including a `datastream_path` only root can read. Each sees only what it needs: the extraction and dpkg-synthesis helpers get the scratch rootfs directory, the datastream snapshot helper gets the per-scan snapshot directory (plus, for `datastream_path`, that one file read-only), the datastream-hashing container gets only the snapshot (read-only), and the scanner gets the rootfs **read-only**, the output directory, and, for RPM targets or `datastream_path`, the snapshot read-only.
 - Results are `chown`ed back to the runner's UID/GID. The scratch rootfs and the datastream snapshot are removed at the end of the step, including on failure; nothing persists in the runner's home directory.
 - `/etc/os-release` from the target image is parsed as data with `awk`, never sourced, and symlinks that would point outside the extracted rootfs are rejected.
 

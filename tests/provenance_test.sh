@@ -149,7 +149,7 @@ printf '%s\n' "target_base=debian12" "scanner=s" "datastream=ssg-debian12-ds.xml
     "dpkg_status=synthesized" "dpkg_status_packages=11" "image=gcr.io/distroless/cc-debian12:latest" \
     > "${dir}/scan-plan.env"
 summarize "${dir}" || fail "dpkg-synth: summarize exited $?"
-check_json dpkg-synth "${dir}" 'p["target"]["dpkg_status"] == {"state": "synthesized", "packages": 11, "source": "/var/lib/dpkg/status.d"}'
+check_json dpkg-synth "${dir}" 'p["target"]["dpkg_status"] == {"state": "synthesized", "packages": 11, "source": "/var/lib/dpkg/status.d", "reason": None}'
 check_summary dpkg-synth "${dir}" "  dpkg-status:       synthesized from /var/lib/dpkg/status.d (11 packages)"
 if grep -q "^WARNING: the target has /var/lib/dpkg/status.d/" "${dir}/summary.txt"; then
     fail "dpkg-synth: must not warn when the status file was synthesized"
@@ -159,11 +159,26 @@ dir="$(mktemp -d)"
 ssg_results > "${dir}/results.xml"
 printf '%s\n' "target_base=debian12" "scanner=s" "datastream=ssg-debian12-ds.xml" \
     "profile=xccdf_org.ssgproject.content_profile_stig" "family=dpkg" \
-    "dpkg_status=missing" "dpkg_status_packages=" "rootfs_path=/tmp/rootfs" \
+    "dpkg_status=missing" "dpkg_status_packages=" \
+    "dpkg_status_reason=the orb does not modify a rootfs_path tree" "rootfs_path=/tmp/rootfs" \
     > "${dir}/scan-plan.env"
 summarize "${dir}" || fail "dpkg-missing: summarize exited $?"
 check_json dpkg-missing "${dir}" 'p["target"]["dpkg_status"]["state"] == "missing" and p["target"]["dpkg_status"]["packages"] is None'
+check_json dpkg-missing "${dir}" 'p["target"]["dpkg_status"]["reason"] == "the orb does not modify a rootfs_path tree"'
 check_summary dpkg-missing "${dir}" "WARNING: the target has /var/lib/dpkg/status.d/ but no /var/lib/dpkg/status"
+check_summary dpkg-missing "${dir}" "none was built (the orb does not modify a rootfs_path tree)"
+
+# Image mode whose status.d/ had nothing to build from: same warning.
+dir="$(mktemp -d)"
+ssg_results > "${dir}/results.xml"
+printf '%s\n' "target_base=debian12" "scanner=s" "datastream=ssg-debian12-ds.xml" \
+    "profile=xccdf_org.ssgproject.content_profile_stig" "family=dpkg" \
+    "dpkg_status=missing" "dpkg_status_packages=" \
+    "dpkg_status_reason=status.d/ holds no package stanzas" "image=example/empty-status-d:1" \
+    > "${dir}/scan-plan.env"
+summarize "${dir}" || fail "dpkg-empty: summarize exited $?"
+check_json dpkg-empty "${dir}" 'p["target"]["dpkg_status"] == {"state": "missing", "packages": None, "source": "/var/lib/dpkg/status.d", "reason": "status.d/ holds no package stanzas"}'
+check_summary dpkg-empty "${dir}" "none was built (status.d/ holds no package stanzas)"
 
 # --- no scan-plan.env: provenance.json still written from results.xml ----
 dir="$(mktemp -d)"

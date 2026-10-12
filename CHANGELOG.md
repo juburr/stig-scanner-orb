@@ -55,7 +55,9 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   probe cannot read, so package rules came back `error`. In image mode the orb
   now builds `/var/lib/dpkg/status` from those stanzas in its scratch copy of
   the rootfs and records that in `summary.txt` / `provenance.json`;
-  `rootfs_path` trees are left untouched and get a warning instead. With no
+  `rootfs_path` trees are left untouched and get a warning instead, as does
+  an image whose file can't be built (no package stanzas in `status.d/`, or a
+  symlinked `/var/lib/dpkg`). With no
   `/etc/os-release`, `target_base: auto` now also recognizes the `status.d/`
   layout as `debian12` (it previously failed to detect such images).
 - Smoke coverage for `ubi9/ubi-minimal`, `ubi8/ubi-minimal` (CIS L1), and
@@ -76,7 +78,8 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   id, so the recorded image is the one that ran even if a tag moves mid-scan.
 - Donated and `datastream_path` datastreams are copied into a private per-scan
   snapshot that both the hash and the scan read, so the recorded sha256 is the
-  hash of the bytes `oscap` evaluated. The old `~/.cache` datastream cache is
+  hash of the bytes `oscap` evaluated. The copy runs as root in a container,
+  so a root-only `datastream_path` still works. The old `~/.cache` datastream cache is
   gone: a reused file could be stale or modified and still be attributed to
   the pinned donor.
 - `provenance.json` records each image's `platform` (`os/arch`); the pinned

@@ -483,32 +483,35 @@ workflows:
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-datastream-path
-          # datastream_path mode with the file in a private (0700) directory,
-          # the way a consumer-supplied datastream often lands (mktemp -d).
-          # The Chainguard scanner's default user (65532) can't traverse that
-          # directory; the scan runs as root and must hash the file as root
-          # too, or provenance silently loses datastream.sha256.
+          # datastream_path mode with a root-owned 0600 file, as written by a
+          # root-running container in an earlier step. The runner user can't
+          # read it, but the root-run scan can, so the snapshot copy must run
+          # as root too; the hash must then describe that file.
           image: cgr.dev/chainguard/static:latest
           target_base: wolfi
           datastream_path: /tmp/ds-private/ssg-chainguard-gpos-ds.xml
           checkout: false
           pre-steps:
             - run:
-                name: Stage a datastream in a private directory
+                name: Stage a root-only datastream
                 command: |
                   set -e
                   mkdir -m 0700 /tmp/ds-private
-                  docker run --rm --entrypoint cat cgr.dev/chainguard/openscap:latest-dev \
-                    /usr/share/xml/scap/ssg/content/ssg-chainguard-gpos-ds.xml \
-                    > /tmp/ds-private/ssg-chainguard-gpos-ds.xml
-                  chmod 0600 /tmp/ds-private/ssg-chainguard-gpos-ds.xml
-                  test -s /tmp/ds-private/ssg-chainguard-gpos-ds.xml
+                  docker run --rm --network none -u 0:0 -v /tmp/ds-private:/w \
+                    --entrypoint sh cgr.dev/chainguard/openscap:latest-dev -c '
+                      cp /usr/share/xml/scap/ssg/content/ssg-chainguard-gpos-ds.xml /w/
+                      chmod 0600 /w/ssg-chainguard-gpos-ds.xml'
+                  sudo test -s /tmp/ds-private/ssg-chainguard-gpos-ds.xml
+                  if cat /tmp/ds-private/ssg-chainguard-gpos-ds.xml > /dev/null 2>&1; then
+                    echo "the runner can read the fixture; this job would not test a root-only file" >&2
+                    exit 1
+                  fi
           post-steps:
             - run:
                 name: Assert the supplied datastream was evaluated and hashed
                 command: |
                   set -e
-                  want=$(sha256sum /tmp/ds-private/ssg-chainguard-gpos-ds.xml | cut -d' ' -f1)
+                  want=$(sudo sha256sum /tmp/ds-private/ssg-chainguard-gpos-ds.xml | cut -d' ' -f1)
                   python3 -c '
                   import json, sys
                   want = sys.argv[1]
