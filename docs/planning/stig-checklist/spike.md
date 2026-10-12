@@ -13,7 +13,7 @@ RPM targets) and 1.4.4 (Chainguard, everything else). Prototype code is in
 | Real scan | `scan.sh` against `ubuntu:22.04` | 23 pass / 7 fail / 198 notapplicable / 2 notchecked |
 | Real scan | `scan.sh` against `cgr.dev/chainguard/static` | GPOS SRG rule ids + CCIs, a different shape (see "Out of scope") |
 | Generator | `spike/xccdf2ckl.py` on each `results.xml`, with and without DISA's manual XCCDF | `.ckl` + `.cklb` per run, ~2 s for a 19 MB `results.xml` |
-| Validator | `spike/validate.mjs` = STIG Manager's own parsers, `@nuwcdivnpt/stig-manager-client-modules` 1.6.8 (`reviewsFromCkl`, `reviewsFromCklb`) | every output parses, right revision string and row count, no parser errors |
+| Validator | `spike/validate.mjs` = STIG Manager's own parsers, `@nuwcdivnpt/stig-manager-client-modules` 1.6.8 (`reviewsFromCkl`, `reviewsFromCklb`) | every output parses with no parser errors; benchmark id, revision string, row count and status tally match what the generator wrote |
 | Fingerprint | `spike/fingerprint.py`: SSG `stig` profile SV-ids vs each DISA manual XCCDF | each pinned datastream matches exactly one DISA release |
 | Schema | `spike/cklb_schema_check.py`: DISA's `SV3_CKLB_1_0_JSON_SCHEMA.json` (sha256 `8b88205d…`), raw and patched to allow `stigs[].version`, `rules[].srg_id`, `target_data.classification` (fields STIG Viewer 3.7+ itself writes) | 0 errors patched; raw schema rejects only `stigs[].version` and `target_data.classification` |
 

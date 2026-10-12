@@ -271,6 +271,20 @@ ARCH_TERM = re.compile(r"^(not_)?(x86_64|aarch64|ppc64le|s390x)_arch$")
 SSG_CPU = {"x86_64": "amd64", "aarch64": "arm64", "ppc64le": "ppc64le", "s390x": "s390x"}
 
 
+# "<cpu>_arch" terms inside an opaque id (e.g. "aarch64_arch_or_x86_64_arch"),
+# unrecognized CPUs included, so they can never be trusted by accident.
+ARCH_IN_ID = re.compile(r"(?:^|_and_|_or_)((?:not_)?(?:x86_64|[a-z0-9]+)_arch)(?=_and_|_or_|$)")
+
+
+def arch_terms(p):
+    """Architecture terms of a platform id: the "_and_" terms ending in _arch,
+    or, for an opaque "_or_" id, every arch term found inside it."""
+    p = p.lstrip("#")
+    if "_or_" in p:
+        return ARCH_IN_ID.findall(p)
+    return [t for t in gate_terms([p]) if t.endswith("_arch")]
+
+
 def norm_arch(a):
     return ARCH_ALIASES.get(a, a) if a else None
 
@@ -328,11 +342,14 @@ def build_model(res, disa, plan, runner_arch=None):
 
     def classify_gate(g):
         """Category for one false platform id at a rule's deciding level."""
+        arch_ts = arch_terms(g)
         if "_or_" in g:
-            return "platform"  # opaque: results.xml has no CPE logic
+            # Opaque: results.xml has no CPE logic, so only the runner's
+            # verdict on the whole id exists, and it holds for the target
+            # only if no arch term inside can differ between the two.
+            return "platform" if arch_trusted(arch_ts) else "arch?"
         terms = gate_terms([g])
-        arch_ts = [t for t in terms if t.endswith("_arch")]
-        other = [t for t in terms if not t.endswith("_arch")]
+        other = [t for t in terms if t not in arch_ts]
         if len(terms) == 1 and not arch_ts:
             return classify_na([g])  # the gate itself is the term: known false
         # A non-arch term known false decides the N/A by itself.
@@ -358,8 +375,12 @@ def build_model(res, disa, plan, runner_arch=None):
 
     def platform_target_truth(p):
         """True / False / None: does platform p hold for the *target*?"""
-        terms = gate_terms([p])
-        arch_ts = [t for t in terms if t.endswith("_arch")]
+        arch_ts = arch_terms(p)
+        if "_or_" in p:
+            # Opaque: a false arch term inside proves nothing about the id.
+            if arch_trusted(arch_ts):
+                return True if p in true_p else False if p in known_false else None
+            return None
         if any(arch_term_value(t, target_arch) is False for t in arch_ts):
             return False
         if arch_trusted(arch_ts):  # runner verdict carries over (vacuously so without arch terms)
@@ -367,9 +388,7 @@ def build_model(res, disa, plan, runner_arch=None):
                 return True
             if p in known_false:
                 return False
-        if "_or_" in p:
-            return None
-        other = [t for t in terms if not t.endswith("_arch")]
+        other = [t for t in gate_terms([p]) if t not in arch_ts]
         if any(term_state(t) is False for t in other):
             return False
         if all(arch_term_value(t, target_arch) is True for t in arch_ts) and all(term_state(t) is True for t in other):
@@ -417,7 +436,7 @@ def build_model(res, disa, plan, runner_arch=None):
 
     def vuln_from_ssg(vid, rids):
         details, comments, ruleids = [], [], set()
-        na_cats, effective = set(), []
+        na_cats, effective, uncertain = set(), [], set()
         for rid in sorted(rids):
             r, result = res["rules"][rid], res["results"][rid]
             if vid[2:] in r["svs"]:
@@ -427,11 +446,17 @@ def build_model(res, disa, plan, runner_arch=None):
             if result == "notapplicable":
                 gates = unmet_gates(r, true_p)
                 cat = classify_level(gates)
-                na_cats.add((cat, tuple(gates)))
                 if gates:
                     line += f" (platform not met: {', '.join(g.lstrip('#') for g in gates)})"
                 if cat == "arch?":
-                    line += " " + arch_note
+                    # The N/A may not hold for the target, so the rule counts
+                    # as unevaluated *before* aggregation: a passing sibling
+                    # rule must not carry the V-ID to NotAFinding.
+                    eff = "notchecked"
+                    uncertain.add("na")
+                    line += " -> not reviewed " + arch_note
+                else:
+                    na_cats.add((cat, tuple(gates)))
             elif result != "notselected":
                 verdict, level = target_verdict(r)
                 if verdict == "na":
@@ -442,21 +467,23 @@ def build_model(res, disa, plan, runner_arch=None):
                     line += f" -> notapplicable for the target ({target_arch}): an architecture gate passed on the scanning host ({runner_arch}) is false for it"
                 elif verdict == "uncertain":
                     eff = "notchecked"
+                    uncertain.add("eval")
                     line += " -> not reviewed " + arch_note
             effective.append((rid, eff))
             details.append(line)
         status = aggregate(effective)
-        if status == "Not_Applicable" and any(c == "arch?" for c, _ in na_cats):
-            status = "Not_Reviewed"
-            comments = [f"Not reviewed: this N/A rests on a CPU-architecture check that OpenSCAP evaluated against "
-                        f"the scanning host ({runner_arch}), and the target's architecture is "
-                        f"{target_arch or 'unknown'}. Verify applicability manually."]
-        elif status == "Not_Applicable":
+        if status == "Not_Applicable":
             comments = [justification(c, list(g)) for c, g in sorted(na_cats)]
-        elif status == "Not_Reviewed" and any(e == "notchecked" and res["results"][rid] != "notchecked" for rid, e in effective):
-            comments = [f"Not reviewed: OpenSCAP evaluated this requirement past a CPU-architecture check on the scanning "
-                        f"host ({runner_arch}), which can't be decided for the target ({target_arch or 'architecture unknown'}). "
-                        f"The automated result is kept in the finding details; verify manually."]
+        elif status == "Not_Reviewed" and uncertain:
+            if "na" in uncertain:
+                comments.append(f"Not reviewed: OpenSCAP marked a contributing check notapplicable on a CPU-architecture "
+                                f"condition it evaluated against the scanning host ({runner_arch}); the target's "
+                                f"architecture is {target_arch or 'unknown'}. Verify applicability manually.")
+            if "eval" in uncertain:
+                comments.append(f"Not reviewed: OpenSCAP evaluated a contributing check past a CPU-architecture condition on "
+                                f"the scanning host ({runner_arch}), which can't be decided for the target "
+                                f"({target_arch or 'architecture unknown'}). The automated result is kept in the finding "
+                                f"details; verify manually.")
         # The N/A category travels in the model, so reporting never has to
         # parse it back out of the justification prose.
         na_category = "+".join(sorted({c.partition(":")[0] for c, _ in na_cats})) if status == "Not_Applicable" else None
@@ -489,13 +516,15 @@ def build_model(res, disa, plan, runner_arch=None):
                 status, detail, comment = "Not_Reviewed", "", "No automated check for this requirement in the scanner content; manual review required."
             vulns.append({**g, "status": status, "finding_details": detail, "comments": comment, "na_category": na_category})
         stig["unmatched_ssg_vids"] = sorted(set(by_vid) - seen)
+        stig["mapped_vids"] = len(set(by_vid) & seen)
     else:
         key = res["benchmark_id"].replace("xccdf_org.ssgproject.content_benchmark_", "")
         bid, title = SSG_STIG_IDS.get(key, (key + "_STIG", res["profile_title"]))
         ver, rel = res["disa_version"] or ("0", "0")
         stig = {"benchmark_id": bid, "title": title, "description": res["profile_title"], "version": ver,
                 "releaseinfo": f"Release: {rel} Benchmark Date: unknown (derived from {res['benchmark_id']} {res['benchmark_version']})",
-                "filename": f"{res['benchmark_id']}-{res['profile_id']}.xml", "unmatched_ssg_vids": []}
+                "filename": f"{res['benchmark_id']}-{res['profile_id']}.xml", "unmatched_ssg_vids": [],
+                "mapped_vids": len(by_vid)}
         for vid in sorted(by_vid, key=lambda v: int(v[2:])):
             rids = by_vid[vid]
             first = res["rules"][sorted(rids)[0]]
@@ -668,6 +697,18 @@ def main():
                 plan[k] = v
     disa = parse_disa(a.disa) if a.disa else None
     stig, vulns = build_model(res, disa, plan, a.runner_arch)
+    # A STIG-named profile still proves nothing about the mapping: content
+    # whose references moved to another URL (or a custom datastream without
+    # them) would yield an empty "checklist" that row-count checks can't
+    # catch. Require at least one selected rule mapped to a DISA V-ID.
+    if not stig["mapped_vids"]:
+        if disa:
+            # The user's DISA file shares no V-ID with the scan: wrong STIG.
+            print(json.dumps({"outcome": "failed", "reason": f"no selected rule maps to a V-ID in {stig['filename']}"}))
+            return 1
+        print(json.dumps({"outcome": "skipped", "reason": f"profile {res['profile_id']} has no selected rule "
+                          f"with a DISA reference ({HREF_RULE} SV-..._rule)"}))
+        return 0
     asset = {
         "ROLE": "None", "ASSET_TYPE": "Computing", "MARKING": "CUI", "HOST_NAME": a.host_name,
         "TARGET_COMMENT": "Container image " + target_ref(plan)
@@ -693,7 +734,7 @@ def main():
         os.replace(staged[ext], final[ext])
     counts = collections.Counter(v["status"] for v in vulns)
     na = collections.Counter(v["na_category"] for v in vulns if v["status"] == "Not_Applicable")
-    print(json.dumps({"stig": {k: stig[k] for k in ("benchmark_id", "version", "releaseinfo")},
+    print(json.dumps({"outcome": "generated", "stig": {k: stig[k] for k in ("benchmark_id", "version", "releaseinfo")},
                       "vulns": len(vulns), "status": counts, "na_by_reason": na,
                       "ssg_vids_not_in_disa": stig["unmatched_ssg_vids"]}, indent=1, default=list))
 
