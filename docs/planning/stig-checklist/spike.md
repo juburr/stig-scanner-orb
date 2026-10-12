@@ -130,7 +130,10 @@ datastream sha256, target digest, scan time).
    `stig` profile (RHEL 10: a local scan with the pinned datastream).
    Counting the profile's explicit selects instead gives 366 and 440 on
    RHEL 8/9, because `conflicts` deselects 4 coredump rules there. The
-   chosen releases are the same either way.
+   chosen releases are the same either way. The `stig_gui` profiles
+   (accepted for RHEL, D11), scanned the same way, select no rule `stig`
+   lacks and match the same releases in full: RHEL 9 432/432, RHEL 8
+   359/359, RHEL 10 431/431.
 
    The release a checklist claims must come from this SV-id match, recorded
    per pinned datastream (plan D4 keys it on the datastream's sha256) and

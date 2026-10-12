@@ -298,6 +298,11 @@ SSG_STIG_IDS = {  # SSG benchmark -> DISA benchmark id / title (SSG-only mode)
 }
 
 
+# scan-plan.env target_base -> DISA benchmark id, for checking a user's DISA file
+# when the results' benchmark isn't one of the SSG_STIG_IDS above.
+TARGET_STIG = {"rhel8": "RHEL_8_STIG", "rhel9": "RHEL_9_STIG", "rhel10": "RHEL_10_STIG", "ubuntu2204": "CAN_Ubuntu_22-04_LTS_STIG"}
+
+
 ARCH_ALIASES = {"x86_64": "amd64", "aarch64": "arm64"}
 ARCH_TERM = re.compile(r"^(not_)?(x86_64|aarch64|ppc64le|s390x)_arch$")
 SSG_CPU = {"x86_64": "amd64", "aarch64": "arm64", "ppc64le": "ppc64le", "s390x": "s390x"}
@@ -760,8 +765,7 @@ def main():
         except FileNotFoundError:
             pass
 
-    with open(a.results, "rb") as f:
-        results_sha = hashlib.sha256(f.read()).hexdigest()
+    results_sha = None
 
     def emit(meta, rc):
         """Write the meta (staged, then renamed) and print it."""
@@ -772,77 +776,102 @@ def main():
         print(json.dumps(meta, indent=1, default=list))
         return rc
 
-    # Only known tokens; an empty or unknown selection is a config error, not
-    # a silently empty "generated" checklist (D8).
-    formats = list(dict.fromkeys(t.strip().lower() for t in a.formats.split(",") if t.strip()))
-    if not formats or set(formats) - {"ckl", "cklb"}:
-        return emit({"outcome": "failed", "reason": f"checklist_formats {a.formats!r}: use one or both of ckl, cklb"}, 1)
-
-    res = parse_results(a.results)
-    # Gate on the evaluated profile, not on SV references: SSG reuses rules
-    # across profiles, so e.g. RHEL 9 CIS L1 selects 160 rules that carry
-    # DISA references and would otherwise yield a partial "STIG" checklist.
-    if not re.search(r"_profile_stig(_gui)?$", res["profile_id"]):
-        return emit({"outcome": "skipped", "reason": f"profile {res['profile_id']} is not a DISA STIG profile"}, 0)
-    plan = {}
-    if a.plan:
-        for line in open(a.plan, encoding="utf-8"):
-            k, sep, v = line.rstrip("\n").partition("=")
-            if sep:
-                plan[k] = v
-    disa = parse_disa(a.disa) if a.disa else None
-    stig, vulns = build_model(res, disa, plan, a.runner_arch)
-    # A STIG-named profile still proves nothing about the mapping: content
-    # whose references moved to another URL (or a custom datastream without
-    # them) would yield an empty "checklist" that row-count checks can't
-    # catch. Require at least one selected rule mapped to a DISA V-ID.
-    if not stig["mapped_vids"]:
-        if disa:
-            # The user's DISA file shares no V-ID with the scan: wrong STIG.
-            return emit({"outcome": "failed", "reason": f"no selected rule maps to a V-ID in {stig['filename']}"}, 1)
-        return emit({"outcome": "skipped", "reason": f"profile {res['profile_id']} has no selected rule "
-                     f"with a DISA reference ({HREF_RULE} SV-..._rule)"}, 0)
-    asset = {
-        "ROLE": "None", "ASSET_TYPE": "Computing", "MARKING": "CUI", "HOST_NAME": a.host_name,
-        "TARGET_COMMENT": "Container image " + target_ref(plan)
-                          + (f" [{plan['image_platform']}]" if plan.get("image_platform") else ""),
-        "TECH_AREA": "", "TARGET_KEY": "", "WEB_OR_DATABASE": "false",
-    }
-    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-    # Stage every requested format and the meta, then publish them in one
-    # handler, the meta last: a failure or termination anywhere before the
-    # meta is in place removes every final file, so no checklist is ever
-    # left for store_artifacts without its "generated" meta (D8).
-    final = {ext: f"{a.out_dir}/{a.stem}.{ext}" for ext in formats}
-    staged = {ext: path + ".partial" for ext, path in final.items()}
-    writers = {"ckl": lambda p: write_ckl(p, asset, stig, vulns), "cklb": lambda p: write_cklb(p, asset, stig, vulns, now)}
-    counts = collections.Counter(v["status"] for v in vulns)
-    na = collections.Counter(v["na_category"] for v in vulns if v["status"] == "Not_Applicable")
+    # Everything that can fail runs under one handler, so a crash (truncated
+    # results.xml, malformed DISA file, writer error, termination) still
+    # leaves a fresh "failed" meta with the reason (D8), never no meta.
     try:
-        for ext in formats:
-            writers[ext](staged[ext])
-        meta = {"outcome": "generated", "stig": {k: stig[k] for k in ("benchmark_id", "version", "releaseinfo")},
-                "formats": {ext: hashlib.sha256(open(staged[ext], "rb").read()).hexdigest() for ext in formats},
-                "vulns": len(vulns), "status": counts, "na_by_reason": na,
-                "ssg_vids_not_in_disa": stig["unmatched_ssg_vids"], "unpaired_refs": stig["unpaired_refs"],
-                "results_sha256": results_sha}
-        with open(meta_path + ".partial", "w", encoding="utf-8") as f:
-            json.dump(meta, f, indent=1, default=list)
-        for ext in formats:
-            os.replace(staged[ext], final[ext])
-        os.replace(meta_path + ".partial", meta_path)
-    except BaseException as e:
-        for path in (*staged.values(), *final.values(), meta_path + ".partial", meta_path):
-            try:
-                os.remove(path)
-            except FileNotFoundError:
-                pass
+        with open(a.results, "rb") as f:
+            results_sha = hashlib.sha256(f.read()).hexdigest()
+
+        # Only known tokens; an empty or unknown selection is a config error, not
+        # a silently empty "generated" checklist (D8).
+        formats = list(dict.fromkeys(t.strip().lower() for t in a.formats.split(",") if t.strip()))
+        if not formats or set(formats) - {"ckl", "cklb"}:
+            return emit({"outcome": "failed", "reason": f"checklist_formats {a.formats!r}: use one or both of ckl, cklb"}, 1)
+        # HOST_NAME / host_name must be non-empty (STIG Manager rejects it):
+        # control characters dropped, capped at 255.
+        host_name = re.sub(r"[\x00-\x1f\x7f]", "", a.host_name).strip()[:255]
+        if not host_name:
+            return emit({"outcome": "failed", "reason": "the checklist asset name is empty"}, 1)
+
+        res = parse_results(a.results)
+        # Gate on the evaluated profile, not on SV references: SSG reuses rules
+        # across profiles, so e.g. RHEL 9 CIS L1 selects 160 rules that carry
+        # DISA references and would otherwise yield a partial "STIG" checklist.
+        if not re.search(r"_profile_stig(_gui)?$", res["profile_id"]):
+            return emit({"outcome": "skipped", "reason": f"profile {res['profile_id']} is not a DISA STIG profile"}, 0)
+        plan = {}
+        if a.plan:
+            for line in open(a.plan, encoding="utf-8"):
+                k, sep, v = line.rstrip("\n").partition("=")
+                if sep:
+                    plan[k] = v
+        disa = parse_disa(a.disa) if a.disa else None
+        if disa:
+            # The file must be the STIG this content implements; one shared
+            # V-ID (the mapping gate below) doesn't prove that.
+            key = res["benchmark_id"].replace("xccdf_org.ssgproject.content_benchmark_", "")
+            expected = SSG_STIG_IDS.get(key, (None,))[0] or TARGET_STIG.get(plan.get("target_base", ""))
+            if expected is None:
+                return emit({"outcome": "failed", "reason": f"can't tell which DISA STIG {res['benchmark_id']} implements, "
+                             f"so the DISA file {disa['benchmark_id']} can't be checked"}, 1)
+            if disa["benchmark_id"] != expected:
+                return emit({"outcome": "failed", "reason": f"the DISA file is {disa['benchmark_id']}, but this scan's "
+                             f"content implements {expected}"}, 1)
+        stig, vulns = build_model(res, disa, plan, a.runner_arch)
+        # A STIG-named profile still proves nothing about the mapping: content
+        # whose references moved to another URL (or a custom datastream without
+        # them) would yield an empty "checklist" that row-count checks can't
+        # catch. Require at least one selected rule mapped to a DISA V-ID.
+        if not stig["mapped_vids"]:
+            if disa:
+                # The user's DISA file shares no V-ID with the scan: wrong STIG.
+                return emit({"outcome": "failed", "reason": f"no selected rule maps to a V-ID in {stig['filename']}"}, 1)
+            return emit({"outcome": "skipped", "reason": f"profile {res['profile_id']} has no selected rule "
+                         f"with a DISA reference ({HREF_RULE} SV-..._rule)"}, 0)
+        asset = {
+            "ROLE": "None", "ASSET_TYPE": "Computing", "MARKING": "CUI", "HOST_NAME": host_name,
+            "TARGET_COMMENT": "Container image " + target_ref(plan)
+                              + (f" [{plan['image_platform']}]" if plan.get("image_platform") else ""),
+            "TECH_AREA": "", "TARGET_KEY": "", "WEB_OR_DATABASE": "false",
+        }
+        now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+        # Stage every requested format and the meta, then publish them in one
+        # handler, the meta last: a failure or termination anywhere before the
+        # meta is in place removes every final file, so no checklist is ever
+        # left for store_artifacts without its "generated" meta (D8).
+        final = {ext: f"{a.out_dir}/{a.stem}.{ext}" for ext in formats}
+        staged = {ext: path + ".partial" for ext, path in final.items()}
+        writers = {"ckl": lambda p: write_ckl(p, asset, stig, vulns), "cklb": lambda p: write_cklb(p, asset, stig, vulns, now)}
+        counts = collections.Counter(v["status"] for v in vulns)
+        na = collections.Counter(v["na_category"] for v in vulns if v["status"] == "Not_Applicable")
         try:
-            emit({"outcome": "failed", "reason": f"writing the checklist failed: {type(e).__name__}"}, 1)
+            for ext in formats:
+                writers[ext](staged[ext])
+            meta = {"outcome": "generated", "stig": {k: stig[k] for k in ("benchmark_id", "version", "releaseinfo")},
+                    "formats": {ext: hashlib.sha256(open(staged[ext], "rb").read()).hexdigest() for ext in formats},
+                    "vulns": len(vulns), "status": counts, "na_by_reason": na,
+                    "ssg_vids_not_in_disa": stig["unmatched_ssg_vids"], "unpaired_refs": stig["unpaired_refs"],
+                    "results_sha256": results_sha}
+            with open(meta_path + ".partial", "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=1, default=list)
+            for ext in formats:
+                os.replace(staged[ext], final[ext])
+            os.replace(meta_path + ".partial", meta_path)
+        except BaseException:
+            for path in (*staged.values(), *final.values(), meta_path + ".partial", meta_path):
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    pass
+            raise
+        print(json.dumps(meta, indent=1, default=list))
+    except BaseException as e:
+        try:
+            emit({"outcome": "failed", "reason": f"{type(e).__name__}: {e}"[:500]}, 1)
         except Exception:
             pass  # best effort; summarize fails a missing meta anyway
         raise
-    print(json.dumps(meta, indent=1, default=list))
 
 
 if __name__ == "__main__":
