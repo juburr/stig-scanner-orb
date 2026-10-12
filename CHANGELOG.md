@@ -74,6 +74,9 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 
 - Every helper and scanner container now runs with `--network none`; a scan's
   only network traffic is the Docker daemon's image pulls. A test enforces it.
+- The cleanup trap warns when it cannot remove the scratch rootfs or the
+  datastream snapshot (e.g. the Docker daemon is gone, so the root-privileged
+  removal helper can't run) instead of failing silently.
 - Every helper and scanner container now runs from the resolved local image
   id, so the recorded image is the one that ran even if a tag moves mid-scan.
 - Donated and `datastream_path` datastreams are copied into a private per-scan

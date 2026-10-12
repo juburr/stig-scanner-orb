@@ -173,6 +173,9 @@ cleanup() {
     fi
     if [ -n "${DATASTREAM_SNAP_DIR}" ]; then
         rm -rf "${DATASTREAM_SNAP_DIR}" 2>/dev/null || true
+        if [ -e "${DATASTREAM_SNAP_DIR}" ]; then
+            echo "WARNING: could not remove the datastream snapshot ${DATASTREAM_SNAP_DIR}; remove it manually." >&2
+        fi
     fi
     if [ "${CLEANUP_ROOTFS}" = "1" ] && [ -n "${ROOTFS_DIR}" ] && [ -d "${ROOTFS_DIR}" ]; then
         # The extracted rootfs carries the image's original UIDs/GIDs, so
@@ -189,6 +192,9 @@ cleanup() {
                 >/dev/null 2>&1 || true
         fi
         rmdir "${ROOTFS_DIR}" 2>/dev/null || true
+        if [ -e "${ROOTFS_DIR}" ]; then
+            echo "WARNING: could not remove the scratch rootfs ${ROOTFS_DIR} (it holds root-owned files); remove it with root privileges." >&2
+        fi
     fi
 }
 trap cleanup EXIT
