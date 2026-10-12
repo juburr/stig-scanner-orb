@@ -430,6 +430,20 @@ parse_os_release_field() {
 }
 # Prints "<target_base> <source>", source being os-release or package-db
 # (the filesystem-shape fallback).
+# rootfs_has -d|-f ROOTFS_REAL PATH: PATH is a directory / regular file
+# once every symlink in it is resolved, and it resolves inside ROOTFS_REAL
+# (the rootfs's physical path). Without the containment check an absolute
+# symlink in the image (e.g. var/lib/dpkg/status.d -> /etc) would be
+# tested against the CI host's filesystem.
+rootfs_has() {
+    local real
+    real="$(readlink -f "$3" 2>/dev/null || true)"
+    case "${real}" in
+        "$2/"*) test "$1" "${real}" ;;
+        *) return 1 ;;
+    esac
+}
+
 detect_target_base() {
     local rootfs="$1"
     local id="" version_id="" has_osr=0 os_release=""
@@ -501,15 +515,18 @@ detect_target_base() {
     # No os-release at all (e.g. distroless): use filesystem-shape hints
     # as the only available signal. A consumer who lands here on a
     # supported-but-unrecognized image should set target-base explicitly.
-    if [ -d "${rootfs}/lib/apk/db" ] || [ -f "${rootfs}/sbin/apk" ]; then
+    # Each hint must resolve inside the rootfs, like os-release above.
+    if rootfs_has -d "${rootfs_real}" "${rootfs}/lib/apk/db" \
+            || rootfs_has -f "${rootfs_real}" "${rootfs}/sbin/apk"; then
         echo "wolfi package-db"; return
     fi
-    if [ -d "${rootfs}/var/lib/rpm" ]; then
+    if rootfs_has -d "${rootfs_real}" "${rootfs}/var/lib/rpm"; then
         echo "rhel9 package-db"; return
     fi
     # dpkg: a status file, or the distroless per-package status.d/ layout
     # (which step 3b turns into a status file in image mode).
-    if [ -f "${rootfs}/var/lib/dpkg/status" ] || [ -d "${rootfs}/var/lib/dpkg/status.d" ]; then
+    if rootfs_has -f "${rootfs_real}" "${rootfs}/var/lib/dpkg/status" \
+            || rootfs_has -d "${rootfs_real}" "${rootfs}/var/lib/dpkg/status.d"; then
         echo "debian12 package-db"; return
     fi
     return 1
@@ -605,7 +622,12 @@ echo "    output:        ${OUTPUT_DIR_ABS}"
 DPKG_STATUS=""
 DPKG_STATUS_PACKAGES=""
 DPKG_STATUS_REASON=""
+ROOTFS_REAL="$(cd "${ROOTFS_DIR}" && pwd -P)"
+ROOTFS_REAL="${ROOTFS_REAL%/}"
 if [ "${FAMILY}" = "dpkg" ] && [ "${CLEANUP_ROOTFS}" = "1" ]; then
+    # The helper decides whether to write the package database OpenSCAP
+    # will read, so record it as a donor role in the provenance.
+    resolve_donor dpkg-status
     # Decide and write inside the helper container, which sees only the
     # scratch rootfs: a symlinked var/lib/dpkg in the target image can't
     # redirect the write anywhere on the host, and the realpath check makes
@@ -678,8 +700,9 @@ if [ "${FAMILY}" = "dpkg" ] && [ "${CLEANUP_ROOTFS}" = "1" ]; then
             DPKG_STATUS_REASON="/var/lib/dpkg is a symlink, which the orb does not write through"
             ;;
     esac
-elif [ "${FAMILY}" = "dpkg" ] && [ -d "${ROOTFS_DIR}/var/lib/dpkg/status.d" ] \
-        && [ ! -e "${ROOTFS_DIR}/var/lib/dpkg/status" ]; then
+elif [ "${FAMILY}" = "dpkg" ] \
+        && rootfs_has -d "${ROOTFS_REAL}" "${ROOTFS_DIR}/var/lib/dpkg/status.d" \
+        && ! rootfs_has -f "${ROOTFS_REAL}" "${ROOTFS_DIR}/var/lib/dpkg/status"; then
     DPKG_STATUS="missing"
     DPKG_STATUS_REASON="the orb does not modify a rootfs_path tree"
 fi

@@ -68,6 +68,17 @@ expect "dpkg status" "debian12 (from package-db)" "$(mk var/lib/dpkg/status)"
 expect "distroless status.d" "debian12 (from package-db)" "$(mk var/lib/dpkg/status.d/libc6)"
 expect "nothing recognizable" "ERROR" "$(mk usr/bin/)"
 
+# Hints are only trusted if they resolve inside the rootfs: an absolute
+# symlink would otherwise be tested against this host's filesystem.
+r="$(mk var/lib/dpkg/)"; ln -s /etc "${r}/var/lib/dpkg/status.d"
+expect "status.d symlinked out of the rootfs" "ERROR" "${r}"
+r="$(mk var/lib/)"; ln -s /var/lib/dpkg "${r}/var/lib/dpkg"
+expect "dpkg dir symlinked out of the rootfs" "ERROR" "${r}"
+r="$(mk var/lib/)"; ln -s /etc "${r}/var/lib/rpm"
+expect "rpm db symlinked out of the rootfs" "ERROR" "${r}"
+r="$(mk var/lib/dpkg/ usr/share/dpkg/status.d/libc6)"; ln -s ../../../usr/share/dpkg/status.d "${r}/var/lib/dpkg/status.d"
+expect "relative symlink inside the rootfs" "debian12 (from package-db)" "${r}"
+
 if [ "${failures}" -ne 0 ]; then
     echo "${failures} detection case(s) failed." >&2
     exit 1

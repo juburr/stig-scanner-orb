@@ -147,8 +147,11 @@ ssg_results > "${dir}/results.xml"
 printf '%s\n' "target_base=debian12" "scanner=s" "datastream=ssg-debian12-ds.xml" \
     "profile=xccdf_org.ssgproject.content_profile_stig" "family=dpkg" \
     "dpkg_status=synthesized" "dpkg_status_packages=11" "image=gcr.io/distroless/cc-debian12:latest" \
+    "donor_image=d" "donor_image_id=sha256:2222" "donor_used_for=extraction,dpkg-status" \
     > "${dir}/scan-plan.env"
 summarize "${dir}" || fail "dpkg-synth: summarize exited $?"
+check_json dpkg-synth "${dir}" 'p["donor"]["used_for"] == ["extraction", "dpkg-status"]'
+check_summary dpkg-synth "${dir}" "(used for extraction, dpkg-status)"
 check_json dpkg-synth "${dir}" 'p["target"]["dpkg_status"] == {"state": "synthesized", "packages": 11, "source": "/var/lib/dpkg/status.d", "reason": None}'
 check_summary dpkg-synth "${dir}" "  dpkg-status:       synthesized from /var/lib/dpkg/status.d (11 packages)"
 if grep -q "^WARNING: the target has /var/lib/dpkg/status.d/" "${dir}/summary.txt"; then
