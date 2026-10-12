@@ -95,8 +95,9 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   holding sockets, one containing the scratch rootfs) is never exposed to
   it, and it `chown`s only the two files it writes.
 - Mounts nested inside a `rootfs_path` are bound recursively read-only
-  (`--mount …,bind-recursive=readonly`, Docker 25+ on kernel 5.12+); the scan
-  fails on hosts that can't, rather than leaving the submounts writable.
+  (`--mount …,bind-recursive=readonly`, Docker 25+ on kernel 5.12+), as is any
+  `rootfs_path` whose mounts can't be inspected; the scan fails on hosts that
+  can't, rather than leaving the submounts writable.
 - The cleanup trap warns when it cannot remove the scratch rootfs, the
   datastream snapshot or the scanner output staging dir (e.g. the Docker daemon is gone, so the root-privileged
   removal helper can't run) instead of failing silently.

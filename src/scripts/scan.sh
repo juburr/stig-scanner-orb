@@ -199,13 +199,14 @@ resolve_donor() {
     DONOR_USED_FOR="${DONOR_USED_FOR:+${DONOR_USED_FOR},}$1"
 }
 
-# has_nested_mounts DIR: true if a mount point sits strictly below DIR
-# (read from /proc/self/mountinfo; false where that doesn't exist). The
-# kernel octal-escapes space, tab, newline and backslash in mount points
-# (\040 \011 \012 \134); decode every \ooo. DIR goes in via ENVIRON, not
-# awk -v, which would interpret backslashes in it.
+# has_nested_mounts DIR: 0 if a mount point sits strictly below DIR, 1 if
+# none does, 2 if that can't be determined (no readable
+# /proc/self/mountinfo, e.g. a non-Linux host, or awk failed). The kernel
+# octal-escapes space, tab, newline and backslash in mount points (\040
+# \011 \012 \134); decode every \ooo. DIR goes in via ENVIRON, not awk -v,
+# which would interpret backslashes in it.
 has_nested_mounts() {
-    [ -r /proc/self/mountinfo ] || return 1
+    [ -r /proc/self/mountinfo ] || return 2
     STIG_MOUNT_ROOT="${1%/}/" awk '
         function unoct(s,   out, i, c) {
             out = ""
@@ -347,13 +348,21 @@ else
     # >= 5.12 (best effort); on older ones they stay writable. If the tree
     # has nested mounts (a mounted VM disk with its own /boot or /var),
     # require a recursively read-only bind, which errors where unsupported.
-    if has_nested_mounts "${ROOTFS_DIR}"; then
+    # Where it can't be told (rc 2), assume nested mounts: the explicit
+    # form still works on any current Docker and fails closed elsewhere.
+    nested_rc=0
+    has_nested_mounts "${ROOTFS_DIR}" || nested_rc=$?
+    if [ "${nested_rc}" -ne 1 ]; then
         case "${ROOTFS_DIR}" in
             *,*)
-                echo "ERROR: rootfs-path '${ROOTFS_PATH}' has nested mounts and a comma in its path, which --mount can't express." >&2
+                echo "ERROR: rootfs-path '${ROOTFS_PATH}' may have nested mounts and has a comma in its path, which --mount can't express." >&2
                 exit 2 ;;
         esac
-        echo "==> rootfs-path has nested mounts; requiring a recursively read-only bind (Docker 25+, kernel 5.12+)"
+        if [ "${nested_rc}" -eq 0 ]; then
+            echo "==> rootfs-path has nested mounts; requiring a recursively read-only bind (Docker 25+, kernel 5.12+)"
+        else
+            echo "==> can't read /proc/self/mountinfo to look for nested mounts; requiring a recursively read-only bind (Docker 25+, kernel 5.12+)"
+        fi
         ROOTFS_MOUNT=( --mount "type=bind,source=${ROOTFS_DIR},target=/target,readonly,bind-propagation=rprivate,bind-recursive=readonly" )
     else
         ROOTFS_MOUNT=( -v "${ROOTFS_DIR}:/target:ro" )
