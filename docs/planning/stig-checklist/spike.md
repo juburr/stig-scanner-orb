@@ -11,10 +11,11 @@ RPM targets) and 1.4.4 (Chainguard, everything else). Prototype code is in
 |---|---|---|
 | Real scan | `scan.sh` against `registry.access.redhat.com/ubi9/ubi:latest` (RHEL 9.8) | 62 pass / 8 fail / 406 notapplicable / 1 notchecked, same as the README table |
 | Real scan | `scan.sh` against `ubuntu:22.04` | 23 pass / 7 fail / 198 notapplicable / 2 notchecked |
-| Real scan | `scan.sh` against `cgr.dev/chainguard/static` | no DISA references at all (see "Out of scope") |
+| Real scan | `scan.sh` against `cgr.dev/chainguard/static` | GPOS SRG rule ids + CCIs, a different shape (see "Out of scope") |
 | Generator | `spike/xccdf2ckl.py` on each `results.xml`, with and without DISA's manual XCCDF | `.ckl` + `.cklb` per run, ~2 s for a 19 MB `results.xml` |
 | Validator | `spike/validate.mjs` = STIG Manager's own parsers, `@nuwcdivnpt/stig-manager-client-modules` 1.6.8 (`reviewsFromCkl`, `reviewsFromCklb`) | every output parses, right revision string and row count, no parser errors |
 | Fingerprint | `spike/fingerprint.py`: SSG `stig` profile SV-ids vs each DISA manual XCCDF | each pinned datastream matches exactly one DISA release |
+| Schema | `spike/cklb_schema_check.py`: DISA's `SV3_CKLB_1_0_JSON_SCHEMA.json` (sha256 `8b88205d…`), raw and patched to allow `stigs[].version`, `rules[].srg_id`, `target_data.classification` (fields STIG Viewer 3.7+ itself writes) | 0 errors patched; raw schema rejects only `stigs[].version` and `target_data.classification` |
 
 DISA files came from `https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip/U_<STIG>_V<v>R<r>_STIG.zip`
 (no login; older releases still download). The manual XCCDF inside is ~1.4 MB
@@ -158,12 +159,19 @@ datastream sha256, target digest, scan time).
 
 ## Out of scope / not applicable
 
-- **Wolfi:** the default profile (`xccdf_basic_profile_.check` in
-  `sce-community-content_benchmark_all`) has no `<reference>` elements at all,
-  so there's nothing to map to a DISA checklist. Likewise `debian12` (CIS, no
-  STIG) and `fedora` (`standard`). The checklist step must skip these
-  cleanly. It must also skip any `profile_id` override, such as the RHEL CIS
-  profile, that carries no SV references.
+- **Wolfi is a different shape, not out of reach.** Chainguard's GPOS
+  datastream (`ssg-chainguard-gpos-ds.xml`; the XCCDF benchmark is
+  "Datastream XCCDF Checklist Beta GPOS v3r2p17") has no `<reference>`
+  elements. Instead the DISA ids are the rule ids themselves
+  (`xccdf_mil.disa.stig_rule_SV-263651r982555_rule`), and every rule carries
+  CCI idents. Against `cgr.dev/chainguard/static`: 198 rules, 85 pass / 6
+  fail / 107 notapplicable. The N/A rules are gated on the always-false
+  platform `cpe:/o:notapplicable` with a per-rule rationale. That maps to a
+  **GPOS SRG** checklist, not an OS STIG, and the SRG release it targets
+  (v3r2) is behind DISA's current GPOS SRG (V3R4). Planned as its own PR.
+- `debian12` (CIS, no STIG) and `fedora` (`standard`) have nothing to map. So
+  does any `profile_id` override with no DISA ids, e.g. the RHEL CIS
+  profile. The checklist step must skip these cleanly.
 
 ## Not yet verified
 
