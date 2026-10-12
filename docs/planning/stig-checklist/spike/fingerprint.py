@@ -10,10 +10,12 @@ deselected by conflicts). Selection doesn't depend on the target, so a scan of
 any image with the datastream and profile will do. Run it once per accepted
 profile; every run must name the same release.
 
-Exits 0 only when exactly one release contains every selected SV id, and every
+Exits 0 only when exactly one release contains every selected SV id, every
 selected rule without a DISA reference is in --allow-unmapped (the known
-helper rules, e.g. enable_authselect on RHEL 8/9). Anything else is not a
-verified match.
+helper rules, e.g. enable_authselect on RHEL 8/9), and no selected rule has an
+unpaired V-ID/SV reference (the generator drops those, plan D3, so they would
+vanish from a checklist labeled verified). Anything else is not a verified
+match.
 """
 import argparse
 import glob
@@ -25,6 +27,7 @@ import xml.etree.ElementTree as ET
 X = '{http://checklists.nist.gov/xccdf/1.2}'
 X11 = '{http://checklists.nist.gov/xccdf/1.1}'
 HREF = 'https://www.cyber.mil/stigs/srg-stig-tools/'
+HREF_VULN = HREF.rstrip('/') + '#vulnerability_id'
 RULE = 'xccdf_org.ssgproject.content_rule_'
 
 ap = argparse.ArgumentParser()
@@ -45,6 +48,14 @@ rules = {r.get('id'): r for r in bench.iter(X + 'Rule')}
 svs_of = {rid: {x.text.strip() for x in rules[rid].findall(X + 'reference') if x.get('href') == HREF} for rid in sel if rid in rules}
 svs = set().union(*svs_of.values())
 unmapped = sorted(rid.replace(RULE, '') for rid, s in svs_of.items() if not s)
+# The generator's pairing (D3): with any V-ID reference on a rule, only V-n/SV-n
+# pairs of the same number become rows.
+unpaired = []
+for rid in svs_of:
+    vids = {x.text.strip()[2:] for x in rules[rid].findall(X + 'reference') if x.get('href') == HREF_VULN}
+    nums = {re.match(r'SV-(\d+)', sv).group(1) for sv in svs_of[rid] if re.match(r'SV-\d+', sv)}
+    if vids and vids != nums:
+        unpaired.append(f"{rid.replace(RULE, '')}: V-{sorted(vids - nums)} SV-{sorted(nums - vids)}")
 allowed = {r.strip() for r in a.allow_unmapped.split(',') if r.strip()}
 label = re.search(r'V\d+R\d+', ''.join(prof.find(X + 'title').itertext()) + ' ' + ''.join(prof.find(X + 'description').itertext()))
 print(os.path.basename(a.results), pid.split('_profile_')[-1], 'profile label', label.group(0) if label else '?',
@@ -55,7 +66,7 @@ for f in sorted(glob.glob(a.pattern)):
     print(f'  {os.path.basename(f):50s} DISA rules {len(ids):4d}  SSG SV ids found {len(svs & ids):4d}  revision/unknown {len(svs - ids):4d}  DISA rules with no SSG {len(ids - svs):3d}')
     if svs and svs <= ids:
         full.append(os.path.basename(f))
-problems = []
+problems = [f'unpaired V-ID/SV references: {unpaired}'] if unpaired else []
 if set(unmapped) - allowed:
     problems.append(f'selected rules without a DISA reference: {sorted(set(unmapped) - allowed)}')
 if len(full) != 1:

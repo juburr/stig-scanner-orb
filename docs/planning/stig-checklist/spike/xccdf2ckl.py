@@ -310,22 +310,23 @@ SSG_STIG_IDS = {  # SSG benchmark -> DISA benchmark id / title (SSG-only mode)
 }
 
 
-# Known DISA releases: (benchmark id, version, release) -> (V-ID count, sha256
-# of the sorted V-IDs). Identifiers only; a skeleton claiming one of these
-# releases must carry exactly this V-ID set.
+# Known DISA releases: (benchmark id, version, release) -> (row count, sha256
+# of the sorted "V-ID Rule-ID" pairs). Identifiers only. Pairs, not just V-IDs:
+# several releases share a V-ID set (Ubuntu V2R7-V2R9, RHEL 10 V1R1-V1R2) and
+# differ only in Rule ID revisions, which consumers match exactly.
 STIG_INVENTORY = {
-    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "7"): (188, "057d88f473469138365442c6a1a8e9fd9e3e2c1ac99bb9adadffaa17414f8473"),
-    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "8"): (188, "057d88f473469138365442c6a1a8e9fd9e3e2c1ac99bb9adadffaa17414f8473"),
-    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "9"): (188, "057d88f473469138365442c6a1a8e9fd9e3e2c1ac99bb9adadffaa17414f8473"),
-    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "10"): (191, "4ab85974c4bc9537fe6d4b27eba8688edd7dfae544a8e03c565f71852872fa28"),
-    ("RHEL_8_STIG", "2", "7"): (366, "05ff1772e712ca39f54d9dd1b34c50234bf415437696bcb3840e6671d9b4bedc"),
-    ("RHEL_8_STIG", "2", "8"): (369, "0a6c8c84a1f867c2c289ea912ddf706e51f3908128c77bfe5ad61916a1a89ad8"),
-    ("RHEL_8_STIG", "2", "9"): (371, "a7de5e8c6b7787ec29693f28be135d22b717ebdb86137815bac4bd811266fe8e"),
-    ("RHEL_9_STIG", "2", "9"): (445, "e7347370a894e040b849b14d45310fd4acc101384d7e56557845cb3792ca638f"),
-    ("RHEL_9_STIG", "2", "10"): (445, "d6e1abc5b579a1ae2780facd480594151b747d0676019f786bbc62b84e341cec"),
-    ("RHEL_10_STIG", "1", "1"): (434, "764d847966c0724eb7fdefb81b475a004f2050a0249b7a96040e6ee3e70a73ca"),
-    ("RHEL_10_STIG", "1", "2"): (434, "764d847966c0724eb7fdefb81b475a004f2050a0249b7a96040e6ee3e70a73ca"),
-    ("RHEL_10_STIG", "1", "3"): (435, "f45603f15d06bb9ed1ad855d4e7409ce23f2cfdaf2e62510e6649085fa76203f"),
+    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "7"): (188, "12de845e06062acb595732396579707e79d18217e8f3b430ef19733bf90cbb7f"),
+    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "8"): (188, "f0c0a27b9381f0e6fc35556b3ae5fc90c2238f91f7057e0c9b793e37ba0a3ddd"),
+    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "9"): (188, "19f8465e1cc1c16910e152252023ca1050a8fdc1143931a200f6e3a2c900427c"),
+    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "10"): (191, "7851e77f61f7fc4597369ee394cd13da0041612e7fea6fe34951fddf7659ae60"),
+    ("RHEL_8_STIG", "2", "7"): (366, "bc381b88e0f69335edcf6eb86a17695df981162e5d0ab9ee58c7efb3f771a2d7"),
+    ("RHEL_8_STIG", "2", "8"): (369, "edb2cb7a36599a78a6b3d0c8223d7d13faa9753a81a9e9515c9be9fd554ce922"),
+    ("RHEL_8_STIG", "2", "9"): (371, "1984e68e60f9772174c278f062f5b949e089dfb0d250ce8898a4a118c874aafc"),
+    ("RHEL_9_STIG", "2", "9"): (445, "d1290dec54ac0c7bac3a0ea0e3f76175e382245725409fc80f1c0a4d6f4baa89"),
+    ("RHEL_9_STIG", "2", "10"): (445, "71c7dd9d19b48e606700d0f3a4d39530eb7666272271fb68db045eefa26595dc"),
+    ("RHEL_10_STIG", "1", "1"): (434, "04685a247e535e1a2e770d8097e417c11fe5c55daecb5fa03fa624a39c2e33e5"),
+    ("RHEL_10_STIG", "1", "2"): (434, "ef19aa40608019b68764c2628f35faf9117b9c721c9d42a2ede0366c425f4ed6"),
+    ("RHEL_10_STIG", "1", "3"): (435, "65bcc7e6af3a182ff9b738448f0432ae81f680e0da715fc9ff1974c85e3e41e8"),
 }
 
 
@@ -808,7 +809,7 @@ def main():
         signal.signal(sig, terminate)
 
     meta_path = f"{a.out_dir}/{a.stem}-meta.json"
-    outputs = [f"{a.out_dir}/{a.stem}.{e}{p}" for e in ("ckl", "cklb") for p in ("", ".partial")] + [meta_path, meta_path + ".partial"]
+    artifacts = [f"{a.out_dir}/{a.stem}.{e}{p}" for e in ("ckl", "cklb") for p in ("", ".partial")] + [meta_path + ".partial"]
 
     def remove_all(paths):
         """Remove every path; one failure doesn't stop the rest."""
@@ -824,12 +825,16 @@ def main():
 
     results_sha = None
 
-    def emit(meta, rc):
-        """Write the meta (staged, then renamed) and print it."""
-        meta = {**meta, "results_sha256": results_sha}
+    def write_meta(meta):
+        """Replace the meta atomically (staged, then renamed)."""
         with open(meta_path + ".partial", "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=1, default=list)
         os.replace(meta_path + ".partial", meta_path)
+
+    def emit(meta, rc):
+        """Write the meta and print it."""
+        meta = {**meta, "results_sha256": results_sha}
+        write_meta(meta)
         print(json.dumps(meta, indent=1, default=list))
         return rc
 
@@ -838,9 +843,13 @@ def main():
     # leaves a fresh "failed" meta with the reason (D8), never no meta.
     try:
         # Never leave a previous run's checklist behind for this run to
-        # "publish". Inside the handler, so a termination or error part-way
-        # still finishes the removal below.
-        stuck = remove_all(outputs)
+        # "publish". First replace any old meta, in one rename, with a
+        # placeholder that says this run didn't finish: from then on even a
+        # SIGKILL/OOM (no handler runs) can't leave a previous "generated"
+        # meta beside surviving old files. Then remove the files, inside the
+        # handler, so a termination or error part-way still finishes it.
+        write_meta({"outcome": "failed", "reason": "the checklist step did not finish (interrupted)"})
+        stuck = remove_all(artifacts)
         if stuck:
             raise OSError(f"can't remove previous checklist outputs: {', '.join(stuck)}")
         with open(a.results, "rb") as f:
@@ -894,10 +903,11 @@ def main():
                              "groups were removed or added (truncated or edited file)"}, 1)
             rel_m = re.search(r"Release: *(\d+)", disa["releaseinfo"])
             inv = STIG_INVENTORY.get((disa["benchmark_id"], disa["version"], rel_m.group(1) if rel_m else ""))
-            if inv and (len(vids), hashlib.sha256("\n".join(sorted(vids)).encode()).hexdigest()) != inv:
+            pairs = sorted(f"{g['vid']} {g['rule_id']}" for g in disa["groups"])
+            if inv and (len(pairs), hashlib.sha256("\n".join(pairs).encode()).hexdigest()) != inv:
                 return emit({"outcome": "failed", "reason": f"the DISA file claims {disa['benchmark_id']} "
-                             f"V{disa['version']}R{rel_m.group(1)}, but its {len(vids)} V-IDs don't match that "
-                             f"release's {inv[0]}"}, 1)
+                             f"V{disa['version']}R{rel_m.group(1)}, but its {len(pairs)} V-ID/Rule ID pairs don't match "
+                             f"that release's {inv[0]}"}, 1)
             skeleton_check = "inventory" if inv else "internal"
         if not disa and res["benchmark_id"].replace("xccdf_org.ssgproject.content_benchmark_", "") not in SSG_STIG_IDS:
             # A DISA benchmark id can't be derived from an SSG benchmark name,
@@ -961,15 +971,16 @@ def main():
                 os.replace(staged[ext], final[ext])
             os.replace(meta_path + ".partial", meta_path)
         except BaseException:
-            for path in (*staged.values(), *final.values(), meta_path + ".partial", meta_path):
-                try:
-                    os.remove(path)
-                except FileNotFoundError:
-                    pass
+            # Meta first again: a generated meta may already be in place.
+            try:
+                write_meta({"outcome": "failed", "reason": "the checklist step did not finish (interrupted)"})
+            except Exception:
+                pass
+            remove_all([*staged.values(), *final.values(), meta_path + ".partial"])
             raise
         print(json.dumps(meta, indent=1, default=list))
     except BaseException as e:
-        remove_all(outputs)  # finish the cleanup; no checklist survives a failure
+        remove_all(artifacts)  # finish the cleanup; no checklist survives a failure
         try:
             emit({"outcome": "failed", "reason": f"{type(e).__name__}: {e}"[:500]}, 1)
         except Exception:
