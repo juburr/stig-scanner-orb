@@ -40,7 +40,7 @@ One gate is on by default: a scan in which **zero rules evaluate** to pass or fa
 1. (Optional) `docker load` an image tarball produced by an upstream job.
 2. Host-extract the target image's rootfs via `docker create` + `docker export`. Skipped when you pass `rootfs_path` directly.
 3. Resolve `target_base` to a scanner image, datastream, and XCCDF profile. `auto` reads `/etc/os-release` from the extracted rootfs.
-4. For RPM-based targets, copy the right `ssg-*-ds.xml` out of the Chainguard openscap image (which bundles every major datastream) into a runner-side cache. The compliance-operator scanner is purpose-built for `oscap-chroot` and ships no SCAP content of its own, so we donate the file from Chainguard.
+4. For RPM-based targets, copy the right `ssg-*-ds.xml` out of the Chainguard openscap image (which bundles every major datastream) into a private per-scan snapshot directory. The compliance-operator scanner is purpose-built for `oscap-chroot` and ships no SCAP content of its own, so we donate the file from Chainguard.
 5. Pull the resolved scanner image (pinned by digest) and run `oscap-chroot` against the extracted rootfs.
 6. Parse `results.xml`, write `summary.txt` and `provenance.json`, apply the ignore-list, and enforce the gates.
 7. `store_artifacts` runs unconditionally so the evidence is always retrievable, even on a failing gate.
@@ -244,18 +244,18 @@ Docker resolves the digest and ignores the tag, which is kept so a reader can se
 
 | Field | Meaning |
 |---|---|
-| `target.image`, `target.repo_digests`, `target.image_id` | Target image reference as given, the registry digest(s) it is known by, and its local image id. `repo_digests` is empty for images that never came from a registry (built or loaded locally). `rootfs_path` replaces these in rootfs mode. |
+| `target.image`, `target.repo_digests`, `target.image_id`, `target.platform` | Target image reference as given, the registry digest(s) it is known by, its local image id, and its platform (`os/arch`). `repo_digests` is empty for images that never came from a registry (built or loaded locally). `rootfs_path` replaces these in rootfs mode. |
 | `target_base.requested`, `.resolved`, `.resolved_from` | e.g. `auto` → `rhel9`, from `os-release`, `package-db` (filesystem-shape fallback), or `parameter`. |
 | `profile.id`, `profile.title` | The XCCDF profile evaluated. |
-| `scanner.image`, `.repo_digests`, `.image_id`, `.openscap_version` | The scanner reference, its registry digest, its local id, and the OpenSCAP version that produced `results.xml`. |
+| `scanner.image`, `.repo_digests`, `.image_id`, `.platform`, `.openscap_version` | The scanner reference, its registry digest, its local id, the platform it ran as (`os/arch`), and the OpenSCAP version that produced `results.xml`. |
 | `donor` | Same image fields, plus `used_for` (`extraction`, `datastream`); `null` when no helper image was used (rootfs mode with a bundled datastream). |
-| `datastream.name`, `.source`, `.sha256` | The datastream file, where it came from (`bundled` in the scanner, `donated` from the donor, or `datastream_path`), and the sha256 of the exact file `oscap` evaluated, hashed inside the scanner container. |
+| `datastream.name`, `.source`, `.sha256` | The datastream file, where it came from (`bundled` in the scanner, `donated` from the donor, or `datastream_path`), and the sha256 of the exact file `oscap` evaluated, hashed inside the scanner container (from the per-scan snapshot for `donated` and `datastream_path`). |
 | `datastream.benchmark_id`, `.benchmark_version`, `.ssg_version` | The XCCDF benchmark and its version; `ssg_version` is the ComplianceAsCode/SSG release when the benchmark is SSG content, otherwise `null` (the Wolfi GPOS datastream is not). |
 | `scan.start_time`, `scan.end_time` | From the XCCDF `TestResult`. |
 
-Cite `repo_digests` as the image digest. `image_id` is store-dependent: on Docker's classic image store it is the config digest, on the containerd store it is the manifest or index digest. Every helper and scanner container runs from the resolved image id, so the recorded image is the one that ran even if a tag moved mid-scan.
+Cite `repo_digests` as the image digest, together with `platform`: the pinned Chainguard digest is a multi-platform index, which names the amd64 and arm64 builds at once, and the platform says which of its manifests ran (`summary.txt` prints it in brackets after each digest). `image_id` is store-dependent: on Docker's classic image store it is the config digest, on the containerd store it is the manifest or index digest. Every helper and scanner container runs from the resolved image id, so the recorded image is the one that ran even if a tag moved mid-scan.
 
-Datastreams donated to RPM scanners are cached under `~/.cache/stig-scanner-orb/datastreams/<donor image id>/`, so a cached file is never reused or attributed across donor images.
+A donated or `datastream_path` datastream is copied into a private per-scan snapshot directory, and both the hash and the scan read that snapshot, so `datastream.sha256` is the hash of the bytes `oscap` evaluated even if the original file changes mid-scan. Donated datastreams are not cached between scans: a reused file could be stale or modified and still be attributed to the pinned donor. Bundled datastreams are read from inside the digest-pinned scanner image.
 
 ### Updating the pinned images
 
@@ -306,8 +306,8 @@ Not the orb's traffic, but present in any CircleCI job: the `checkout` step talk
 ### What runs, and with which privileges
 
 - The scan job needs the **machine executor** (a VM with a local Docker daemon). The orb mounts no Docker socket into any container and uses no `--privileged`, `--pid=host`, or host networking.
-- Every container runs as root (`-u 0:0`) *inside* the container, so the extracted rootfs keeps the image's numeric UIDs/GIDs and OpenSCAP (and the datastream hash) can read every file, including a `datastream_path` kept in a private directory. Each sees only what it needs: the extraction and dpkg-synthesis helpers get the scratch rootfs directory, the donation helper gets the datastream cache directory, the datastream-hashing container gets only the datastream's directory (read-only), and the scanner gets the rootfs **read-only**, the output directory, and, for RPM targets or `datastream_path`, the datastream's directory read-only.
-- Results are `chown`ed back to the runner's UID/GID. The scratch rootfs is removed at the end of the step, including on failure.
+- Every container runs as root (`-u 0:0`) *inside* the container, so the extracted rootfs keeps the image's numeric UIDs/GIDs and OpenSCAP (and the datastream hash) can read every file, including a `datastream_path` kept in a private directory. Each sees only what it needs: the extraction and dpkg-synthesis helpers get the scratch rootfs directory, the donation helper gets the per-scan datastream snapshot directory, the datastream-hashing container gets only that snapshot (read-only), and the scanner gets the rootfs **read-only**, the output directory, and, for RPM targets or `datastream_path`, the snapshot read-only.
+- Results are `chown`ed back to the runner's UID/GID. The scratch rootfs and the datastream snapshot are removed at the end of the step, including on failure; nothing persists in the runner's home directory.
 - `/etc/os-release` from the target image is parsed as data with `awk`, never sourced, and symlinks that would point outside the extracted rootfs are rejected.
 
 ### Air-gapped use

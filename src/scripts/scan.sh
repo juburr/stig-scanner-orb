@@ -11,8 +11,9 @@
 #      package stanzas in /var/lib/dpkg/status.d/, no status file),
 #      synthesize /var/lib/dpkg/status in the extracted scratch copy.
 #   4. For RPM-family targets, copy the datastream out of the Chainguard
-#      openscap image (which bundles all major datastreams) and into a
-#      cache dir. The compliance-operator scanner that ships rpm probes
+#      openscap image (which bundles all major datastreams) into a private
+#      per-scan snapshot dir (a datastream_path file is snapshotted the
+#      same way). The compliance-operator scanner that ships rpm probes
 #      doesn't bundle SCAP content, so we donate it from Chainguard.
 #   5. Pull the resolved scanner image (cacheable).
 #   6. Run oscap-chroot inside the scanner against the extracted rootfs,
@@ -83,6 +84,22 @@ HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 
 # --- image helpers ---------------------------------------------------------
+# docker pull with retries. Registries and their token endpoints have
+# transient timeouts that docker itself does not retry (it retries layer
+# downloads only); a CI run once failed on a single cgr.dev token timeout.
+pull_image() {
+    local ref="$1" attempt
+    for attempt in 1 2 3; do
+        if docker pull "${ref}" >/dev/null; then
+            return 0
+        fi
+        if [ "${attempt}" -lt 3 ]; then
+            echo "    pull of ${ref} failed (attempt ${attempt}/3); retrying in $((attempt * 10))s" >&2
+            sleep "$((attempt * 10))"
+        fi
+    done
+    return 1
+}
 # Pull REF unless the local daemon already has it. For a digest-pinned ref
 # a local copy is by definition the right content; a tag-only override is
 # used as found locally, and the recorded image id says which one that was.
@@ -90,7 +107,10 @@ ensure_image() {
     local ref="$1" what="$2"
     if ! docker image inspect "${ref}" >/dev/null 2>&1; then
         echo "==> Pulling ${what}: ${ref}"
-        docker pull "${ref}" >/dev/null
+        if ! pull_image "${ref}"; then
+            echo "ERROR: could not pull ${what} '${ref}' after 3 attempts." >&2
+            exit 2
+        fi
     fi
 }
 # Local image id. Store-dependent: the config digest on Docker's classic
@@ -108,6 +128,12 @@ image_id() {
 image_repo_digests() {
     docker image inspect --format '{{join .RepoDigests ","}}' "$1"
 }
+# Platform (os/arch[/variant]) of the local image, by captured id. A repo
+# digest of a multi-platform index names the whole index; the index plus
+# this platform identifies the one manifest (and binaries) that ran.
+image_platform() {
+    docker image inspect --format '{{.Os}}/{{.Architecture}}{{if .Variant}}/{{.Variant}}{{end}}' "$1"
+}
 
 # Every container this script starts runs with --network none: extraction,
 # datastream donation, hashing and oscap-chroot all work on local files.
@@ -117,12 +143,14 @@ image_repo_digests() {
 
 DONOR_ID=""
 DONOR_REPO_DIGESTS=""
+DONOR_PLATFORM=""
 DONOR_USED_FOR=""
 resolve_donor() {
     if [ -z "${DONOR_ID}" ]; then
         ensure_image "${DONOR_IMAGE}" "helper image"
         DONOR_ID="$(image_id "${DONOR_IMAGE}")"
         DONOR_REPO_DIGESTS="$(image_repo_digests "${DONOR_ID}")"
+        DONOR_PLATFORM="$(image_platform "${DONOR_ID}")"
     fi
     DONOR_USED_FOR="${DONOR_USED_FOR:+${DONOR_USED_FOR},}$1"
 }
@@ -131,19 +159,20 @@ resolve_donor() {
 ROOTFS_DIR=""
 CLEANUP_ROOTFS=0
 CID=""
-DATASTREAM_TMP=""
+DATASTREAM_SNAP_DIR=""
 TARGET_IMAGE_ID=""
 TARGET_REPO_DIGESTS=""
+TARGET_PLATFORM=""
 
 # Single cleanup trap, installed BEFORE any resource is created so an
 # early failure (failed pull / create / export) can't leak the mktemp'd
-# rootfs dir or a dangling create-only container.
+# rootfs dir, the datastream snapshot, or a dangling create-only container.
 cleanup() {
     if [ -n "${CID}" ]; then
         docker rm -f "${CID}" >/dev/null 2>&1 || true
     fi
-    if [ -n "${DATASTREAM_TMP}" ]; then
-        rm -f "${DATASTREAM_TMP}" 2>/dev/null || true
+    if [ -n "${DATASTREAM_SNAP_DIR}" ]; then
+        rm -rf "${DATASTREAM_SNAP_DIR}" 2>/dev/null || true
     fi
     if [ "${CLEANUP_ROOTFS}" = "1" ] && [ -n "${ROOTFS_DIR}" ] && [ -d "${ROOTFS_DIR}" ]; then
         # The extracted rootfs carries the image's original UIDs/GIDs, so
@@ -167,14 +196,15 @@ trap cleanup EXIT
 if [ -n "${IMAGE}" ]; then
     if ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then
         echo "==> Image '${IMAGE}' not in local daemon, pulling..."
-        if ! docker pull "${IMAGE}"; then
-            echo "ERROR: image '${IMAGE}' not in local daemon and pull failed." >&2
+        if ! pull_image "${IMAGE}"; then
+            echo "ERROR: image '${IMAGE}' not in local daemon and pull failed (3 attempts)." >&2
             echo "       Either pre-load it via image-tarball or ensure the tag is pullable." >&2
             exit 2
         fi
     fi
     TARGET_IMAGE_ID="$(image_id "${IMAGE}")"
     TARGET_REPO_DIGESTS="$(image_repo_digests "${TARGET_IMAGE_ID}")"
+    TARGET_PLATFORM="$(image_platform "${TARGET_IMAGE_ID}")"
     # Pull the donor image first — we use it as a root-privileged tar
     # host so the extracted rootfs preserves the original numeric UID/
     # GID from the image. Host-side `tar -xf` running as the runner
@@ -481,11 +511,16 @@ elif [ "${FAMILY}" = "dpkg" ] && [ -d "${ROOTFS_DIR}/var/lib/dpkg/status.d" ] \
 fi
 
 # --- 4. acquire datastream -----------------------------------------------
-# Chainguard scanner ships datastreams internally; we point oscap-chroot at
-# /usr/share/xml/scap/ssg/content/<ds>. compliance-operator scanner doesn't
-# ship content, so we donate the file from the Chainguard image to a cache
-# dir on the host and bind-mount it. Consumers can short-circuit both paths
-# by setting datastream-path to a host-local file.
+# The Chainguard scanner ships datastreams inside its (immutable, digest-
+# pinned) image; for non-RPM targets oscap-chroot reads
+# /usr/share/xml/scap/ssg/content/<ds> there. Every other source is first
+# copied into a private per-scan snapshot directory, and both the hash in
+# step 6 and the scan read only that snapshot, so the recorded sha256 is
+# the sha256 of the bytes oscap evaluated even if the original file changes
+# mid-scan. RPM targets get the file donated from the Chainguard image (the
+# compliance-operator scanner ships no content), fresh for every scan: a
+# reused on-disk cache could be stale or modified and still be attributed
+# to the pinned donor. Consumers can supply their own via datastream_path.
 
 DATASTREAM_HOST_DIR=""
 DATASTREAM_IN_SCANNER_PATH=""
@@ -496,8 +531,12 @@ if [ -n "${DATASTREAM_PATH_OVERRIDE}" ]; then
         echo "ERROR: datastream-path '${DATASTREAM_PATH_OVERRIDE}' not found." >&2
         exit 2
     fi
-    DATASTREAM_HOST_DIR="$(cd "$(dirname "${DATASTREAM_PATH_OVERRIDE}")" && pwd)"
-    DATASTREAM_IN_SCANNER_PATH="/ds/$(basename "${DATASTREAM_PATH_OVERRIDE}")"
+    DATASTREAM_SNAP_DIR="$(mktemp -d -t stig-datastream.XXXXXX)"
+    if ! cp "${DATASTREAM_PATH_OVERRIDE}" "${DATASTREAM_SNAP_DIR}/${DATASTREAM}"; then
+        echo "ERROR: could not read datastream-path '${DATASTREAM_PATH_OVERRIDE}'." >&2
+        exit 2
+    fi
+    chmod 0444 "${DATASTREAM_SNAP_DIR}/${DATASTREAM}"
     DATASTREAM_SOURCE="datastream_path"
     echo "==> Using consumer-supplied datastream: ${DATASTREAM_PATH_OVERRIDE}"
 elif [ "${FAMILY}" != "rpm" ]; then
@@ -515,42 +554,24 @@ elif [ "${FAMILY}" != "rpm" ]; then
 else
     resolve_donor datastream
     DATASTREAM_SOURCE="donated"
-    # Key the cache by the donor's image id, not just the filename: a file
-    # cached from an earlier donor image would otherwise be reused (and
-    # attributed to the current donor) after the pin moves.
-    DATASTREAM_HOST_DIR="${HOME}/.cache/stig-scanner-orb/datastreams/${DONOR_ID#sha256:}"
-    mkdir -p "${DATASTREAM_HOST_DIR}"
-    if [ ! -f "${DATASTREAM_HOST_DIR}/${DATASTREAM}" ]; then
-        echo "==> Donating ${DATASTREAM} from ${DONOR_IMAGE}"
-        # Reserve the temp name on the host, not inside the container: a
-        # container's entrypoint `sh -c` is always PID 1 in its own PID
-        # namespace, so a name derived from the container's own $$ is the
-        # same across concurrent donations. Two scans sharing this cache
-        # dir and racing to populate the same missing datastream would
-        # then collide on one temp path and stomp/abort each other.
-        # Host-side mktemp is unique per invocation and creates the file
-        # atomically up front, so the trap-based cleanup() above can
-        # always find and remove it on any failure.
-        DATASTREAM_TMP="$(mktemp "${DATASTREAM_HOST_DIR}/.${DATASTREAM}.tmp.XXXXXX")"
-        docker run --rm --network none -u 0:0 \
-            -v "${DATASTREAM_HOST_DIR}:/out" \
-            -e DS="${DATASTREAM}" \
-            -e TMP_NAME="$(basename "${DATASTREAM_TMP}")" \
-            -e HOST_UID="${HOST_UID}" \
-            -e HOST_GID="${HOST_GID}" \
-            --entrypoint sh \
-            "${DONOR_ID}" -c '
-                set -e
-                cp "/usr/share/xml/scap/ssg/content/${DS}" "/out/${TMP_NAME}"
-                test -s "/out/${TMP_NAME}"
-                chown "${HOST_UID}:${HOST_GID}" "/out/${TMP_NAME}"
-                chmod 0644 "/out/${TMP_NAME}"
-            '
-        mv -f "${DATASTREAM_TMP}" "${DATASTREAM_HOST_DIR}/${DATASTREAM}"
-        DATASTREAM_TMP=""
-    else
-        echo "==> Reusing cached datastream at ${DATASTREAM_HOST_DIR}/${DATASTREAM}"
-    fi
+    DATASTREAM_SNAP_DIR="$(mktemp -d -t stig-datastream.XXXXXX)"
+    echo "==> Donating ${DATASTREAM} from ${DONOR_IMAGE}"
+    docker run --rm --network none -u 0:0 \
+        -v "${DATASTREAM_SNAP_DIR}:/out" \
+        -e DS="${DATASTREAM}" \
+        -e HOST_UID="${HOST_UID}" \
+        -e HOST_GID="${HOST_GID}" \
+        --entrypoint sh \
+        "${DONOR_ID}" -c '
+            set -e
+            cp "/usr/share/xml/scap/ssg/content/${DS}" "/out/${DS}"
+            test -s "/out/${DS}"
+            chown "${HOST_UID}:${HOST_GID}" "/out/${DS}"
+            chmod 0444 "/out/${DS}"
+        '
+fi
+if [ -n "${DATASTREAM_SNAP_DIR}" ]; then
+    DATASTREAM_HOST_DIR="${DATASTREAM_SNAP_DIR}"
     DATASTREAM_IN_SCANNER_PATH="/ds/${DATASTREAM}"
 fi
 
@@ -558,6 +579,7 @@ fi
 ensure_image "${SCANNER}" "scanner image"
 SCANNER_ID="$(image_id "${SCANNER}")"
 SCANNER_REPO_DIGESTS="$(image_repo_digests "${SCANNER_ID}")"
+SCANNER_PLATFORM="$(image_platform "${SCANNER_ID}")"
 
 # --- 6. run oscap-chroot -------------------------------------------------
 ds_mount_args=()
@@ -636,6 +658,7 @@ fi
     echo "scanner=${SCANNER}"
     echo "scanner_image_id=${SCANNER_ID}"
     echo "scanner_repo_digests=${SCANNER_REPO_DIGESTS}"
+    echo "scanner_platform=${SCANNER_PLATFORM}"
     echo "datastream=${DATASTREAM}"
     echo "datastream_source=${DATASTREAM_SOURCE}"
     echo "datastream_sha256=${DATASTREAM_SHA256}"
@@ -643,6 +666,7 @@ fi
         echo "donor_image=${DONOR_IMAGE}"
         echo "donor_image_id=${DONOR_ID}"
         echo "donor_repo_digests=${DONOR_REPO_DIGESTS}"
+        echo "donor_platform=${DONOR_PLATFORM}"
         echo "donor_used_for=${DONOR_USED_FOR}"
     fi
     echo "profile=${PROFILE}"
@@ -655,6 +679,7 @@ fi
         echo "image=${IMAGE}"
         echo "image_id=${TARGET_IMAGE_ID}"
         echo "image_repo_digests=${TARGET_REPO_DIGESTS}"
+        echo "image_platform=${TARGET_PLATFORM}"
     else
         echo "rootfs_path=${ROOTFS_PATH}"
     fi
