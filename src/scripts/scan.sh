@@ -259,8 +259,28 @@ else
     # Extracted image trees never contain sockets (tar skips them), so
     # refuse any. /proc and /sys are pruned: they hold no socket files.
     base="${ROOTFS_DIR%/}"
+    find_rc=0
     sock="$(find "${ROOTFS_DIR}" \( -path "${base}/proc" -o -path "${base}/sys" \) -prune \
-        -o -type s -print -quit 2>/dev/null || true)"
+        -o -type s -print -quit 2>/dev/null)" || find_rc=$?
+    if [ -z "${sock}" ] && [ "${find_rc}" -ne 0 ]; then
+        # The runner couldn't read the whole tree (e.g. root-owned 0700
+        # directories in a mounted VM disk), but the root scanner can, so
+        # an empty result proves nothing. Repeat the check as root in the
+        # helper image -- never in the scanner image the check protects --
+        # and fail closed if that can't complete either.
+        echo "==> rootfs-path is not fully readable by this user; checking it for sockets as root in the helper image"
+        resolve_donor rootfs-check
+        find_rc=0
+        sock="$(docker run --rm --network none -u 0:0 -v "${ROOTFS_DIR}:/target:ro" \
+            --entrypoint find "${DONOR_ID}" /target \
+            \( -path /target/proc -o -path /target/sys \) -prune \
+            -o -type s -print -quit)" || find_rc=$?
+        if [ -z "${sock}" ] && [ "${find_rc}" -ne 0 ]; then
+            echo "ERROR: could not check rootfs-path '${ROOTFS_PATH}' for Unix sockets (find exited ${find_rc})." >&2
+            exit 2
+        fi
+        sock="${sock:+${base}${sock#/target}}"
+    fi
     if [ -n "${sock}" ]; then
         echo "ERROR: rootfs-path '${ROOTFS_PATH}' contains a Unix socket: ${sock}" >&2
         echo "       Point rootfs-path at an offline extracted tree, not a live filesystem;" >&2

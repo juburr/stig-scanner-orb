@@ -80,7 +80,9 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 - A `rootfs_path` that contains a Unix socket is refused (exit 2). A
   read-only bind mount does not stop a process from connecting to a socket,
   so a live tree such as `/` would have exposed `/run/docker.sock` to the
-  scanner. Extracted image trees never contain sockets.
+  scanner. Extracted image trees never contain sockets. If the runner user
+  can't read the whole tree, the check reruns as root in the helper image
+  (`donor.used_for` gains `rootfs-check`) and fails closed if it can't finish.
 - The cleanup trap warns when it cannot remove the scratch rootfs or the
   datastream snapshot (e.g. the Docker daemon is gone, so the root-privileged
   removal helper can't run) instead of failing silently.

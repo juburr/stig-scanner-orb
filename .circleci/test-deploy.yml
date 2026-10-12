@@ -172,6 +172,52 @@ jobs:
             grep -q "require_evaluated_rules=false" build/stig/summary.txt
             grep -q "not evidence of compliance" build/stig/summary.txt
 
+  smoke-rootfs-socket:
+    description: >
+      A rootfs_path must never expose a Unix socket to the scanner (a
+      read-only mount doesn't stop connect()). Runs as the non-root
+      circleci user against a tree whose socket sits in a root-owned 0700
+      directory the runner can't list, so the host-side check is
+      incomplete and the root helper must find it: the scan must exit 2.
+      Without the socket, the same tree must scan.
+    machine:
+      image: ubuntu-2404:current
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: Stage a tree with a socket the runner can't see
+          command: |
+            set -e
+            mkdir -p /tmp/rootfs-sock/etc
+            printf 'ID=wolfi\nVERSION_ID=20230201\n' > /tmp/rootfs-sock/etc/os-release
+            sudo mkdir -m 0700 /tmp/rootfs-sock/locked
+            sudo python3 -c 'import socket; socket.socket(socket.AF_UNIX).bind("/tmp/rootfs-sock/locked/docker.sock")'
+            if ls /tmp/rootfs-sock/locked > /dev/null 2>&1; then
+              echo "the runner can list the locked dir; this job would not test the fallback" >&2
+              exit 1
+            fi
+      - run:
+          name: Socket under an unreadable dir → expect exit 2
+          command: |
+            set +e
+            PARAM_ROOTFS_PATH=/tmp/rootfs-sock PARAM_TARGET_BASE=auto PARAM_OUTPUT_DIR=build/sock \
+              bash src/scripts/scan.sh > sock.log 2>&1
+            rc=$?
+            set -e
+            cat sock.log
+            test "$rc" -eq 2 || { echo "expected exit 2, got $rc"; exit 1; }
+            grep -q "checking it for sockets as root in the helper image" sock.log
+            grep -q "contains a Unix socket: /tmp/rootfs-sock/locked/docker.sock" sock.log
+      - run:
+          name: Same tree without the socket → scan proceeds
+          command: |
+            set -e
+            sudo rm /tmp/rootfs-sock/locked/docker.sock
+            PARAM_ROOTFS_PATH=/tmp/rootfs-sock PARAM_TARGET_BASE=auto PARAM_OUTPUT_DIR=build/clean \
+              bash src/scripts/scan.sh
+            grep -q "^donor_used_for=rootfs-check$" build/clean/scan-plan.env
+
   test-scripts:
     description: >
       Docker-free script tests: summarize gate fixtures (hollow scans
@@ -200,6 +246,8 @@ workflows:
       - smoke-gate:
           filters: *filters
       - smoke-hollow:
+          filters: *filters
+      - smoke-rootfs-socket:
           filters: *filters
       - test-scripts:
           filters: *filters
@@ -591,6 +639,7 @@ workflows:
             - smoke-wolfi
             - smoke-gate
             - smoke-hollow
+            - smoke-rootfs-socket
             - test-scripts
             - smoke-ubuntu2204
             - smoke-debian12-auto
