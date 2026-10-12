@@ -52,10 +52,12 @@ unmapped = sorted(rid.replace(RULE, '') for rid, s in svs_of.items() if not s)
 # pairs of the same number become rows.
 unpaired = []
 for rid in svs_of:
-    vids = {x.text.strip()[2:] for x in rules[rid].findall(X + 'reference') if x.get('href') == HREF_VULN}
+    refs = {x.text.strip() for x in rules[rid].findall(X + 'reference') if x.get('href') == HREF_VULN}
+    vids = {v[2:] for v in refs if re.fullmatch(r'V-\d+', v)}
+    malformed = sorted(v for v in refs if not re.fullmatch(r'V-\d+', v))
     nums = {re.match(r'SV-(\d+)', sv).group(1) for sv in svs_of[rid] if re.match(r'SV-\d+', sv)}
-    if vids and vids != nums:
-        unpaired.append(f"{rid.replace(RULE, '')}: V-{sorted(vids - nums)} SV-{sorted(nums - vids)}")
+    if refs and (malformed or vids != nums):
+        unpaired.append(f"{rid.replace(RULE, '')}: V-{sorted(vids - nums)} SV-{sorted(nums - vids)} malformed {malformed}")
 allowed = {r.strip() for r in a.allow_unmapped.split(',') if r.strip()}
 label = re.search(r'V\d+R\d+', ''.join(prof.find(X + 'title').itertext()) + ' ' + ''.join(prof.find(X + 'description').itertext()))
 print(os.path.basename(a.results), pid.split('_profile_')[-1], 'profile label', label.group(0) if label else '?',

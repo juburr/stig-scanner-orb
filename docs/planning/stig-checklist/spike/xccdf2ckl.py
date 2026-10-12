@@ -500,8 +500,10 @@ def build_model(res, disa, plan, runner_arch=None):
         if r["vids"]:
             # Only a V-n with a matching SV-n is a row (D3); anything else
             # can't name a DISA rule, so report it instead of keying on it.
-            vids = [v for v in r["vids"] if v[2:] in r["svs"]]
-            unpaired += [f"{rid}: {v}" for v in r["vids"] if v[2:] not in r["svs"]]
+            # Only a well-formed V-<digits> can pair; "XX123" must not key
+            # a row just because its tail matches an SV number.
+            vids = [v for v in r["vids"] if re.fullmatch(r"V-\d+", v) and v[2:] in r["svs"]]
+            unpaired += [f"{rid}: {v}" for v in r["vids"] if v not in vids]
             unpaired += [f"{rid}: {sv}" for n, revs in r["svs"].items() if f"V-{n}" not in r["vids"] for sv in revs]
         else:
             # SSG < 0.1.82 has no #vulnerability_id references: derive V-n from SV-n.
@@ -825,6 +827,16 @@ def main():
 
     results_sha = None
 
+    def invalidate_meta():
+        """Drop any existing meta in one syscall, then write the "did not
+        finish" placeholder. Staging the placeholder takes time; the unlink
+        doesn't, so a SIGKILL anywhere leaves no previous "generated" meta."""
+        try:
+            os.remove(meta_path)
+        except FileNotFoundError:
+            pass
+        write_meta({"outcome": "failed", "reason": "the checklist step did not finish (interrupted)"})
+
     def write_meta(meta):
         """Replace the meta atomically (staged, then renamed)."""
         with open(meta_path + ".partial", "w", encoding="utf-8") as f:
@@ -843,12 +855,12 @@ def main():
     # leaves a fresh "failed" meta with the reason (D8), never no meta.
     try:
         # Never leave a previous run's checklist behind for this run to
-        # "publish". First replace any old meta, in one rename, with a
-        # placeholder that says this run didn't finish: from then on even a
-        # SIGKILL/OOM (no handler runs) can't leave a previous "generated"
-        # meta beside surviving old files. Then remove the files, inside the
+        # "publish". First drop any old meta (one unlink) and put a "did not
+        # finish" placeholder in its place: from then on even a SIGKILL/OOM
+        # (no handler runs) can't leave a previous "generated" meta beside
+        # surviving old files. Then remove the files, inside the
         # handler, so a termination or error part-way still finishes it.
-        write_meta({"outcome": "failed", "reason": "the checklist step did not finish (interrupted)"})
+        invalidate_meta()
         stuck = remove_all(artifacts)
         if stuck:
             raise OSError(f"can't remove previous checklist outputs: {', '.join(stuck)}")
@@ -973,7 +985,7 @@ def main():
         except BaseException:
             # Meta first again: a generated meta may already be in place.
             try:
-                write_meta({"outcome": "failed", "reason": "the checklist step did not finish (interrupted)"})
+                invalidate_meta()
             except Exception:
                 pass
             remove_all([*staged.values(), *final.values(), meta_path + ".partial"])
