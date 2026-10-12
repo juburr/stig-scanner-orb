@@ -40,9 +40,9 @@ One gate is on by default: a scan in which **zero rules evaluate** to pass or fa
 1. (Optional) `docker load` an image tarball produced by an upstream job.
 2. Host-extract the target image's rootfs via `docker create` + `docker export`. Skipped when you pass `rootfs_path` directly.
 3. Resolve `target_base` to a scanner image, datastream, and XCCDF profile. `auto` reads `/etc/os-release` from the extracted rootfs.
-4. For RPM-based targets, copy the right `ssg-*-ds.xml` out of the Chainguard openscap image (which bundles every major datastream) into a runner-side cache. The compliance-operator scanner is purpose-built for `oscap-chroot` and ships no SCAP content of its own, so we donate the file from Chainguard.
-5. Pull the resolved scanner image and run `oscap-chroot` against the extracted rootfs.
-6. Parse `results.xml`, write `summary.txt`, apply the ignore-list, and enforce the gate.
+4. For RPM-based targets, copy the right `ssg-*-ds.xml` out of the Chainguard openscap image (which bundles every major datastream) into a private per-scan snapshot directory. The compliance-operator scanner is purpose-built for `oscap-chroot` and ships no SCAP content of its own, so we donate the file from Chainguard.
+5. Pull the resolved scanner image (pinned by digest) and run `oscap-chroot` against the extracted rootfs.
+6. Parse `results.xml`, write `summary.txt` and `provenance.json`, apply the ignore-list, and enforce the gates.
 7. `store_artifacts` runs unconditionally so the evidence is always retrievable, even on a failing gate.
 
 `oscap-chroot` is preferred over `oscap-docker` because it doesn't require `--pid=host` or bind-mounting the docker socket into the scanner — the scanner reads a static rootfs the runner already extracted. That keeps the scan container as unprivileged as the rest of the pipeline.
@@ -51,14 +51,16 @@ One gate is on by default: a scan in which **zero rules evaluate** to pass or fa
 
 | `target_base` | Scanner image | Datastream | Default profile |
 |---|---|---|---|
-| `wolfi` | `cgr.dev/chainguard/openscap:latest-dev` | `ssg-chainguard-gpos-ds.xml` | Chainguard GPOS |
-| `debian12` | `cgr.dev/chainguard/openscap:latest-dev` | `ssg-debian12-ds.xml` | ANSSI-NP-NT28 high |
-| `ubuntu2204` | `cgr.dev/chainguard/openscap:latest-dev` | `ssg-ubuntu2204-ds.xml` | DISA STIG |
-| `rhel8` | `quay.io/compliance-operator/openscap-ocp:latest` | `ssg-rhel8-ds.xml` | DISA STIG |
-| `rhel9` | `quay.io/compliance-operator/openscap-ocp:latest` | `ssg-rhel9-ds.xml` | DISA STIG |
-| `rhel10` | `quay.io/compliance-operator/openscap-ocp:latest` | `ssg-rhel10-ds.xml` | DISA STIG |
-| `fedora` | `quay.io/compliance-operator/openscap-ocp:latest` | `ssg-fedora-ds.xml` | standard |
+| `wolfi` | Chainguard openscap | `ssg-chainguard-gpos-ds.xml` | Chainguard GPOS |
+| `debian12` | Chainguard openscap | `ssg-debian12-ds.xml` | ANSSI-NP-NT28 high |
+| `ubuntu2204` | Chainguard openscap | `ssg-ubuntu2204-ds.xml` | DISA STIG |
+| `rhel8` | compliance-operator openscap-ocp | `ssg-rhel8-ds.xml` | DISA STIG |
+| `rhel9` | compliance-operator openscap-ocp | `ssg-rhel9-ds.xml` | DISA STIG |
+| `rhel10` | compliance-operator openscap-ocp | `ssg-rhel10-ds.xml` | DISA STIG |
+| `fedora` | compliance-operator openscap-ocp | `ssg-fedora-ds.xml` | standard |
 | `auto` | resolved from `/etc/os-release` | resolved | resolved |
+
+Both scanner images are pinned by digest; see [Reproducibility and provenance](#-reproducibility-and-provenance) for the exact references. The Chainguard image also serves as the donor for RPM datastreams and as the root-privileged extraction helper.
 
 `auto` recognizes RHEL, Rocky, Alma, Oracle Linux, Fedora, Debian 12, Ubuntu 22.04, Wolfi, and Chainguard via the target's `/etc/os-release`, with filesystem-shape fallbacks (`apk`, `rpm`, `dpkg`) for distroless images that lack one. For `scratch` images that ship neither `/etc/os-release` nor a package database, set `target_base` explicitly.
 
@@ -148,11 +150,11 @@ A container-tailored RHEL STIG tailoring file is on the roadmap.
 | `rootfs_path` | string | `""` | Path to a pre-extracted filesystem. Use for RPM-extracted trees, mounted VM disks, etc. |
 | `image_tarball` | string | `""` | Optional `docker load` source before scanning. |
 | `target_base` | enum | `auto` | See dispatch table above. |
-| `scanner_image` | string | `""` | Override resolved scanner. For air-gap mirrors. |
+| `scanner_image` | string | `""` | Override the pinned scanner. For air-gap mirrors; pin overrides by digest too. |
 | `datastream_name` | string | `""` | Override the bundled datastream filename. |
 | `datastream_path` | string | `""` | Host-local datastream file. Skips the donor flow. |
 | `profile_id` | string | `""` | Override the XCCDF profile id (e.g. switch to CIS). |
-| `donor_image` | string | `cgr.dev/chainguard/openscap:latest-dev` | Image to copy datastreams out of for RPM targets. Override for air-gap. |
+| `donor_image` | string | `""` (pinned Chainguard openscap) | Extraction helper, and the image datastreams are copied out of for RPM targets. Override for air-gap. |
 | `fail_on_finding` | boolean | `false` | When true, exit 1 on any non-ignored `fail`, `error`, or `unknown` result. |
 | `require_evaluated_rules` | boolean | `true` | Fail the job when zero rules evaluate to pass, fail, fixed, or informational. Set false only on a job that intentionally records an all-notapplicable baseline (see [Gates](#-gates)). |
 | `ignore_findings` | string | `""` | Comma-separated rule IDs to subtract from the fail/error/unknown gate count. |
@@ -171,10 +173,61 @@ Under `<output_dir>/`:
 
 - `report.html` — the XCCDF HTML report. CircleCI inlines this in the Artifacts tab so an assessor can open it from the build page.
 - `results.xml` — the XCCDF results document, machine-readable.
-- `summary.txt` — pass / fail / error / unknown / notapplicable counts, the rule list for fail, error, unknown, and notchecked, and a hollow-scan warning when nothing evaluated. The "ignored" tier appears separately for auditing.
-- `scan-plan.env` — the resolved scanner / datastream / profile, so a later consumer of the artifacts knows exactly what produced them.
+- `summary.txt` — a provenance block, pass / fail / error / unknown / notapplicable counts, the rule list for fail, error, unknown, and notchecked, and a hollow-scan warning when nothing evaluated. The "ignored" tier appears separately for auditing.
+- `provenance.json` — the same provenance, machine-readable (see below).
+- `scan-plan.env` — the raw `key=value` facts `scan` recorded (references, image ids, digests, datastream hash) and `summarize` reads.
 
 These are well-suited as ATO evidence and easy to attach to your container as in-toto attestations via Cosign.
+
+## 🔁 Reproducibility and provenance
+
+### Pinned images
+
+The default scanner and donor images are pinned by digest, so a given orb version always runs the same OpenSCAP build against the same SCAP content:
+
+| Role | Pinned reference |
+|---|---|
+| Scanner for `wolfi`, `debian12`, `ubuntu2204`; donor and extraction helper for all targets | `cgr.dev/chainguard/openscap:latest-dev@sha256:f5e08bc14cc659268a7807d7ec573ff3cc56b62b9358313db8df76909018b55e` |
+| Scanner for `rhel8`, `rhel9`, `rhel10`, `fedora` | `quay.io/compliance-operator/openscap-ocp:1.3.6@sha256:4c49e8c1af801051d9dbe5d33e371440948cbffce1dbc4379daf909b1288869a` |
+
+Docker resolves the digest and ignores the tag, which is kept so a reader can see what was pinned. The Chainguard digest is a multi-arch index (linux/amd64, linux/arm64); the compliance-operator image is linux/amd64 only. That image's `:latest` tag points at the same 1.3.6 build, last published April 2023, so the version tag is the more durable pin. Chainguard publishes only `latest`/`latest-dev` tags for this image. Older digests remain pullable in practice (digests from mid-2024 still resolve), but Chainguard does not document a retention guarantee. If a pinned digest ever stops resolving, override `scanner_image`/`donor_image` until the orb is bumped.
+
+`scanner_image` and `donor_image` still override the pins. Pin overrides by digest as well: a tag-only reference is used as found in the local Docker daemon, which may be stale. The provenance below records what actually ran either way.
+
+### What each scan records
+
+`summary.txt` opens with a provenance block, and `provenance.json` carries the same data:
+
+| Field | Meaning |
+|---|---|
+| `target.image`, `target.repo_digests`, `target.image_id`, `target.platform` | Target image reference as given, the registry digest(s) it is known by, its local image id, and its platform (`os/arch`). `repo_digests` is empty for images that never came from a registry (built or loaded locally). `rootfs_path` replaces these in rootfs mode. |
+| `target_base.requested`, `.resolved`, `.resolved_from` | e.g. `auto` → `rhel9`, from `os-release`, `package-db` (filesystem-shape fallback), or `parameter`. |
+| `profile.id`, `profile.title` | The XCCDF profile evaluated. |
+| `scanner.image`, `.repo_digests`, `.image_id`, `.platform`, `.openscap_version` | The scanner reference, its registry digest, its local id, the platform it ran as (`os/arch`), and the OpenSCAP version that produced `results.xml`. |
+| `donor` | Same image fields, plus `used_for` (`extraction`, `datastream`); `null` when no helper image was used (rootfs mode with a bundled datastream). |
+| `datastream.name`, `.source`, `.sha256` | The datastream file, where it came from (`bundled` in the scanner, `donated` from the donor, or `datastream_path`), and the sha256 of the exact file `oscap` evaluated, hashed inside the scanner container (from the per-scan snapshot for `donated` and `datastream_path`). |
+| `datastream.benchmark_id`, `.benchmark_version`, `.ssg_version` | The XCCDF benchmark and its version; `ssg_version` is the ComplianceAsCode/SSG release when the benchmark is SSG content, otherwise `null` (the Wolfi GPOS datastream is not). |
+| `scan.start_time`, `scan.end_time` | From the XCCDF `TestResult`. |
+
+Cite `repo_digests` as the image digest, together with `platform`: the pinned Chainguard digest is a multi-platform index, which names the amd64 and arm64 builds at once, and the platform says which of its manifests ran (`summary.txt` prints it in brackets after each digest). `image_id` is store-dependent: on Docker's classic image store it is the config digest, on the containerd store it is the manifest or index digest. Every helper and scanner container runs from the resolved image id, so the recorded image is the one that ran even if a tag moved mid-scan.
+
+A donated or `datastream_path` datastream is copied into a private per-scan snapshot directory (as root inside a container, so a `datastream_path` only root can read works, as it does for the root-run scan), and both the hash and the scan read that snapshot, so `datastream.sha256` is the hash of the bytes `oscap` evaluated even if the original file changes mid-scan. Donated datastreams are not cached between scans: a reused file could be stale or modified and still be attributed to the pinned donor. Bundled datastreams are read from inside the digest-pinned scanner image.
+
+### Updating the pinned images
+
+The pins live in one place, `DEFAULT_CHAINGUARD_IMAGE` and `DEFAULT_RPM_SCANNER_IMAGE` at the top of `src/scripts/scan.sh`. `tests/pinned_refs_test.sh` fails CI if they are not digest-pinned or if this README's table does not list them verbatim.
+
+1. Resolve the current digests:
+   ```sh
+   docker buildx imagetools inspect cgr.dev/chainguard/openscap:latest-dev --format '{{.Manifest.Digest}}'
+   # compliance-operator: check for a newer version tag before moving off 1.3.6
+   curl -fsS 'https://quay.io/api/v1/repository/compliance-operator/openscap-ocp/tag/?onlyActiveTags=true' \
+     | jq -r '.tags[] | "\(.name) \(.manifest_digest)"'
+   ```
+2. Update both constants in `scan.sh` and the table above, keeping the `name:tag@sha256:` form.
+3. Run the local smoke from Local development below against a Wolfi image and a UBI image, and compare the provenance block and rule counts with the previous pin: `ssg-version`, `openscap`, and evaluated/fail counts. Update the measured tables in this README if they moved.
+4. Record the move in `CHANGELOG.md` with old → new SSG and OpenSCAP versions. A content bump changes scan results, and new `fail` results can trip `fail_on_finding`, so release it as at least a minor version.
+5. Push; the `test-deploy` matrix pulls every pin and exercises both scanner paths.
 
 ## 🙈 Ignore-list semantics
 
@@ -190,8 +243,8 @@ Ignored `fail`, `error`, and `unknown` results still appear in the summary and t
 
 Every image and content reference is parameterized:
 
-- `scanner_image` overrides the runtime scanner (point at a mirror).
-- `donor_image` overrides where datastreams are copied out of.
+- `scanner_image` overrides the runtime scanner (point at a mirror; mirror by digest so the pinned content carries over).
+- `donor_image` overrides the extraction helper and where datastreams are copied out of.
 - `datastream_path` skips the donor flow entirely; mount your own datastream into the runner first.
 
 For RHEL-only consumers who don't want a Chainguard dependency at all, mirror `quay.io/compliance-operator/openscap-ocp` and supply datastreams via `datastream_path`.

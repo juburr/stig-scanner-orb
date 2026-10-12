@@ -54,6 +54,29 @@ jobs:
               echo "wolfi scan was hollow; expected evaluated rules"
               exit 1
             fi
+      - run:
+          name: Assert provenance records the pinned scanner
+          command: |
+            set -e
+            test -f build/stig/provenance.json
+            grep -q "^Provenance:" build/stig/summary.txt
+            pinned=$(sed -n 's/^DEFAULT_CHAINGUARD_IMAGE="[^@]*@\(sha256:[0-9a-f]*\)"$/\1/p' src/scripts/scan.sh)
+            test -n "$pinned"
+            python3 -c '
+            import json, re, sys
+            pinned = sys.argv[1]
+            p = json.load(open("build/stig/provenance.json"))
+            print(json.dumps(p, indent=2))
+            assert any(d.endswith("@" + pinned) for d in p["scanner"]["repo_digests"]), "scanner digest is not the pin"
+            assert p["scanner"]["openscap_version"], "no openscap version"
+            assert p["datastream"]["source"] == "bundled"
+            assert re.fullmatch(r"[0-9a-f]{64}", p["datastream"]["sha256"] or ""), "datastream not hashed"
+            assert p["datastream"]["benchmark_version"], "no benchmark version"
+            assert p["target"]["repo_digests"], "target pulled from cgr.dev must have a repo digest"
+            assert p["donor"]["used_for"] == ["extraction"]
+            assert p["scanner"]["platform"].startswith("linux/"), "scanner platform not recorded"
+            assert p["target"]["platform"] == p["scanner"]["platform"], "target/scanner platform mismatch on one runner"
+            ' "$pinned"
       - store_artifacts:
           path: build/stig
           destination: smoke-wolfi
@@ -149,19 +172,24 @@ jobs:
             grep -q "require_evaluated_rules=false" build/stig/summary.txt
             grep -q "not evidence of compliance" build/stig/summary.txt
 
-  test-summarize-fixtures:
+  test-scripts:
     description: >
-      Gate logic against fixture results.xml: hollow scans fail closed,
-      error and unknown count toward fail_on_finding, and an ignored
-      failure baseline is not treated as unevaluated.
+      Docker-free script tests: summarize gate fixtures (hollow scans
+      fail closed, error/unknown gating, ignore-list behavior),
+      provenance rendering, and the pinned default image references.
     docker:
       - image: cimg/base:stable
     resource_class: small
     steps:
       - checkout
       - run:
-          name: Run summarize gate fixtures
-          command: bash tests/summarize_gate_test.sh
+          name: Run tests/*_test.sh
+          command: |
+            set -e
+            for t in tests/*_test.sh; do
+              echo "==> ${t}"
+              bash "${t}"
+            done
 
 workflows:
   test-deploy:
@@ -172,7 +200,7 @@ workflows:
           filters: *filters
       - smoke-hollow:
           filters: *filters
-      - test-summarize-fixtures:
+      - test-scripts:
           filters: *filters
       # Broader coverage: every supported family + every input mode, each
       # exercised through the real `stig-scanner-orb/scan` JOB (so the
@@ -248,6 +276,18 @@ workflows:
                   grep -q "scanner=quay.io/compliance-operator" build/stig/scan-plan.env
                   grep -q "datastream=ssg-rhel9-ds.xml" build/stig/scan-plan.env
                   grep -q "family=rpm" build/stig/scan-plan.env
+                  python3 -c '
+                  import json, re
+                  p = json.load(open("build/stig/provenance.json"))
+                  assert any(d.startswith("quay.io/compliance-operator/openscap-ocp@sha256:") for d in p["scanner"]["repo_digests"])
+                  assert p["datastream"]["source"] == "donated"
+                  assert re.fullmatch(r"[0-9a-f]{64}", p["datastream"]["sha256"] or "")
+                  assert p["datastream"]["ssg_version"], "RHEL datastream is SSG content"
+                  assert p["donor"]["used_for"] == ["extraction", "datastream"]
+                  assert p["target_base"]["resolved"] == "rhel9"
+                  assert p["scanner"]["platform"] == "linux/amd64", p["scanner"]
+                  assert p["donor"]["platform"].startswith("linux/"), p["donor"]
+                  '
                   na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
                   ev=$(awk '/^Evaluated rules:/ {print $3}' build/stig/summary.txt)
                   echo "evaluated=${ev:-0} notapplicable=${na:-0}"
@@ -341,6 +381,49 @@ workflows:
                   grep -q "^Rule results:" build/stig/summary.txt
           filters: *filters
       - stig-scanner-orb/scan:
+          name: smoke-datastream-path
+          # datastream_path mode with a root-owned 0600 file, as written by a
+          # root-running container in an earlier step. The runner user can't
+          # read it, but the root-run scan can, so the snapshot copy must run
+          # as root too; the hash must then describe that file.
+          image: cgr.dev/chainguard/static:latest
+          target_base: wolfi
+          datastream_path: /tmp/ds-private/ssg-chainguard-gpos-ds.xml
+          checkout: false
+          pre-steps:
+            - run:
+                name: Stage a root-only datastream
+                command: |
+                  set -e
+                  mkdir -m 0700 /tmp/ds-private
+                  docker run --rm --network none -u 0:0 -v /tmp/ds-private:/w \
+                    --entrypoint sh cgr.dev/chainguard/openscap:latest-dev -c '
+                      cp /usr/share/xml/scap/ssg/content/ssg-chainguard-gpos-ds.xml /w/
+                      chmod 0600 /w/ssg-chainguard-gpos-ds.xml'
+                  sudo test -s /tmp/ds-private/ssg-chainguard-gpos-ds.xml
+                  if cat /tmp/ds-private/ssg-chainguard-gpos-ds.xml > /dev/null 2>&1; then
+                    echo "the runner can read the fixture; this job would not test a root-only file" >&2
+                    exit 1
+                  fi
+          post-steps:
+            - run:
+                name: Assert the supplied datastream was evaluated and hashed
+                command: |
+                  set -e
+                  want=$(sudo sha256sum /tmp/ds-private/ssg-chainguard-gpos-ds.xml | cut -d' ' -f1)
+                  python3 -c '
+                  import json, sys
+                  want = sys.argv[1]
+                  p = json.load(open("build/stig/provenance.json"))
+                  ds = p["datastream"]
+                  print(json.dumps(ds, indent=2))
+                  assert ds["source"] == "datastream_path", ds
+                  assert ds["name"] == "ssg-chainguard-gpos-ds.xml", ds
+                  assert ds["sha256"] == want, "recorded sha256 is not the supplied file"
+                  assert p["donor"]["used_for"] == ["extraction"], p["donor"]
+                  ' "$want"
+          filters: *filters
+      - stig-scanner-orb/scan:
           name: smoke-rootfs
           # rootfs_path mode: scan an already-extracted tree, skipping the
           # docker-export step entirely.
@@ -407,13 +490,14 @@ workflows:
             - smoke-wolfi
             - smoke-gate
             - smoke-hollow
-            - test-summarize-fixtures
+            - test-scripts
             - smoke-ubuntu2204
             - smoke-debian12-auto
             - smoke-rhel8-auto
             - smoke-rhel9
             - smoke-rhel9-cis
             - smoke-fedora
+            - smoke-datastream-path
             - smoke-rootfs
             - smoke-tarball
           context: orb-publishing

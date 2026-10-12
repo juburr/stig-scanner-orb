@@ -1,9 +1,11 @@
 description: >
   Run an OpenSCAP STIG scan against a container image (host-extracted via
   the local Docker daemon) or against an already-extracted filesystem
-  tree. Writes report.html, results.xml, and scan-plan.env into
+  tree. Writes report.html, results.xml, and scan-plan.env (what ran:
+  image references and digests, datastream and its sha256) into
   output_dir. Does not enforce a gate or apply ignore-lists — call the
-  `summarize` command after this for that.
+  `summarize` command after this for that; it also writes
+  provenance.json.
 
 parameters:
   image:
@@ -35,9 +37,12 @@ parameters:
     type: string
     default: ""
     description: >
-      Override the scanner image. Defaults: cgr.dev/chainguard/openscap
-      for wolfi/debian/ubuntu, quay.io/compliance-operator/openscap-ocp
-      for rhel/fedora.
+      Override the scanner image. Empty uses the orb's digest-pinned
+      default: cgr.dev/chainguard/openscap (latest-dev) for
+      wolfi/debian/ubuntu, quay.io/compliance-operator/openscap-ocp
+      (1.3.6) for rhel/fedora; the README lists the exact digests. Pin
+      an override by digest too (name:tag@sha256:...): a tag-only
+      reference is used as found in the local daemon.
   datastream_name:
     type: string
     default: ""
@@ -66,12 +71,14 @@ parameters:
     description: Where report.html, results.xml, and summary.txt land.
   donor_image:
     type: string
-    default: "cgr.dev/chainguard/openscap:latest-dev"
+    default: ""
     description: >
       Image used both as a root-privileged extraction helper (so
       tar -xf preserves UID/GID from the target image) and to copy
-      SCAP datastreams out of for RPM-family targets. Override for
-      air-gap mirrors.
+      SCAP datastreams out of for RPM-family targets. Empty uses the
+      orb's digest-pinned cgr.dev/chainguard/openscap:latest-dev (see
+      the README). Override for air-gap mirrors; it needs a shell, tar,
+      and the SCAP content under /usr/share/xml/scap/ssg/content.
   no_output_timeout:
     type: string
     default: "30m"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Parse the OpenSCAP results.xml produced by scan.sh, write a
-# human-readable summary, apply the optional ignore-list, and enforce
-# two independent gates:
+# human-readable summary and a machine-readable provenance.json, apply the
+# optional ignore-list, and enforce two independent gates:
 #
 #   * fail_on_finding — non-ignored fail, error, and unknown results.
 #   * require_evaluated_rules — at least one rule evaluated to pass,
@@ -48,6 +48,7 @@ fi
 RESULTS="${OUTPUT_DIR}/results.xml"
 SUMMARY="${OUTPUT_DIR}/summary.txt"
 PLAN="${OUTPUT_DIR}/scan-plan.env"
+PROVENANCE="${OUTPUT_DIR}/provenance.json"
 
 if [ ! -f "${RESULTS}" ]; then
     echo "ERROR: ${RESULTS} not found — did the scan step run?" >&2
@@ -55,14 +56,15 @@ if [ ! -f "${RESULTS}" ]; then
 fi
 
 python3 - "$RESULTS" "$SUMMARY" "${IGNORE_FINDINGS}" "${PLAN}" \
-    "${FAIL_ON_FINDING}" "${REQUIRE_EVALUATED_RULES}" <<'PY'
+    "${FAIL_ON_FINDING}" "${REQUIRE_EVALUATED_RULES}" "${PROVENANCE}" <<'PY'
+import json
 import os
 import re
 import sys
 import xml.etree.ElementTree as ET
 from collections import Counter
 
-results_path, summary_path, ignore_csv, plan_path, fail_on_finding, require_evaluated = sys.argv[1:7]
+results_path, summary_path, ignore_csv, plan_path, fail_on_finding, require_evaluated, provenance_path = sys.argv[1:8]
 
 def local(tag):
     return tag.rsplit("}", 1)[-1]
@@ -203,6 +205,83 @@ if os.path.isfile(plan_path):
 actionable = [rec for name in GATED_RESULTS for rec in gated[name] if not rec["ignored"]]
 hollow = rule_results > 0 and evaluated == 0
 
+# --- provenance: scan-plan.env (what ran) + results.xml (what it read) ---
+def csv_list(value):
+    return [v for v in (value or "").split(",") if v]
+
+def opt(value):
+    return value if value else None
+
+bench_version = bench_update = None
+for c in root:
+    if local(c.tag) == "version":
+        bench_version = (c.text or "").strip() or None
+        bench_update = c.get("update")
+        break
+test_result = next((el for el in root.iter() if local(el.tag) == "TestResult"), None)
+openscap_version = start_time = end_time = None
+profile_id = plan.get("profile") or None
+if test_result is not None:
+    system = test_result.get("test-system", "")
+    if system.startswith("cpe:/a:redhat:openscap:"):
+        openscap_version = system.rsplit(":", 1)[-1] or None
+    start_time = test_result.get("start-time")
+    end_time = test_result.get("end-time")
+    for c in test_result:
+        if local(c.tag) == "profile" and c.get("idref"):
+            profile_id = c.get("idref")
+profile_title = None
+for el in root.iter():
+    if local(el.tag) == "Profile" and el.get("id") == profile_id:
+        profile_title = child_text(el, "title") or None
+        break
+# Only ComplianceAsCode-built benchmarks carry an SSG release number; the
+# Wolfi GPOS datastream, for one, is not SSG content.
+ssg_version = bench_version if bench_update and "ComplianceAsCode" in bench_update else None
+
+donor = None
+if plan.get("donor_used_for"):
+    donor = {
+        "image": plan.get("donor_image"),
+        "image_id": opt(plan.get("donor_image_id")),
+        "repo_digests": csv_list(plan.get("donor_repo_digests")),
+        "platform": opt(plan.get("donor_platform")),
+        "used_for": csv_list(plan.get("donor_used_for")),
+    }
+provenance = {
+    "schema": "stig-scanner-orb/provenance/v1",
+    "target": {
+        "image": opt(plan.get("image")),
+        "image_id": opt(plan.get("image_id")),
+        "repo_digests": csv_list(plan.get("image_repo_digests")),
+        "platform": opt(plan.get("image_platform")),
+        "rootfs_path": opt(plan.get("rootfs_path")),
+    },
+    "target_base": {
+        "requested": opt(plan.get("target_base_requested")),
+        "resolved": opt(plan.get("target_base")),
+        "resolved_from": opt(plan.get("target_base_source")),
+    },
+    "profile": {"id": profile_id, "title": profile_title},
+    "scanner": {
+        "image": opt(plan.get("scanner")),
+        "image_id": opt(plan.get("scanner_image_id")),
+        "repo_digests": csv_list(plan.get("scanner_repo_digests")),
+        "platform": opt(plan.get("scanner_platform")),
+        "openscap_version": openscap_version,
+    },
+    "donor": donor,
+    "datastream": {
+        "name": opt(plan.get("datastream")),
+        "source": opt(plan.get("datastream_source")),
+        "sha256": opt(plan.get("datastream_sha256")),
+        "benchmark_id": root.get("id") if local(root.tag) == "Benchmark" else None,
+        "benchmark_version": bench_version,
+        "ssg_version": ssg_version,
+    },
+    "scan": {"start_time": start_time, "end_time": end_time},
+}
+
 lines = ["STIG scan summary", ""]
 if plan:
     if "image" in plan:
@@ -213,6 +292,35 @@ if plan:
     lines.append(f"  scanner:        {plan.get('scanner', '')}")
     lines.append(f"  datastream:     {plan.get('datastream', '')}")
     lines.append(f"  profile:        {plan.get('profile', '')}")
+    lines.append("")
+
+def digest_line(digests, image_id, fallback, platform=None):
+    if digests:
+        line = ", ".join(digests)
+    else:
+        line = f"{fallback} (image id {image_id})" if image_id else fallback
+    # A multi-platform index digest names every platform at once; the
+    # platform says which of its manifests ran.
+    return f"{line} [{platform}]" if platform else line
+
+if plan:
+    t, sc, ds, tb = provenance["target"], provenance["scanner"], provenance["datastream"], provenance["target_base"]
+    lines.append("Provenance:")
+    if t["image"]:
+        lines.append(f"  target-digest:     {digest_line(t['repo_digests'], t['image_id'], 'none, not pulled from a registry', t['platform'])}")
+    lines.append(f"  target-base:       {tb['resolved'] or ''} (requested {tb['requested'] or ''}, from {tb['resolved_from'] or ''})")
+    lines.append(f"  scanner-digest:    {digest_line(sc['repo_digests'], sc['image_id'], 'none', sc['platform'])}")
+    lines.append(f"  openscap:          {sc['openscap_version'] or 'unknown'}")
+    if donor:
+        lines.append(f"  donor-digest:      {digest_line(donor['repo_digests'], donor['image_id'], 'none', donor['platform'])} (used for {', '.join(donor['used_for'])})")
+    lines.append(f"  datastream-source: {ds['source'] or ''}")
+    lines.append(f"  datastream-sha256: {ds['sha256'] or 'unavailable'}")
+    bench = f"{ds['benchmark_id'] or 'unknown'} {ds['benchmark_version'] or ''}".rstrip()
+    lines.append(f"  benchmark:         {bench}")
+    lines.append(f"  ssg-version:       {ds['ssg_version'] or 'n/a (not ComplianceAsCode content)'}")
+    if profile_title:
+        lines.append(f"  profile-title:     {profile_title}")
+    lines.append(f"  scan-time:         {start_time or ''} .. {end_time or ''}")
     lines.append("")
 
 lines.append(f"  fail-on-finding: {fail_on_finding}")
@@ -303,6 +411,9 @@ text = "\n".join(lines) + "\n"
 print(text, end="")
 with open(summary_path, "w", encoding="utf-8") as fh:
     fh.write(text)
+with open(provenance_path, "w", encoding="utf-8") as fh:
+    json.dump(provenance, fh, indent=2)
+    fh.write("\n")
 
 # The shell enforces the exit code from these counts so the policy lives
 # in one place. Missing file is a hard error, not a pass.
