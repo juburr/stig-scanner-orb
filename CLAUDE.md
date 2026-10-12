@@ -10,6 +10,8 @@ A CircleCI orb that runs OpenSCAP DISA STIG scans against container images and e
 
 `docs/` is **gitignored on purpose** — it holds the planning trail (`implementation_plan.md`, `spike-results.md`, `chainguard_request.md`). Read these before significant changes; they document why two scanner images, why `oscap-chroot` not `oscap-docker`, why we don't fetch datastreams at runtime, and what the RHEL-host-STIG-on-container result actually means. Update them as decisions evolve, but never reference them from committed files (README, scripts, etc.) — those references would break for cloners.
 
+The exception is `docs/planning/`, which **is committed**: plans for work that spans several PRs, with their spike notes and research reports (`docs/planning/research_notes/` stays local; it holds raw notes and downloaded DISA files). Current plan: `docs/planning/stig-checklist/plan.md` (STIG Viewer `.ckl`/`.cklb` output with derived N/A justifications). Read it before touching checklist code, and update its status as PRs land. Keep user-facing docs (README, CHANGELOG) self-contained rather than pointing into `docs/planning/`.
+
 ## Common commands
 
 ```sh

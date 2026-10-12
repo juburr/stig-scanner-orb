@@ -3,4 +3,8 @@ orb.yml
 .DS_Store
 
 # Local-only working notes (planning docs, spike results, scratch).
-docs/
+# docs/planning/ is the exception: committed plans for work spanning
+# several PRs. Its raw research notes and downloaded DISA files stay local.
+docs/*
+!docs/planning/
+docs/planning/research_notes/
