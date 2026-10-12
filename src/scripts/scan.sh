@@ -7,6 +7,9 @@
 #      a host temp dir.
 #   3. Resolve target-base → (scanner-image, datastream, profile-id) by
 #      auto-detection from /etc/os-release if needed.
+#   3b. For dpkg-family targets laid out like Google distroless (per-
+#      package stanzas in /var/lib/dpkg/status.d/, no status file),
+#      synthesize /var/lib/dpkg/status in the extracted scratch copy.
 #   4. Pull the resolved scanner image (cacheable).
 #   5. For RPM-family targets, copy the datastream out of the Chainguard
 #      openscap image (which bundles all major datastreams) into a private
@@ -261,6 +264,20 @@ parse_os_release_field() {
 }
 # Prints "<target_base> <source>", source being os-release or package-db
 # (the filesystem-shape fallback).
+# rootfs_has -d|-f ROOTFS_REAL PATH: PATH is a directory / regular file
+# once every symlink in it is resolved, and it resolves inside ROOTFS_REAL
+# (the rootfs's physical path). Without the containment check an absolute
+# symlink in the image (e.g. var/lib/dpkg/status.d -> /etc) would be
+# tested against the CI host's filesystem.
+rootfs_has() {
+    local real
+    real="$(readlink -f "$3" 2>/dev/null || true)"
+    case "${real}" in
+        "$2/"*) test "$1" "${real}" ;;
+        *) return 1 ;;
+    esac
+}
+
 detect_target_base() {
     local rootfs="$1"
     local id="" version_id="" has_osr=0 os_release=""
@@ -332,13 +349,18 @@ detect_target_base() {
     # No os-release at all (e.g. distroless): use filesystem-shape hints
     # as the only available signal. A consumer who lands here on a
     # supported-but-unrecognized image should set target-base explicitly.
-    if [ -d "${rootfs}/lib/apk/db" ] || [ -f "${rootfs}/sbin/apk" ]; then
+    # Each hint must resolve inside the rootfs, like os-release above.
+    if rootfs_has -d "${rootfs_real}" "${rootfs}/lib/apk/db" \
+            || rootfs_has -f "${rootfs_real}" "${rootfs}/sbin/apk"; then
         echo "wolfi package-db"; return
     fi
-    if [ -d "${rootfs}/var/lib/rpm" ]; then
+    if rootfs_has -d "${rootfs_real}" "${rootfs}/var/lib/rpm"; then
         echo "rhel9 package-db"; return
     fi
-    if [ -f "${rootfs}/var/lib/dpkg/status" ]; then
+    # dpkg: a status file, or the distroless per-package status.d/ layout
+    # (which step 3b turns into a status file in image mode).
+    if rootfs_has -f "${rootfs_real}" "${rootfs}/var/lib/dpkg/status" \
+            || rootfs_has -d "${rootfs_real}" "${rootfs}/var/lib/dpkg/status.d"; then
         echo "debian12 package-db"; return
     fi
     return 1
@@ -414,6 +436,110 @@ echo "    scanner:       ${SCANNER}"
 echo "    datastream:    ${DATASTREAM}"
 echo "    profile:       ${PROFILE}"
 echo "    output:        ${OUTPUT_DIR_ABS}"
+
+# --- 3b. dpkg status for distroless images ---------------------------------
+# OpenSCAP's dpkginfo probe reads only <root>/var/lib/dpkg/status. Google
+# distroless images record their packages as one stanza per file under
+# /var/lib/dpkg/status.d/ (plus *.md5sums) and ship no status file, so every
+# dpkg-backed check errors: package-removal rules come back `error`, not
+# `pass`. In image mode the extracted rootfs is our scratch copy, so build
+# the status file there from the stanzas. In rootfs_path mode the tree
+# belongs to the caller and stays untouched; summarize warns instead.
+# Recorded as dpkg_status=synthesized|missing in scan-plan.env, with the
+# reason when the file could not be built.
+DPKG_STATUS=""
+DPKG_STATUS_PACKAGES=""
+DPKG_STATUS_REASON=""
+ROOTFS_REAL="$(cd "${ROOTFS_DIR}" && pwd -P)"
+ROOTFS_REAL="${ROOTFS_REAL%/}"
+if [ "${FAMILY}" = "dpkg" ] && [ "${CLEANUP_ROOTFS}" = "1" ]; then
+    # The helper decides whether to write the package database OpenSCAP
+    # will read, so record it as a donor role in the provenance.
+    resolve_donor dpkg-status
+    # Decide and write inside the helper container, which sees only the
+    # scratch rootfs: a symlinked var/lib/dpkg in the target image can't
+    # redirect the write anywhere on the host, and the realpath check makes
+    # sure the file lands where oscap-chroot will read it.
+    #
+    # Each stanza gets the Status line dpkg itself records for an installed
+    # package when it is missing, and every stanza (the last one included)
+    # ends in a blank line: the probe treats a final stanza with no
+    # terminating blank line as a match for any package name.
+    # One stanza per input file, normalized: CR stripped, a Status line
+    # added after Package when absent, and a blank line after every stanza.
+    # shellcheck disable=SC2016  # $0 and friends belong to awk
+    stanza_awk='
+        function flush(i) {
+            if (n == 0) return
+            for (i = 1; i <= n; i++) {
+                print buf[i]
+                if (i == pkg && !status) print "Status: install ok installed"
+            }
+            print ""
+            n = 0; pkg = 0; status = 0
+        }
+        { sub(/\r$/, "") }
+        /^[ \t]*$/ { flush(); next }
+        {
+            buf[++n] = $0
+            if (!pkg && $0 ~ /^Package:/) pkg = n
+            if ($0 ~ /^Status:/) status = 1
+        }
+        END { flush() }
+    '
+    dpkg_result="$(docker run --rm -u 0:0 \
+        -v "${ROOTFS_DIR}:/target" \
+        -e STANZA_AWK="${stanza_awk}" \
+        --entrypoint sh \
+        "${DONOR_ID}" -c '
+            set -eu
+            d=/target/var/lib/dpkg
+            if [ -e "$d/status" ] || [ -L "$d/status" ]; then echo present; exit 0; fi
+            if [ ! -d "$d/status.d" ]; then echo absent; exit 0; fi
+            if [ "$(readlink -f "$d")" != "$d" ]; then echo symlinked; exit 0; fi
+            # Build in container-private temporaries, never at a fixed
+            # path in the image, where a planted symlink would redirect
+            # the write. The one write into the rootfs is the final copy
+            # to status, which was just checked to be absent.
+            list="$(mktemp)"
+            tmp="$(mktemp)"
+            find "$d/status.d" -maxdepth 1 -type f ! -name "*.md5sums" | sort > "$list"
+            while IFS= read -r f; do
+                awk "$STANZA_AWK" "$f" >> "$tmp"
+            done < "$list"
+            count="$(grep -c "^Package:" "$tmp" || true)"
+            if [ "${count:-0}" -eq 0 ]; then echo empty; exit 0; fi
+            cp "$tmp" "$d/status"
+            chmod 0644 "$d/status"
+            echo "synthesized ${count}"
+        ')"
+    case "${dpkg_result}" in
+        synthesized\ *)
+            DPKG_STATUS="synthesized"
+            DPKG_STATUS_PACKAGES="${dpkg_result#synthesized }"
+            echo "==> Synthesized /var/lib/dpkg/status from status.d/ (${DPKG_STATUS_PACKAGES} packages) in the scratch rootfs"
+            ;;
+        empty)
+            DPKG_STATUS="missing"
+            DPKG_STATUS_REASON="status.d/ holds no package stanzas"
+            ;;
+        symlinked)
+            DPKG_STATUS="missing"
+            DPKG_STATUS_REASON="/var/lib/dpkg is a symlink, which the orb does not write through"
+            ;;
+    esac
+elif [ "${FAMILY}" = "dpkg" ] \
+        && rootfs_has -d "${ROOTFS_REAL}" "${ROOTFS_DIR}/var/lib/dpkg/status.d" \
+        && ! rootfs_has -f "${ROOTFS_REAL}" "${ROOTFS_DIR}/var/lib/dpkg/status"; then
+    DPKG_STATUS="missing"
+    DPKG_STATUS_REASON="the orb does not modify a rootfs_path tree"
+fi
+if [ "${DPKG_STATUS}" = "missing" ]; then
+    echo "WARNING: the target has /var/lib/dpkg/status.d/ but no /var/lib/dpkg/status," >&2
+    echo "         and none was built (${DPKG_STATUS_REASON})." >&2
+    echo "         OpenSCAP's dpkg probe reads only the status file, so package rules" >&2
+    echo "         will report 'error'. See the README (Distroless images)." >&2
+fi
 
 # --- 4. pull scanner image -----------------------------------------------
 ensure_image "${SCANNER}" "scanner image"
@@ -589,6 +715,11 @@ fi
     fi
     echo "profile=${PROFILE}"
     echo "family=${FAMILY}"
+    if [ -n "${DPKG_STATUS}" ]; then
+        echo "dpkg_status=${DPKG_STATUS}"
+        echo "dpkg_status_packages=${DPKG_STATUS_PACKAGES}"
+        echo "dpkg_status_reason=${DPKG_STATUS_REASON}"
+    fi
     if [ -n "${IMAGE}" ]; then
         echo "image=${IMAGE}"
         echo "image_id=${TARGET_IMAGE_ID}"

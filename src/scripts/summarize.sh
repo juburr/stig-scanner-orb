@@ -256,6 +256,15 @@ provenance = {
         "repo_digests": csv_list(plan.get("image_repo_digests")),
         "platform": opt(plan.get("image_platform")),
         "rootfs_path": opt(plan.get("rootfs_path")),
+        # Distroless dpkg layout: "synthesized" (status file built from
+        # status.d/ in the scratch copy) or "missing" (not built, for the
+        # recorded reason; dpkg probes can't see packages).
+        "dpkg_status": {
+            "state": plan["dpkg_status"],
+            "packages": int(plan["dpkg_status_packages"]) if plan.get("dpkg_status_packages", "").isdigit() else None,
+            "source": "/var/lib/dpkg/status.d",
+            "reason": plan.get("dpkg_status_reason") or None,
+        } if plan.get("dpkg_status") else None,
     },
     "target_base": {
         "requested": opt(plan.get("target_base_requested")),
@@ -313,6 +322,8 @@ if plan:
     lines.append(f"  openscap:          {sc['openscap_version'] or 'unknown'}")
     if donor:
         lines.append(f"  donor-digest:      {digest_line(donor['repo_digests'], donor['image_id'], 'none', donor['platform'])} (used for {', '.join(donor['used_for'])})")
+    if t["dpkg_status"] and t["dpkg_status"]["state"] == "synthesized":
+        lines.append(f"  dpkg-status:       synthesized from /var/lib/dpkg/status.d ({t['dpkg_status']['packages']} packages) in the scratch rootfs copy")
     lines.append(f"  datastream-source: {ds['source'] or ''}")
     lines.append(f"  datastream-sha256: {ds['sha256'] or 'unavailable'}")
     bench = f"{ds['benchmark_id'] or 'unknown'} {ds['benchmark_version'] or ''}".rstrip()
@@ -327,6 +338,18 @@ lines.append(f"  fail-on-finding: {fail_on_finding}")
 lines.append(f"  require-evaluated-rules: {require_evaluated}")
 lines.append("")
 lines.append(f"Evaluated rules: {evaluated}")
+
+if provenance["target"]["dpkg_status"] and provenance["target"]["dpkg_status"]["state"] == "missing":
+    reason = provenance["target"]["dpkg_status"]["reason"]
+    lines.append("")
+    lines.append(
+        "WARNING: the target has /var/lib/dpkg/status.d/ but no /var/lib/dpkg/status "
+        "(distroless layout), and none was built"
+        + (f" ({reason})" if reason else "")
+        + ". OpenSCAP's dpkg probe reads only the status file, so package rules "
+        "report error and package-removal checks were not evaluated. See README, "
+        "Distroless images."
+    )
 
 if rule_results == 0:
     lines.append("")

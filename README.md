@@ -62,7 +62,25 @@ One gate is on by default: a scan in which **zero rules evaluate** to pass or fa
 
 Both scanner images are pinned by digest; see [Reproducibility and provenance](#-reproducibility-and-provenance) for the exact references. The Chainguard image also serves as the donor for RPM datastreams and as the root-privileged extraction helper.
 
-`auto` recognizes RHEL, Rocky, Alma, Oracle Linux, Fedora, Debian 12, Ubuntu 22.04, Wolfi, and Chainguard via the target's `/etc/os-release`, with filesystem-shape fallbacks (`apk`, `rpm`, `dpkg`) for distroless images that lack one. For `scratch` images that ship neither `/etc/os-release` nor a package database, set `target_base` explicitly.
+`auto` recognizes RHEL, Rocky, Alma, Oracle Linux, Fedora, Debian 12, Ubuntu 22.04, Wolfi, and Chainguard via the target's `/etc/os-release`, with filesystem-shape fallbacks (`apk`, `rpm`, `dpkg` including the distroless `status.d/` layout) for images that lack one. For `scratch` images that ship neither `/etc/os-release` nor a package database, set `target_base` explicitly.
+
+Tested in CI against `ubi9/ubi`, `ubi9/ubi-minimal`, `ubi8/ubi`, `ubi8/ubi-minimal`, `gcr.io/distroless/cc-debian12`, `debian:12-slim`, `ubuntu:22.04`, `fedora`, and `cgr.dev/chainguard/static`.
+
+### Distroless images
+
+Google distroless images (`gcr.io/distroless/*-debian12`) ship `/etc/os-release` (`ID=debian`, `VERSION_ID=12`), so `auto` resolves them to `debian12`. They do not ship `/var/lib/dpkg/status`: each installed package is a stanza in its own file under `/var/lib/dpkg/status.d/`. OpenSCAP's dpkg probe reads only the status file, so without it every package check comes back `error`, and "package X must not be installed" rules are never evaluated.
+
+- **Image mode:** the orb builds `/var/lib/dpkg/status` from the `status.d/` stanzas in its scratch copy of the rootfs (never in the image), adding the `Status: install ok installed` line dpkg would have recorded. `summary.txt` shows `dpkg-status: synthesized … (N packages)`, and `provenance.json` records `target.dpkg_status`. Against `cc-debian12` this turns 5 `error` results into evaluated rules with the default profile, and 27 with CIS Level 1. If the file can't be built (`status.d/` holds no package stanzas, or `/var/lib/dpkg` is a symlink, which the orb won't write through), the scan records `dpkg_status: missing` with the reason and warns, as in `rootfs_path` mode.
+- **`rootfs_path` mode:** the orb never modifies your tree. It records `dpkg_status: missing` and prints a warning in the log and `summary.txt`. To fix it, add the file to your extracted tree before the scan (with the same `Status` line image mode adds):
+  ```sh
+  d=/path/to/rootfs/var/lib/dpkg
+  for f in "$d"/status.d/*; do
+    case "$f" in *.md5sums) continue ;; esac
+    if grep -q '^Status:' "$f"; then awk 1 "$f"
+    else awk '{ print } /^Package:/ { print "Status: install ok installed" }' "$f"; fi
+    echo
+  done > "$d/status"
+  ```
 
 ## 🚦 Gates
 
@@ -204,7 +222,7 @@ Docker resolves the digest and ignores the tag, which is kept so a reader can se
 | `target_base.requested`, `.resolved`, `.resolved_from` | e.g. `auto` → `rhel9`, from `os-release`, `package-db` (filesystem-shape fallback), or `parameter`. |
 | `profile.id`, `profile.title` | The XCCDF profile evaluated. |
 | `scanner.image`, `.repo_digests`, `.image_id`, `.platform`, `.openscap_version` | The scanner reference, its registry digest, its local id, the platform it ran as (`os/arch`), and the OpenSCAP version that produced `results.xml`. |
-| `donor` | Same image fields, plus `used_for` (`extraction`, `datastream`); `null` when no helper image was used (rootfs mode with a bundled datastream). |
+| `donor` | Same image fields, plus `used_for` (`extraction`, `datastream`, `dpkg-status`: the distroless status synthesis); `null` when no helper image was used (rootfs mode with a bundled datastream). |
 | `datastream.name`, `.source`, `.sha256` | The datastream file, where it came from (`bundled` in the scanner, `donated` from the donor, or `datastream_path`), and the sha256 of the exact file `oscap` evaluated, hashed inside the scanner container (from the per-scan snapshot for `donated` and `datastream_path`). |
 | `datastream.benchmark_id`, `.benchmark_version`, `.ssg_version` | The XCCDF benchmark and its version; `ssg_version` is the ComplianceAsCode/SSG release when the benchmark is SSG content, otherwise `null` (the Wolfi GPOS datastream is not). |
 | `scan.start_time`, `scan.end_time` | From the XCCDF `TestResult`. |
