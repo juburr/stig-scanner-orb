@@ -196,18 +196,18 @@ A container-tailored RHEL STIG tailoring file is on the roadmap.
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
 | `image` | string | `""` | Image tag to scan. If not already in the local daemon, the orb will `docker pull` it. Mutually exclusive with `rootfs_path`. |
-| `rootfs_path` | string | `""` | Path to an offline, pre-extracted filesystem: RPM-extracted trees, mounted VM disks, etc. Never a live filesystem such as `/`; a tree containing a Unix socket is refused. |
+| `rootfs_path` | string | `""` | Path to an offline, pre-extracted filesystem: RPM-extracted trees, mounted VM disks, etc. Never a live filesystem such as `/`. Symlinks are resolved, and a tree containing a Unix socket is refused, as is one that overlaps `output_dir`. |
 | `image_tarball` | string | `""` | Optional `docker load` source before scanning. `image` is still required: set it to a tag the archive contains. |
 | `target_base` | enum | `auto` | See dispatch table above. |
 | `scanner_image` | string | `""` | Override the pinned scanner. For air-gap mirrors; pin overrides by digest too. |
 | `datastream_name` | string | `""` | Override the bundled datastream filename. |
 | `datastream_path` | string | `""` | Host-local datastream file. Skips the donor flow. |
 | `profile_id` | string | `""` | Override the XCCDF profile id (e.g. switch to CIS). |
-| `donor_image` | string | `""` (pinned Chainguard openscap) | Extraction helper, and the image datastreams are copied out of for RPM targets. Override for air-gap. |
+| `donor_image` | string | `""` (pinned Chainguard openscap) | Root-privileged helper (extraction, distroless dpkg status, the `rootfs_path` socket check) and the image datastreams are copied out of for RPM targets. Override for air-gap; an override needs a shell and a POSIX userland (`tar`, `find`, `awk`, `cp`, …; busybox is enough) plus the SCAP content under `/usr/share/xml/scap/ssg/content`. |
 | `fail_on_finding` | boolean | `false` | When true, exit 1 on any non-ignored `fail`, `error`, or `unknown` result. |
 | `require_evaluated_rules` | boolean | `true` | Fail the job when zero rules evaluate to pass, fail, fixed, or informational. Set false only on a job that intentionally records an all-notapplicable baseline (see [Gates](#-gates)). |
 | `ignore_findings` | string | `""` | Comma-separated rule IDs to subtract from the fail/error/unknown gate count. |
-| `output_dir` | string | `build/stig` | Where reports and summary land. |
+| `output_dir` | string | `build/stig` | Where reports and summary land. The scanner mounts it read-write, so in `rootfs_path` mode it must not overlap the scanned tree. |
 | `resource_class` | string | `medium` | Pass-through to the machine executor. |
 | `no_output_timeout` | string | `30m` | OpenSCAP can be silent for several minutes during evaluation. |
 | `checkout` | boolean | `true` | Whether to `checkout` before scanning. |

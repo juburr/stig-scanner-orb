@@ -251,40 +251,54 @@ else
         echo "ERROR: rootfs-path '${ROOTFS_PATH}' is not a directory." >&2
         exit 2
     fi
-    ROOTFS_DIR="$(cd "${ROOTFS_PATH}" && pwd)"
+    # Physical path: a symlinked rootfs_path (e.g. /tmp/rootfs -> /) is
+    # what Docker bind-mounts, so it is what must be checked; find would
+    # not descend into a symlink given as its starting point.
+    ROOTFS_DIR="$(cd "${ROOTFS_PATH}" && pwd -P)"
     # The scanner gets this tree bind-mounted read-only, and a read-only
     # mount still lets a process connect to a Unix socket inside it. A
     # live filesystem (rootfs_path: /, or a tree with /run bound into it)
     # can hold the Docker socket, which would hand the scanner the daemon.
     # Extracted image trees never contain sockets (tar skips them), so
-    # refuse any. /proc and /sys are pruned: they hold no socket files.
-    base="${ROOTFS_DIR%/}"
+    # refuse any, anywhere in the tree (proc/ and sys/ included: in an
+    # arbitrary directory they are ordinary subtrees).
     find_rc=0
-    sock="$(find "${ROOTFS_DIR}" \( -path "${base}/proc" -o -path "${base}/sys" \) -prune \
-        -o -type s -print -quit 2>/dev/null)" || find_rc=$?
+    sock="$(find "${ROOTFS_DIR}" -type s -print -quit 2>/dev/null)" || find_rc=$?
     if [ -z "${sock}" ] && [ "${find_rc}" -ne 0 ]; then
         # The runner couldn't read the whole tree (e.g. root-owned 0700
         # directories in a mounted VM disk), but the root scanner can, so
         # an empty result proves nothing. Repeat the check as root in the
         # helper image -- never in the scanner image the check protects --
-        # and fail closed if that can't complete either.
+        # and fail closed if that can't complete either. Plain POSIX find
+        # options only, so any helper with a find works.
         echo "==> rootfs-path is not fully readable by this user; checking it for sockets as root in the helper image"
         resolve_donor rootfs-check
         find_rc=0
         sock="$(docker run --rm --network none -u 0:0 -v "${ROOTFS_DIR}:/target:ro" \
-            --entrypoint find "${DONOR_ID}" /target \
-            \( -path /target/proc -o -path /target/sys \) -prune \
-            -o -type s -print -quit)" || find_rc=$?
+            --entrypoint find "${DONOR_ID}" /target -type s -print)" || find_rc=$?
+        sock="${sock%%$'\n'*}"
         if [ -z "${sock}" ] && [ "${find_rc}" -ne 0 ]; then
-            echo "ERROR: could not check rootfs-path '${ROOTFS_PATH}' for Unix sockets (find exited ${find_rc})." >&2
+            echo "ERROR: could not check rootfs-path '${ROOTFS_PATH}' for Unix sockets as root" >&2
+            echo "       (find in the helper image exited ${find_rc}; the helper image needs find)." >&2
             exit 2
         fi
-        sock="${sock:+${base}${sock#/target}}"
+        sock="${sock:+${ROOTFS_DIR%/}${sock#/target}}"
     fi
     if [ -n "${sock}" ]; then
         echo "ERROR: rootfs-path '${ROOTFS_PATH}' contains a Unix socket: ${sock}" >&2
         echo "       Point rootfs-path at an offline extracted tree, not a live filesystem;" >&2
         echo "       the scanner could connect to a socket through its read-only mount." >&2
+        exit 2
+    fi
+    # The scanner mounts the output dir read-write at /out. Overlapping
+    # the target in either direction would give it a writable alias of
+    # the tree it must only read.
+    out_phys="$(cd "${OUTPUT_DIR_ABS}" && pwd -P)"
+    case "${out_phys%/}/" in "${ROOTFS_DIR%/}/"*) overlap=1 ;; *) overlap=0 ;; esac
+    case "${ROOTFS_DIR%/}/" in "${out_phys%/}/"*) overlap=1 ;; esac
+    if [ "${overlap}" = "1" ]; then
+        echo "ERROR: output-dir '${OUTPUT_DIR}' overlaps rootfs-path '${ROOTFS_PATH}'." >&2
+        echo "       The scanner writes to output-dir; keep it outside the scanned tree (and vice versa)." >&2
         exit 2
     fi
 fi
@@ -698,7 +712,8 @@ docker run --rm --network none -u 0:0 \
             --results /out/results.xml \
             "${DS_PATH}"
         rc=$?
-        chown -R "${HOST_UID}:${HOST_GID}" /out 2>/dev/null || true
+        # Only the files oscap wrote: output-dir may be shared (even /tmp).
+        chown "${HOST_UID}:${HOST_GID}" /out/report.html /out/results.xml 2>/dev/null || true
         # oscap exits 2 when the scan completed but at least one rule
         # failed. Treat that as success; the gate decision lives in the
         # summarize step.

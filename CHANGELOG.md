@@ -83,6 +83,11 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   scanner. Extracted image trees never contain sockets. If the runner user
   can't read the whole tree, the check reruns as root in the helper image
   (`donor.used_for` gains `rootfs-check`) and fails closed if it can't finish.
+  A symlinked `rootfs_path` is checked where it points.
+- A `rootfs_path` that overlaps `output_dir` (either inside the other) is
+  refused: the scanner mounts the output dir read-write, which would have
+  given it a writable alias of the tree. The scanner now `chown`s only the
+  two files it writes rather than the whole output dir.
 - The cleanup trap warns when it cannot remove the scratch rootfs or the
   datastream snapshot (e.g. the Docker daemon is gone, so the root-privileged
   removal helper can't run) instead of failing silently.

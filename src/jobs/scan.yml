@@ -19,7 +19,7 @@ parameters:
     description: >
       Offline, already-extracted filesystem path to scan via
       oscap-chroot. Never a live filesystem such as /: a tree
-      containing a Unix socket is refused.
+      containing a Unix socket, or overlapping output_dir, is refused.
   image_tarball:
     type: string
     default: ""
@@ -47,8 +47,9 @@ parameters:
     type: string
     default: ""
     description: >
-      Extraction helper and datastream source. Empty uses the orb's
-      digest-pinned Chainguard openscap image.
+      Root-privileged helper and datastream source. Empty uses the orb's
+      digest-pinned Chainguard openscap image. An override needs a shell
+      and a POSIX userland (tar, find, awk, cp, ...; busybox is enough).
   fail_on_finding:
     type: boolean
     default: false

@@ -36,9 +36,22 @@ chmod +x "${stub}/docker" "${stub}/circleci" "${stub}/sleep"
 tree="$(mktemp -d)"
 mkdir -p "${tree}/etc" "${tree}/run"
 printf 'ID=debian\nVERSION_ID="12"\n' > "${tree}/etc/os-release"
+# scan_rootfs [ROOTFS [OUTPUT_DIR]]
 scan_rootfs() {
-    PATH="${stub}:${PATH}" PARAM_ROOTFS_PATH="${tree}" PARAM_TARGET_BASE=auto \
-        PARAM_OUTPUT_DIR="$(mktemp -d)" bash "${ROOT}/src/scripts/scan.sh" 2>&1
+    PATH="${stub}:${PATH}" PARAM_ROOTFS_PATH="${1:-${tree}}" PARAM_TARGET_BASE=auto \
+        PARAM_OUTPUT_DIR="${2:-$(mktemp -d)}" bash "${ROOT}/src/scripts/scan.sh" 2>&1
+}
+# refused NAME WANT ROOTFS [OUTPUT_DIR]: scan.sh must exit 2 with WANT.
+refused() {
+    local name="$1" want="$2" rc=0 out
+    shift 2
+    out="$(scan_rootfs "$@")" || rc=$?
+    case "${rc}:${out}" in
+        "2:"*"${want}"*) ;;
+        *)
+            echo "FAIL: ${name}: expected exit 2 with '${want}', got exit ${rc}: ${out}" >&2
+            failures=$((failures + 1)) ;;
+    esac
 }
 out="$(scan_rootfs || true)"
 case "${out}" in
@@ -46,18 +59,29 @@ case "${out}" in
         echo "FAIL: a socket-free rootfs_path was refused: ${out}" >&2
         failures=$((failures + 1)) ;;
 esac
+# The output dir must not overlap the scanned tree in either direction:
+# the scanner mounts it read-write.
+refused "output = rootfs" "overlaps rootfs-path" "${tree}" "${tree}"
+refused "output inside rootfs" "overlaps rootfs-path" "${tree}" "${tree}/run"
+refused "rootfs inside output" "overlaps rootfs-path" "${tree}" "$(dirname "${tree}")"
+
 # Bind relative to the directory: socket paths are length-limited.
 (cd "${tree}/run" && python3 -c 'import socket; socket.socket(socket.AF_UNIX).bind("docker.sock")')
-rc=0
-out="$(scan_rootfs)" || rc=$?
-case "${rc}:${out}" in
-    "2:"*"contains a Unix socket: ${tree}/run/docker.sock"*) ;;
-    *)
-        echo "FAIL: a rootfs_path holding a socket was not refused (exit ${rc}): ${out}" >&2
-        failures=$((failures + 1)) ;;
-esac
+real="$(cd "${tree}" && pwd -P)"
+refused "socket in tree" "contains a Unix socket: ${real}/run/docker.sock"
+# A symlinked rootfs_path is checked where it points (find alone would
+# not descend into a symlink given as its starting point).
+link="$(mktemp -d)/rootfs"
+ln -s "${tree}" "${link}"
+refused "symlinked rootfs_path" "contains a Unix socket: ${real}/run/docker.sock" "${link}"
+# proc/ and sys/ of an arbitrary tree are ordinary directories.
+other="$(mktemp -d)"
+mkdir -p "${other}/etc" "${other}/proc"
+cp "${tree}/etc/os-release" "${other}/etc/"
+(cd "${other}/proc" && python3 -c 'import socket; socket.socket(socket.AF_UNIX).bind("docker.sock")')
+refused "socket under proc/" "contains a Unix socket: $(cd "${other}" && pwd -P)/proc/docker.sock" "${other}"
 
 if [ "${failures}" -ne 0 ]; then
     exit 1
 fi
-echo "container isolation ok: ${runs} docker run invocation(s), all --network none; socket-bearing rootfs_path refused"
+echo "container isolation ok: ${runs} docker run invocation(s), all --network none; socket-bearing or overlapping rootfs_path refused"
