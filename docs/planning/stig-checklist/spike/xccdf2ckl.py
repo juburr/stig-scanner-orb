@@ -156,10 +156,13 @@ JUSTIFICATION = {
         "scanned image. Assess it on the container host's / platform's STIG checklist. "
         "Ref: DISA Container Hardening Process Guide V1R2, Appendix B."
     ),
+    # Component-specific on purpose: package_gdm being false proves only that
+    # gdm is absent, not that the image has no graphical interface at all.
     "gui": (
-        "Not Applicable. No graphical user interface is installed in the image ({pkgs} not "
-        "installed; OpenSCAP platform check {gates} was false). DISA: \"If the system does not "
-        "have any graphical user interface installed, this requirement is Not Applicable.\""
+        "Not Applicable. This requirement configures a graphical-interface component ({pkgs}) "
+        "that is not installed in this image (OpenSCAP platform check {gates} was false). That "
+        "establishes only that {pkgs} is absent; if the image provides a different graphical "
+        "interface, assess this requirement manually."
     ),
     "package": (
         "Not Applicable. The {pkgs} package is not installed in this image, so the "
@@ -262,23 +265,44 @@ SSG_STIG_IDS = {  # SSG benchmark -> DISA benchmark id / title (SSG-only mode)
 
 
 ARCH_ALIASES = {"x86_64": "amd64", "aarch64": "arm64"}
+ARCH_TERM = re.compile(r"^(not_)?(x86_64|aarch64|ppc64le|s390x)_arch$")
+SSG_CPU = {"x86_64": "amd64", "aarch64": "arm64", "ppc64le": "ppc64le", "s390x": "s390x"}
 
 
 def norm_arch(a):
     return ARCH_ALIASES.get(a, a) if a else None
 
 
-def has_arch_gate(rule):
-    return any(t.endswith("_arch") for level in rule["platform_levels"] for t in gate_terms(level))
+def arch_term_value(term, arch):
+    """Truth of an SSG architecture term (e.g. not_s390x_arch) on a CPU, or
+    None when the term or the CPU is unknown."""
+    m = ARCH_TERM.match(term)
+    if not m or not arch:
+        return None
+    hit = SSG_CPU[m.group(2)] == arch
+    return not hit if m.group(1) else hit
 
 
 def build_model(res, disa, plan, runner_arch=None):
     # OpenSCAP's architecture platforms read the scanning host's /proc, not
-    # the target. Trust an architecture verdict only when the target's
-    # platform is known (image mode records it) and matches the runner.
+    # the target. Image mode records the target platform; rootfs_path doesn't.
     target_arch = norm_arch((plan.get("image_platform") or "").partition("/")[2] or None)
     runner_arch = norm_arch(runner_arch)
-    arch_ok = target_arch is not None and target_arch == runner_arch
+
+    def arch_trusted(gates):
+        """OpenSCAP's verdict on these gates holds for the target only if
+        every architecture term in them has the same, known value on the
+        runner (what OpenSCAP evaluated) and on the target. A false compound
+        like not_s390x_arch_and_system_with_kernel doesn't say which term
+        failed, so the arch term must be decidable for the target too."""
+        return all(
+            arch_term_value(t, runner_arch) is not None
+            and arch_term_value(t, runner_arch) == arch_term_value(t, target_arch)
+            for t in gate_terms(gates) if t.endswith("_arch"))
+
+    def arch_failed(gates):
+        """With trusted gates: does some arch term rule the target out?"""
+        return any(arch_term_value(t, target_arch) is False for t in gate_terms(gates) if t.endswith("_arch"))
     by_vid = collections.defaultdict(list)
     for rid, result in res["results"].items():
         r = res["rules"].get(rid)
@@ -304,20 +328,27 @@ def build_model(res, disa, plan, runner_arch=None):
             if vid[2:] in r["svs"]:
                 ruleids.add(r["svs"][vid[2:]])
             line = f"{rid.replace('xccdf_org.ssgproject.content_rule_', '')}: {result}"
-            cat = None
+            uncertain = False
             if result == "notapplicable":
                 gates = unmet_gates(r, res["true_platforms"])
-                cat = classify_na(gates)
+                if not arch_trusted(gates):
+                    cat, uncertain = "arch?", True
+                elif arch_failed(gates):
+                    cat = "arch"
+                else:
+                    cat = classify_na(gates)  # any arch term held for the target
                 na_cats.add((cat, tuple(gates)))
                 if gates:
                     line += f" (platform not met: {', '.join(g.lstrip('#') for g in gates)})"
-            # Flag only where an architecture gate decided the outcome: the rule
-            # was evaluated past it, or it is the gate that made the rule N/A.
-            if not arch_ok and has_arch_gate(r) and (cat is None or cat == "arch"):
+            else:
+                # Evaluated past every gate: an untrusted arch term means the
+                # rule may not apply to the target at all.
+                uncertain = not all(arch_trusted(level) for level in r["platform_levels"])
+            if uncertain:
                 line += f" [architecture gate evaluated on the scanning host ({runner_arch}); target architecture {target_arch or 'unknown'}]"
             details.append(line)
         status = aggregate([(rid, res["results"][rid]) for rid in rids])
-        if status == "Not_Applicable" and not arch_ok and any(c == "arch" for c, _ in na_cats):
+        if status == "Not_Applicable" and any(c == "arch?" for c, _ in na_cats):
             status = "Not_Reviewed"
             comments = [f"Not reviewed: this N/A rests on a CPU-architecture check that OpenSCAP evaluated against "
                         f"the scanning host ({runner_arch}), and the target's architecture is "

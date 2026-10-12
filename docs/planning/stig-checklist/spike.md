@@ -48,7 +48,11 @@ N/A rows by justification category (DISA skeleton matching the content):
 
 The 23 GUI rows on RHEL 9 match the 23 DISA rules whose own check text says
 "If the system does not have any graphical user interface installed, this
-requirement is Not Applicable." The checklist can quote DISA there.
+requirement is Not Applicable." The checklist does **not** quote that,
+though (PR review). A false `package_gdm` proves only that gdm is absent,
+not that no GUI is installed: KDE with LightDM would pass it. So the wording
+names the missing component and asks for manual assessment if another GUI
+is present.
 
 ### Example rows (V2R9 skeleton, from the `.cklb`)
 
@@ -64,10 +68,10 @@ V-257796 SV-257796r1044847_rule RHEL-09-212055 [low] not_applicable  CCI-000130 
 
 V-258012 SV-258012r1014855_rule RHEL-09-271010 [medium] not_applicable
   finding_details: dconf_gnome_banner_enabled: notapplicable (platform not met: package_gdm)
-  comments:        Not Applicable. No graphical user interface is installed in the image (gdm not
-                   installed; OpenSCAP platform check package_gdm was false). DISA: "If the system
-                   does not have any graphical user interface installed, this requirement is Not
-                   Applicable."
+  comments:        Not Applicable. This requirement configures a graphical-interface component (gdm)
+                   that is not installed in this image (OpenSCAP platform check package_gdm was
+                   false). That establishes only that gdm is absent; if the image provides a
+                   different graphical interface, assess this requirement manually.
 
 V-258241 SV-258241r1184293_rule RHEL-09-215105 [high] open
   finding_details: Automated result from OpenSCAP (3 SSG rules):
