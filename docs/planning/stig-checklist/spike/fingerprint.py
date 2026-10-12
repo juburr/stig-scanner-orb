@@ -12,10 +12,10 @@ profile; every run must name the same release.
 
 Exits 0 only when exactly one release contains every selected SV id, every
 selected rule without a DISA reference is in --allow-unmapped (the known
-helper rules, e.g. enable_authselect on RHEL 8/9), and no selected rule has an
-unpaired V-ID/SV reference (the generator drops those, plan D3, so they would
-vanish from a checklist labeled verified). Anything else is not a verified
-match.
+helper rules, e.g. enable_authselect on RHEL 8/9), no selected rule has an
+unpaired or malformed V-ID/SV reference (the generator drops those, plan D3,
+so they would vanish from a checklist labeled verified), and every selected
+rule-result has a Rule definition. Anything else is not a verified match.
 """
 import argparse
 import glob
@@ -29,6 +29,7 @@ X11 = '{http://checklists.nist.gov/xccdf/1.1}'
 HREF = 'https://www.cyber.mil/stigs/srg-stig-tools/'
 HREF_VULN = HREF.rstrip('/') + '#vulnerability_id'
 RULE = 'xccdf_org.ssgproject.content_rule_'
+SV_RE = re.compile(r'SV-(\d+)r\d+_rule')
 
 ap = argparse.ArgumentParser()
 ap.add_argument('results')
@@ -45,18 +46,20 @@ pid = tr.find(X + 'profile').get('idref')
 prof = next(p for p in bench.iter(X + 'Profile') if p.get('id') == pid)
 sel = {rr.get('idref') for rr in tr.findall(X + 'rule-result') if (rr.findtext(X + 'result') or '').strip() != 'notselected'}
 rules = {r.get('id'): r for r in bench.iter(X + 'Rule')}
+undefined = sorted(rid for rid in sel if rid not in rules)
 svs_of = {rid: {x.text.strip() for x in rules[rid].findall(X + 'reference') if x.get('href') == HREF} for rid in sel if rid in rules}
 svs = set().union(*svs_of.values())
 unmapped = sorted(rid.replace(RULE, '') for rid, s in svs_of.items() if not s)
-# The generator's pairing (D3): with any V-ID reference on a rule, only V-n/SV-n
-# pairs of the same number become rows.
+# The generator's pairing (D3): only a whole V-<digits> or
+# SV-<digits>r<digits>_rule counts, and with any V-ID reference on a rule, only
+# V-n/SV-n pairs of the same number become rows.
 unpaired = []
 for rid in svs_of:
     refs = {x.text.strip() for x in rules[rid].findall(X + 'reference') if x.get('href') == HREF_VULN}
     vids = {v[2:] for v in refs if re.fullmatch(r'V-\d+', v)}
-    malformed = sorted(v for v in refs if not re.fullmatch(r'V-\d+', v))
-    nums = {re.match(r'SV-(\d+)', sv).group(1) for sv in svs_of[rid] if re.match(r'SV-\d+', sv)}
-    if refs and (malformed or vids != nums):
+    malformed = sorted(v for v in refs if not re.fullmatch(r'V-\d+', v)) + sorted(sv for sv in svs_of[rid] if not SV_RE.fullmatch(sv))
+    nums = {SV_RE.fullmatch(sv).group(1) for sv in svs_of[rid] if SV_RE.fullmatch(sv)}
+    if malformed or (refs and vids != nums):
         unpaired.append(f"{rid.replace(RULE, '')}: V-{sorted(vids - nums)} SV-{sorted(nums - vids)} malformed {malformed}")
 allowed = {r.strip() for r in a.allow_unmapped.split(',') if r.strip()}
 label = re.search(r'V\d+R\d+', ''.join(prof.find(X + 'title').itertext()) + ' ' + ''.join(prof.find(X + 'description').itertext()))
@@ -69,6 +72,8 @@ for f in sorted(glob.glob(a.pattern)):
     if svs and svs <= ids:
         full.append(os.path.basename(f))
 problems = [f'unpaired V-ID/SV references: {unpaired}'] if unpaired else []
+if undefined:
+    problems.append(f'{len(undefined)} selected rule-results with no Rule definition: {undefined[:5]}')
 if set(unmapped) - allowed:
     problems.append(f'selected rules without a DISA reference: {sorted(set(unmapped) - allowed)}')
 if len(full) != 1:

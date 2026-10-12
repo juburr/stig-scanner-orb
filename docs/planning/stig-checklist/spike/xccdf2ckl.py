@@ -12,6 +12,7 @@ import collections
 import datetime as dt
 import hashlib
 import html
+import io
 import json
 import os
 import platform
@@ -25,6 +26,9 @@ X12 = "{http://checklists.nist.gov/xccdf/1.2}"
 X11 = "{http://checklists.nist.gov/xccdf/1.1}"
 HREF_RULE = "https://www.cyber.mil/stigs/srg-stig-tools/"
 HREF_VULN = "https://www.cyber.mil/stigs/srg-stig-tools#vulnerability_id"
+# A DISA Rule ID, whole: a prefix match would pair "SV-123garbage" with V-123
+# and write it as the row's Rule_ID.
+SV_RE = re.compile(r"SV-(\d+)r\d+_rule")
 
 # ---------------------------------------------------------------- results
 
@@ -54,8 +58,8 @@ def combine_instances(rs):
     return "pass" if "pass" in rs else "fixed"  # what's left is pass/fixed/notapplicable
 
 
-def parse_results(path):
-    root = ET.parse(path).getroot()
+def parse_results(source):
+    root = ET.parse(source).getroot()
     bench = root if root.tag == X12 + "Benchmark" else next(root.iter(X12 + "Benchmark"))
     parent = {c: p for p in bench.iter() for c in p}
 
@@ -73,6 +77,11 @@ def parse_results(path):
     for r in bench.iter(X12 + "Rule"):
         refs = [(x.get("href") or "", (x.text or "").strip()) for x in r.findall(X12 + "reference")]
         ref = lambda pred: next((v for h, v in refs if pred(h, v)), None)
+        sv_refs = sorted({v for h, v in refs if h == HREF_RULE})
+        svs = collections.defaultdict(list)
+        for v in sv_refs:
+            if SV_RE.fullmatch(v):
+                svs[SV_RE.fullmatch(v).group(1)].append(v)
         rules[r.get("id")] = {
             "id": r.get("id"),
             "title": text_of(r.find(X12 + "title")),
@@ -83,8 +92,8 @@ def parse_results(path):
             # several SSG rules can cite one. Pair SV-n…_rule with V-n by n.
             # n -> every SV-n…_rule revision the rule cites (normally one;
             # never let XML order pick one of several).
-            "svs": {n: sorted({v for h, v in refs if h == HREF_RULE and re.match(rf"SV-{n}(?!\d)", v)})
-                    for n in {re.match(r"SV-(\d+)", v).group(1) for h, v in refs if h == HREF_RULE and re.match(r"SV-\d+", v)}},
+            "svs": dict(svs),
+            "bad_svs": [v for v in sv_refs if not SV_RE.fullmatch(v)],
             "vids": [v for h, v in refs if h == HREF_VULN],
             "stig_ids": [v for h, v in refs if "unix-linux" in h],
             "srg": ref(lambda h, v: v.startswith("SRG-")),
@@ -251,8 +260,8 @@ def aggregate(rule_results):
 # ------------------------------------------------------- DISA skeleton
 
 
-def parse_disa(path):
-    root = ET.parse(path).getroot()
+def parse_disa(source):
+    root = ET.parse(source).getroot()
     ns = X11 if root.tag.startswith(X11) else X12
     info = {
         # DISA's manual XCCDFs carry profiles (9 on every file seen) that each
@@ -494,9 +503,12 @@ def build_model(res, disa, plan, runner_arch=None):
     by_vid = collections.defaultdict(list)
     unpaired = []
     for rid, result in res["results"].items():
-        r = res["rules"].get(rid)
-        if result == "notselected" or not r:
+        if result == "notselected":
             continue
+        r = res["rules"][rid]  # main() fails a rule-result with no Rule
+        # A reference that isn't a whole SV-<digits>r<digits>_rule names no
+        # DISA rule: report it, never write it as a Rule_ID.
+        unpaired += [f"{rid}: {sv}" for sv in r["bad_svs"]]
         if r["vids"]:
             # Only a V-n with a matching SV-n is a row (D3); anything else
             # can't name a DISA rule, so report it instead of keying on it.
@@ -522,6 +534,10 @@ def build_model(res, disa, plan, runner_arch=None):
                     + (f"; scanned on {runner_arch}" if runner_arch else ""))
     prov.append(f"Content: {res['benchmark_id']} {res['benchmark_version']}, profile {res['profile_id']}; "
                 f"scan {res['start']} .. {res['end']} ({res['test_system']})")
+    if disa:
+        # The skeleton supplies every Rule ID, check text and CCI: name the
+        # exact file, not just the release it claims.
+        prov.append(f"DISA STIG file: {disa['benchmark_id']} V{disa['version']} ({disa['releaseinfo']}); sha256 {disa['sha256']}")
     prov_txt = "\n".join(prov)
     arch_note = f"[architecture gate evaluated on the scanning host ({runner_arch}); target architecture {target_arch or 'unknown'}]"
 
@@ -649,10 +665,11 @@ def build_model(res, disa, plan, runner_arch=None):
                            "so the result can't be tied to this checklist's release. Re-verify.")
             # Rule_Ver (the DISA STIG id, e.g. RHEL-09-211010) carries no V-ID
             # number to pair on, so use it only when it can only belong to
-            # this row: one id across the contributors, each citing one SV.
+            # this row: one id across the contributors, each citing one SV
+            # (a malformed one counts: the id could be its).
             # Otherwise leave it empty and list the candidates as evidence.
             stig_ids = sorted({sid for r in rids for sid in res["rules"][r]["stig_ids"]})
-            pairable = len(stig_ids) == 1 and all(len(res["rules"][r]["svs"]) == 1 for r in rids)
+            pairable = len(stig_ids) == 1 and all(len(res["rules"][r]["svs"]) == 1 and not res["rules"][r]["bad_svs"] for r in rids)
             if stig_ids and not pairable:
                 detail += (f"\n\nSTIG IDs cited by the contributing rules: {', '.join(stig_ids)}. They can't be "
                            f"paired with this V-ID, so Rule_Ver is left empty.")
@@ -864,8 +881,11 @@ def main():
         stuck = remove_all(artifacts)
         if stuck:
             raise OSError(f"can't remove previous checklist outputs: {', '.join(stuck)}")
+        # Hash and parse the same bytes, so the recorded sha256 is what the
+        # checklist was built from.
         with open(a.results, "rb") as f:
-            results_sha = hashlib.sha256(f.read()).hexdigest()
+            results_bytes = f.read()
+        results_sha = hashlib.sha256(results_bytes).hexdigest()
 
         # Only known tokens; an empty or unknown selection is a config error, not
         # a silently empty "generated" checklist (D8).
@@ -878,19 +898,31 @@ def main():
         if not host_name:
             return emit({"outcome": "failed", "reason": "the checklist asset name is empty"}, 1)
 
-        res = parse_results(a.results)
+        res = parse_results(io.BytesIO(results_bytes))
         # Gate on the evaluated profile, not on SV references: SSG reuses rules
         # across profiles, so e.g. RHEL 9 CIS L1 selects 160 rules that carry
         # DISA references and would otherwise yield a partial "STIG" checklist.
         if not re.search(r"_profile_stig(_gui)?$", res["profile_id"]):
             return emit({"outcome": "skipped", "reason": f"profile {res['profile_id']} is not a DISA STIG profile"}, 0)
+        # Every rule-result must resolve to a Rule in the file's benchmark. One
+        # that doesn't (a truncated or edited file) would be dropped silently,
+        # a fail included, while the rest still map and generate.
+        undefined = sorted(rid for rid, r in res["results"].items() if r != "notselected" and rid not in res["rules"])
+        if undefined:
+            return emit({"outcome": "failed", "reason": f"results.xml has {len(undefined)} rule-result(s) with no Rule "
+                         f"definition (e.g. {', '.join(undefined[:5])}): incomplete or edited file"}, 1)
         plan = {}
         if a.plan:
             for line in open(a.plan, encoding="utf-8"):
                 k, sep, v = line.rstrip("\n").partition("=")
                 if sep:
                     plan[k] = v
-        disa = parse_disa(a.disa) if a.disa else None
+        disa = None
+        if a.disa:
+            with open(a.disa, "rb") as f:
+                disa_bytes = f.read()
+            disa = parse_disa(io.BytesIO(disa_bytes))
+            disa["sha256"] = hashlib.sha256(disa_bytes).hexdigest()
         if disa:
             # The file must be the STIG this content implements; one shared
             # V-ID (the mapping gate below) doesn't prove that.
@@ -972,6 +1004,7 @@ def main():
                 writers[ext](staged[ext])
             meta = {"outcome": "generated", "host_name": host_name,
                     "skeleton_completeness": skeleton_check if disa else None,
+                    "skeleton_sha256": disa["sha256"] if disa else None,
                     "stig": {k: stig[k] for k in ("benchmark_id", "version", "releaseinfo")},
                     "formats": {ext: hashlib.sha256(open(staged[ext], "rb").read()).hexdigest() for ext in formats},
                     "vulns": len(vulns), "status": counts, "na_by_reason": na,

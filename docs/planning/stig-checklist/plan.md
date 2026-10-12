@@ -51,7 +51,7 @@ check-level.
 |---|---|---|
 | D1 | Write our own generator: Python stdlib, run on the runner like `summarize.sh`. | `oscap --stig-viewer` emits zero rule-results on OpenSCAP 1.3.6 (all RPM targets; fixed only in 1.3.13/1.4.3). It keeps one result per DISA id and writes XCCDF, not a checklist; STIG Manager rejects its SSG benchmark id. MITRE SAF writes one row per *SSG* rule (no V-ID aggregation, no CCIs, CKL only) and would add a Node toolchain. PyPI has no maintained CKL/CKLB library. `results.xml` has everything needed (spike 1, 8). |
 | D2 | Emit **both** `.ckl` and `.cklb` from one internal model; `checklist_formats` can pick one. | STIG Viewer 3.8.1 (current) imports CKL and exports both. DISA hosts no 2.x packages any more, but there is no end-of-support notice and CKL is still everywhere. eMASS device-scan upload takes either (`disaStigViewerCklCklb`). STIG Manager imports both. |
-| D3 | Rows are keyed on **V-ID**. V-ID comes from SSG's `#vulnerability_id` reference, or, for content older than SSG 0.1.82, from the SV number. Each `SV-n…_rule` pairs with `V-n` by number. When a rule has V-ID references, **only matched pairs become rows**: a `V-n` with no `SV-n` on the same rule, an `SV-n` with no `V-n`, or a reference that isn't a well-formed `V-<digits>` (a malformed `XX123` must not pair with `SV-123` by its tail) names no DISA rule. It is listed under "unpaired references" in the meta and summary instead. The SV-derived fallback applies only when a rule has no V-ID reference at all. Every revision a rule cites for one number is kept (never the last in XML order). If the content cites more than one revision for a V-ID, across rules or on one rule, no single Rule ID is provable (D4). SSG-only mode then makes the row Not_Reviewed with the revisions listed; with a skeleton, D7's all-must-match rule applies. | V-IDs are stable across releases; rule-revision suffixes and even STIG IDs are not. The mapping is many-to-many (spike 4). The pinned content has no unpaired reference (measured on ubi9, ubi8, ubuntu), but an unpaired V-ID in custom content would otherwise become a row with no Rule ID. In the spike that crashed SSG-only generation. |
+| D3 | Rows are keyed on **V-ID**. V-ID comes from SSG's `#vulnerability_id` reference, or, for content older than SSG 0.1.82, from the SV number. Each `SV-n…_rule` pairs with `V-n` by number. Only a whole DISA Rule ID (`SV-<digits>r<digits>_rule`) counts: a malformed `SV-123garbage` or a bare `SV-123` is never written as a Rule ID, and is listed as unpaired. When a rule has V-ID references, **only matched pairs become rows**: a `V-n` with no `SV-n` on the same rule, an `SV-n` with no `V-n`, or a reference that isn't a well-formed `V-<digits>` (a malformed `XX123` must not pair with `SV-123` by its tail) names no DISA rule. It is listed under "unpaired references" in the meta and summary instead. The SV-derived fallback applies only when a rule has no V-ID reference at all. Every revision a rule cites for one number is kept (never the last in XML order). If the content cites more than one revision for a V-ID, across rules or on one rule, no single Rule ID is provable (D4). SSG-only mode then makes the row Not_Reviewed with the revisions listed; with a skeleton, D7's all-must-match rule applies. | V-IDs are stable across releases; rule-revision suffixes and even STIG IDs are not. The mapping is many-to-many (spike 4). The pinned content has no unpaired reference (measured on ubi9, ubi8, ubuntu), but an unpaired V-ID in custom content would otherwise become a row with no Rule ID. In the spike that crashed SSG-only generation. |
 | D4 | All Rule IDs in a checklist come from **one** DISA release, and the checklist claims exactly that release. In SSG-only mode the release comes from a **release table** shipped with the generator, keyed by the **sha256 of the datastream the scan evaluated**: `datastream_sha256` in `scan-plan.env`, which `scan.sh` hashes from the same snapshot oscap reads. Each entry also names the datastream's benchmark id and version and its accepted STIG profile ids (D11). The `results.xml` benchmark and evaluated profile must match them. Anything else falls back to the profile label, marked `unverified` in the meta and summary: a newer or edited `datastream_path` that reuses the pinned ids, a hash not in the table, or a run with no recorded hash. Smoke jobs assert the pinned scans resolve through the table, so a pin bump that forgets the table fails CI. | STIG Viewer 3 matches on STIG ID + the *full* Rule ID including revision; "loose" matching is opt-in. The profile label is wrong for Ubuntu (says V2R7, is V2R8) (spike 5). Benchmark and profile ids alone can't tell pinned content from a later SSG build that reuses them. A fingerprint computed from `results.xml` can't cover everything that decides an evaluation, and two review rounds each found a new hole in one: hashing only the base `stig` selection let an edited `stig_gui` match, and local selects miss profile `extends`. Effective selection also depends on Rule/Group `selected` defaults and `requires`/`conflicts`: on ubi9, 4 of the 481 rules the `stig` profile selects are deselected by `conflicts`, so OpenSCAP evaluated 477. What a check enforces depends on `Value` definitions and OVAL content, and `results.xml` doesn't carry the OVAL at all. The datastream's exact bytes cover all of that, and `scan.sh` already records their hash for provenance. Measured:<ul><li>each spike scan's recorded `datastream_sha256` equals its pinned file's;</li><li>the amd64 and arm64 variants of the pinned Chainguard image ship byte-identical datastreams, so one entry per datastream serves both runner architectures. The RPM path uses the same bytes, donated from that image.</li><li>Entries: RHEL 8 `b0c25f6e…`, RHEL 9 `27fc84bb…`, RHEL 10 `58b6e4cb…`, Ubuntu 22.04 `5ee6c1d4…`.</li></ul> |
 | D5 | **N/A reasons are derived** from OpenSCAP's platform evaluation. Compare the rule's gates with the `TestResult` platforms, walking outermost group → rule. The result maps to fixed category wording (below). A false *compound* gate (`a_and_b`) doesn't say which term failed, so terms are looked up individually as standalone platforms:<ul><li>**known true:** listed in `TestResult`, or a term of a listed `_and_` compound (a true compound proves every term);</li><li>**known false:** the platform sits on some processed rule's deciding level. OpenSCAP evaluated every platform at that level and none was true.</li><li>otherwise unknown.</li></ul>A known-false term decides the category. So does the one remaining term when every other term is known true: the compound is false, so that term must be. Otherwise the row gets the generic wording, with no host or package claim. Arch terms are decided separately (`arch` row). | Exact, needs no per-release list. The top-down walk prevents false "not installed" claims (spike 3). Term-level lookups stop a compound like `package_pam_and_system_with_kernel` from claiming "host" on a bootc image where the kernel term held and PAM was the missing piece. Measured: on ubi9, `#system_with_kernel` is known false and `#package_pam` known true, so those rows stay `host`. The 33 `not_bootc_and_not_container` rows stay `host` too: the true `not_bootc_and_package_dnf` proves `not_bootc`, so `not_container` is the false term. On a bootc image that term is unknown and the rows get generic wording rather than a false "receives it from its host" claim. Only 1 ubi9 row (`not_container_and_wifi-iface`, neither term known) moves to generic wording. |
 | D6 | DISA metadata in steps: **SSG-only** (PR 1) → **user-supplied DISA manual XCCDF** (PR 2) → **bundled compact DISA data** for each pinned datastream's release (PR 3, pending the redistribution decision). | Ship value with no new inputs first. SSG-only lacks CCIs (removed on purpose upstream in 2025), DISA wording, and manual-only rows (9 on RHEL 9 V2R9). CCIs must come from each STIG's own idents: deriving them from SRG ids matches only 60–89%. |
@@ -95,6 +95,9 @@ instances) is first combined into one result with the same precedence: any
 `fail`, else any unevaluated result, else all `notapplicable`, else pass (`pass` or `fixed`, in any order).
 An unrecognized result string counts as `unknown`, never as a pass. (The
 pinned content has neither: no `multi-check`, no repeated `idref`.)
+A `rule-result` whose `idref` names no `Rule` in the results' benchmark (a
+truncated or edited file) fails the step: skipping it would drop its
+result, a `fail` included, while the other rules still generate.
 
 Rules whose OpenSCAP result doesn't carry over to the target (the `arch`
 row above: an undecided arch N/A, or an evaluated rule with an undecidable
@@ -173,9 +176,10 @@ files and parameters and changes no existing behaviour.
     8/9). A new pin that drops references from some rules would otherwise
     shrink the checklist silently, and the smoke row counts, derived from
     the same mapping, wouldn't notice;
-  - no selected rule has an unpaired V-ID/SV reference (D3). The generator
-    drops those, so they would vanish from a checklist labeled verified.
-    The current pins have none.
+  - no selected rule has an unpaired or malformed V-ID/SV reference (D3).
+    The generator drops those, so they would vanish from a checklist
+    labeled verified. The current pins have none;
+  - every selected rule-result has a `Rule` definition.
 
   Every accepted profile must name the same release. The entry records,
   per profile, that allowlist and the expected V-ID count, and the smoke
@@ -219,7 +223,7 @@ files and parameters and changes no existing behaviour.
   - `checklist.ckl`, `checklist.cklb`;
   - `checklist-meta.json`, always written:
     - outcome (`generated`/`skipped`/`failed`), reason, mode;
-    - sha256 of the `results.xml` it read;
+    - sha256 of the `results.xml` it read, hashed from the same bytes it parses;
     - profile id; STIG id, version, release, benchmark date;
     - release source (`table`/`label`) and the datastream sha256 it was looked up by;
     - formats written with each file's sha256, row counts by status, N/A counts by category;
@@ -342,13 +346,18 @@ files and parameters and changes no existing behaviour.
     `skeleton_completeness: internal`; a neighbouring release's file
     relabeled (Ubuntu V2R7 as V2R9: same V-IDs, older Rule IDs) fails the
     pair inventory;
-  - `Rule_Ver`: a rule citing two SVs, or a V-ID whose contributors cite
-    different STIG ids, gets an empty `Rule_Ver` with the candidates in
-    FINDING_DETAILS; a one-SV, one-id rule keeps its id;
+  - `Rule_Ver`: a rule citing two SVs (a malformed one included), or a
+    V-ID whose contributors cite different STIG ids, gets an empty
+    `Rule_Ver` with the candidates in FINDING_DETAILS; a one-SV, one-id
+    rule keeps its id;
   - `fingerprint.py`: two candidate releases containing the whole set, an
     unmapped selected rule not on the allowlist, and a rule with a
-    mismatched or malformed V-ID reference each fail; the generator lists a
-    malformed `XX123` as unpaired instead of making it a row;
+    mismatched or malformed V-ID reference, a malformed SV reference
+    (`SV-123garbage`, bare `SV-123`) and a selected rule-result with no
+    `Rule` each fail; the generator lists a malformed `XX123`,
+    `SV-123garbage` or bare `SV-123` as unpaired instead of making it a
+    row, and fails a `results.xml` whose `fail` rule-result names no
+    `Rule`;
   - `checklist_formats`: empty, `pdf` and `ckl,,pdf` fail with a `failed`
     meta; `CKL, ckl` writes one `.ckl`; `cklb` writes only the `.cklb`; a
     meta-rename failure or SIGTERM before it leaves no checklist file and
@@ -469,7 +478,11 @@ files and parameters and changes no existing behaviour.
   - Rows whose content revision differs from the skeleton's are
     Not_Reviewed (D7). The automated result for the content's revision stays in
     FINDING_DETAILS. PR 3 later carries the unchanged checks.
-  - Meta and provenance record the file's sha256, release and mismatch count.
+  - Meta (`skeleton_sha256`) and each row's provenance record the file's
+    sha256, hashed from the bytes parsed, plus its release and mismatch
+    count. The skeleton supplies the Rule IDs, check text and CCIs, so
+    two files with the same identifier pairs but different text must be
+    told apart, above all under `skeleton_completeness: internal`.
 - **Tests:** a tiny hand-made DISA-format XCCDF fixture (no DISA files in
   the repo before the PR 3 decision); revision-mismatch, added/removed-Vuln
   and wrong-STIG cases.
