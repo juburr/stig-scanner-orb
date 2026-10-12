@@ -63,7 +63,7 @@ refused() {
 }
 out="$(scan_rootfs || true)"
 case "${out}" in
-    *"contains a Unix socket or FIFO"*)
+    *"contains a socket, FIFO or device node"*)
         echo "FAIL: a socket-free rootfs_path was refused: ${out}" >&2
         failures=$((failures + 1)) ;;
 esac
@@ -90,26 +90,45 @@ fi
 # Bind relative to the directory: socket paths are length-limited.
 (cd "${tree}/run" && python3 -c 'import socket; socket.socket(socket.AF_UNIX).bind("docker.sock")')
 real="$(cd "${tree}" && pwd -P)"
-refused "socket in tree" "contains a Unix socket or FIFO: ${real}/run/docker.sock"
+refused "socket in tree" "contains a socket, FIFO or device node: ${real}/run/docker.sock"
 # A symlinked rootfs_path is checked where it points (find alone would
 # not descend into a symlink given as its starting point).
 link="$(mktemp -d)/rootfs"
 ln -s "${tree}" "${link}"
-refused "symlinked rootfs_path" "contains a Unix socket or FIFO: ${real}/run/docker.sock" "${link}"
+refused "symlinked rootfs_path" "contains a socket, FIFO or device node: ${real}/run/docker.sock" "${link}"
 # proc/ and sys/ of an arbitrary tree are ordinary directories.
 other="$(mktemp -d)"
 mkdir -p "${other}/etc" "${other}/proc"
 cp "${tree}/etc/os-release" "${other}/etc/"
 (cd "${other}/proc" && python3 -c 'import socket; socket.socket(socket.AF_UNIX).bind("docker.sock")')
-refused "socket under proc/" "contains a Unix socket or FIFO: $(cd "${other}" && pwd -P)/proc/docker.sock" "${other}"
+refused "socket under proc/" "contains a socket, FIFO or device node: $(cd "${other}" && pwd -P)/proc/docker.sock" "${other}"
 # A named pipe is an IPC channel through a read-only mount just the same.
 fifo="$(mktemp -d)"
 mkdir -p "${fifo}/etc" "${fifo}/run"
 cp "${tree}/etc/os-release" "${fifo}/etc/"
 mkfifo "${fifo}/run/initctl"
-refused "fifo in tree" "contains a Unix socket or FIFO: $(cd "${fifo}" && pwd -P)/run/initctl" "${fifo}"
+refused "fifo in tree" "contains a socket, FIFO or device node: $(cd "${fifo}" && pwd -P)/run/initctl" "${fifo}"
+# Device nodes too: ro is not nodev. mknod needs root; cimg images have
+# passwordless sudo, and the case is skipped where neither works.
+devt="$(mktemp -d)"
+mkdir -p "${devt}/etc" "${devt}/dev"
+cp "${tree}/etc/os-release" "${devt}/etc/"
+if mknod "${devt}/dev/null" c 1 3 2>/dev/null || sudo -n mknod "${devt}/dev/null" c 1 3 2>/dev/null; then
+    refused "device node in tree" "contains a socket, FIFO or device node: $(cd "${devt}" && pwd -P)/dev/null" "${devt}"
+else
+    echo "note: skipped the device-node case (mknod needs root)"
+fi
+# TMPDIR inside the tree: refused before any mktemp writes into it.
+mkdir -p "${tree}/tmp"
+outside="$(mktemp -d)"
+TMPDIR="${tree}/tmp" refused "TMPDIR inside rootfs" "TMPDIR ('${tree}/tmp') is inside rootfs-path" \
+    "${tree}" "${outside}"
+if [ -n "$(ls -A "${tree}/tmp")" ]; then
+    echo "FAIL: a refused scan created files under ${tree}/tmp" >&2
+    failures=$((failures + 1))
+fi
 
 if [ "${failures}" -ne 0 ]; then
     exit 1
 fi
-echo "container isolation ok: ${runs} docker run invocation(s), all --network none; socket/FIFO-bearing or overlapping rootfs_path refused"
+echo "container isolation ok: ${runs} docker run invocation(s), all --network none; socket/FIFO/device-bearing or overlapping rootfs_path refused"

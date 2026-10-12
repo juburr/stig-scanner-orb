@@ -336,6 +336,13 @@ else
     # what Docker bind-mounts, so it is what must be checked; find would
     # not descend into a symlink given as its starting point.
     ROOTFS_DIR="$(cd "${ROOTFS_PATH}" && pwd -P)"
+    # Scratch dirs (scanner output staging, datastream snapshot) come from
+    # mktemp under TMPDIR; one inside the tree would write into it.
+    case "$(phys_path "${TMPDIR:-/tmp}")/" in
+        "${ROOTFS_DIR%/}/"*)
+            echo "ERROR: TMPDIR ('${TMPDIR:-/tmp}') is inside rootfs-path '${ROOTFS_PATH}'; set TMPDIR outside the scanned tree." >&2
+            exit 2 ;;
+    esac
     # -v SRC:DST:ro makes mounts nested in SRC read-only only on kernels
     # >= 5.12 (best effort); on older ones they stay writable. If the tree
     # has nested mounts (a mounted VM disk with its own /boot or /var),
@@ -358,9 +365,11 @@ else
     # Extracted image trees never contain sockets (tar skips them), so
     # refuse any, anywhere in the tree (proc/ and sys/ included: in an
     # arbitrary directory they are ordinary subtrees). Named pipes are an
-    # IPC channel the same way, so they are refused too.
+    # IPC channel the same way, and device nodes too: ro is not nodev, and
+    # Docker's default device rules allow ptys and the console (a live
+    # tree with /dev/pts bound in). Image mode never extracts dev/ either.
     find_rc=0
-    sock="$(find "${ROOTFS_DIR}" \( -type s -o -type p \) -print -quit 2>/dev/null)" || find_rc=$?
+    sock="$(find "${ROOTFS_DIR}" \( -type s -o -type p -o -type c -o -type b \) -print -quit 2>/dev/null)" || find_rc=$?
     if [ -z "${sock}" ] && [ "${find_rc}" -ne 0 ]; then
         # The runner couldn't read the whole tree (e.g. root-owned 0700
         # directories in a mounted VM disk), but the root scanner can, so
@@ -368,23 +377,24 @@ else
         # helper image -- never in the scanner image the check protects --
         # and fail closed if that can't complete either. Plain POSIX find
         # options only, so any helper with a find works.
-        echo "==> rootfs-path is not fully readable by this user; checking it for sockets and FIFOs as root in the helper image"
+        echo "==> rootfs-path is not fully readable by this user; checking it for sockets, FIFOs and devices as root in the helper image"
         resolve_donor rootfs-check
         find_rc=0
         sock="$(docker run --rm --network none -u 0:0 "${ROOTFS_MOUNT[@]}" \
-            --entrypoint find "${DONOR_ID}" /target \( -type s -o -type p \) -print)" || find_rc=$?
+            --entrypoint find "${DONOR_ID}" /target \( -type s -o -type p -o -type c -o -type b \) -print)" || find_rc=$?
         sock="${sock%%$'\n'*}"
         if [ -z "${sock}" ] && [ "${find_rc}" -ne 0 ]; then
-            echo "ERROR: could not check rootfs-path '${ROOTFS_PATH}' for sockets/FIFOs as root" >&2
+            echo "ERROR: could not check rootfs-path '${ROOTFS_PATH}' for sockets/FIFOs/devices as root" >&2
             echo "       (find in the helper image exited ${find_rc}; the helper image needs find)." >&2
             exit 2
         fi
         sock="${sock:+${ROOTFS_DIR%/}${sock#/target}}"
     fi
     if [ -n "${sock}" ]; then
-        echo "ERROR: rootfs-path '${ROOTFS_PATH}' contains a Unix socket or FIFO: ${sock}" >&2
-        echo "       Point rootfs-path at an offline extracted tree, not a live filesystem;" >&2
-        echo "       the scanner could talk to it through its read-only mount." >&2
+        echo "ERROR: rootfs-path '${ROOTFS_PATH}' contains a socket, FIFO or device node: ${sock}" >&2
+        echo "       Point rootfs-path at an offline extracted tree, not a live filesystem, and" >&2
+        echo "       extract it without dev/ (tar --exclude='dev/*'); the scanner could use such a" >&2
+        echo "       node through its read-only mount." >&2
         exit 2
     fi
 fi
@@ -768,11 +778,6 @@ fi
 # contain the scratch rootfs), and /out is the scanner's one writable
 # mount. The two reports are copied out afterwards.
 OUT_STAGE_DIR="$(mktemp -d -t stig-out.XXXXXX)"
-OUT_STAGE_DIR="$(cd "${OUT_STAGE_DIR}" && pwd -P)"
-if paths_overlap "${OUT_STAGE_DIR}" "${ROOTFS_DIR}"; then
-    echo "ERROR: the temp dir (${OUT_STAGE_DIR}) is inside the scanned tree; set TMPDIR elsewhere." >&2
-    exit 2
-fi
 mount_args=( "${ROOTFS_MOUNT[@]}" -v "${OUT_STAGE_DIR}:/out" ${ds_mount_args[@]+"${ds_mount_args[@]}"} )
 
 # Hash the datastream as the scanner sees it: same image, same mount, same

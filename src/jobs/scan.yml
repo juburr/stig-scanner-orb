@@ -19,7 +19,8 @@ parameters:
     description: >
       Offline, already-extracted filesystem path to scan via
       oscap-chroot. Never a live filesystem such as /: a tree
-      containing a Unix socket or FIFO, or overlapping output_dir, is refused.
+      containing a socket, FIFO or device node (extract without dev/),
+      or overlapping output_dir or TMPDIR, is refused.
   image_tarball:
     type: string
     default: ""

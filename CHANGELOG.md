@@ -77,7 +77,8 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 
 - Every helper and scanner container now runs with `--network none`; a scan's
   only network traffic is the Docker daemon's image pulls. A test enforces it.
-- A `rootfs_path` that contains a Unix socket or FIFO is refused (exit 2). A
+- A `rootfs_path` that contains a socket, FIFO or device node is refused (exit 2;
+  extract trees without `dev/`). A
   read-only bind mount does not stop a process from connecting to a socket,
   so a live tree such as `/` would have exposed `/run/docker.sock` to the
   scanner. Extracted image trees never contain sockets. If the runner user
@@ -86,7 +87,7 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   A symlinked `rootfs_path` is checked where it points.
 - A `rootfs_path` that overlaps `output_dir` (either inside the other) is
   refused before `output_dir` is created, so the caller's tree is never
-  written to.
+  written to; so is a `TMPDIR` inside it, before any scratch dir is made.
 - The scanner no longer mounts `output_dir`. It writes into a fresh private
   staging directory, its only writable mount, and the host copies
   `results.xml` and `report.html` out, refusing anything that isn't a
