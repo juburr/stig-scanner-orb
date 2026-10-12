@@ -102,12 +102,7 @@ steps:
       environment:
         PARAM_OUTPUT_DIR: <<parameters.output_dir>>
         PARAM_ROOTFS_PATH: <<parameters.rootfs_path>>
-      # In rootfs_path mode scan.sh creates it, after checking that it
-      # doesn't overlap the scanned tree (which must not be written to).
-      command: |
-        if [ -z "$(circleci env subst "${PARAM_ROOTFS_PATH}")" ]; then
-          mkdir -p "$(circleci env subst "${PARAM_OUTPUT_DIR}")"
-        fi
+      command: <<include(scripts/reserve-output.sh)>>
   - scan:
       image: <<parameters.image>>
       rootfs_path: <<parameters.rootfs_path>>
