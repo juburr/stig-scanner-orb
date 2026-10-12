@@ -15,6 +15,7 @@ import json
 import os
 import platform
 import re
+import signal
 import sys
 import uuid
 import xml.etree.ElementTree as ET
@@ -31,6 +32,23 @@ def text_of(el):
     if el is None:
         return ""
     return re.sub(r"\s+", " ", "".join(el.itertext())).strip()
+
+
+XCCDF_RESULTS = {"pass", "fail", "error", "unknown", "notapplicable", "notchecked", "notselected", "informational", "fixed"}
+
+
+def combine_instances(rs):
+    """One result per rule from its rule-results, with the V-ID combining
+    rule's precedence: any fail, else any unevaluated, else all N/A, else
+    pass. An unrecognized result string was already mapped to unknown, so it
+    can never read as a pass."""
+    rs = [r for r in rs if r != "notselected"] or ["notselected"]
+    for r in ("fail", "error", "unknown", "notchecked", "informational"):
+        if r in rs:
+            return r
+    if all(r == "notapplicable" for r in rs):
+        return "notapplicable"
+    return "pass" if "pass" in rs else rs[0]
 
 
 def parse_results(path):
@@ -70,9 +88,13 @@ def parse_results(path):
 
     tr = next(root.iter(X12 + "TestResult"))
     true_platforms = {p.get("idref") for p in tr.findall(X12 + "platform")}
-    results = {}
+    # XCCDF allows several rule-results per rule (multi-check, multiple
+    # instances): keep them all and combine, never let the last one win.
+    instances = collections.defaultdict(list)
     for rr in tr.findall(X12 + "rule-result"):
-        results[rr.get("idref")] = (rr.findtext(X12 + "result") or "").strip()
+        r = (rr.findtext(X12 + "result") or "").strip()
+        instances[rr.get("idref")].append(r if r in XCCDF_RESULTS else "unknown")
+    results = {rid: combine_instances(rs) for rid, rs in instances.items()}
     profile_id = tr.find(X12 + "profile").get("idref")
     profile = next(p for p in bench.iter(X12 + "Profile") if p.get("id") == profile_id)
     pdesc = text_of(profile.find(X12 + "description"))
@@ -86,6 +108,7 @@ def parse_results(path):
         "true_platforms": true_platforms,
         "rules": rules,
         "results": results,
+        "instances": {rid: rs for rid, rs in instances.items() if len(rs) > 1},
         "start": tr.get("start-time"),
         "end": tr.get("end-time"),
         "test_system": tr.get("test-system"),
@@ -451,6 +474,9 @@ def build_model(res, disa, plan, runner_arch=None):
             if vid[2:] in r["svs"]:
                 ruleids.add(r["svs"][vid[2:]])
             line = f"{rid.replace('xccdf_org.ssgproject.content_rule_', '')}: {result}"
+            if rid in res["instances"]:
+                tally = collections.Counter(res["instances"][rid])
+                line += f" (combined from {sum(tally.values())} results: {', '.join(f'{k} {v}' for k, v in sorted(tally.items()))})"
             eff = result
             if result == "notapplicable":
                 gates = unmet_gates(r, true_p)
@@ -688,6 +714,14 @@ def main():
     ap.add_argument("--stem", default="checklist")
     ap.add_argument("--runner-arch", default=platform.machine(), help="architecture OpenSCAP ran on (default: this host)")
     a = ap.parse_args()
+
+    # Python's default SIGTERM/SIGHUP handling exits without unwinding, so a
+    # termination between the two publishing renames would skip cleanup and
+    # leave one final checklist for store_artifacts. Raise instead.
+    def terminate(signum, _frame):
+        raise SystemExit(128 + signum)
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, terminate)
 
     # Never leave a previous run's checklist behind for this run to "publish".
     for ext in ("ckl", "cklb", "ckl.partial", "cklb.partial"):

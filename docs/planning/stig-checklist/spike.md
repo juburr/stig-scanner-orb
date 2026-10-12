@@ -14,7 +14,7 @@ RPM targets) and 1.4.4 (Chainguard, everything else). Prototype code is in
 | Real scan | `scan.sh` against `cgr.dev/chainguard/static` | GPOS SRG rule ids + CCIs, a different shape (see "Out of scope") |
 | Generator | `spike/xccdf2ckl.py` on each `results.xml`, with and without DISA's manual XCCDF | `.ckl` + `.cklb` per run, ~2 s for a 19 MB `results.xml` |
 | Validator | `spike/validate.mjs` = STIG Manager's own parsers, `@nuwcdivnpt/stig-manager-client-modules` 1.6.8 (`reviewsFromCkl`, `reviewsFromCklb`) | every output parses with no parser errors; benchmark id, revision string, row count and status tally match what the generator wrote |
-| Fingerprint | `spike/fingerprint.py`: SSG `stig` profile SV-ids vs each DISA manual XCCDF; `--content` computes the D4 content fingerprint | each pinned datastream matches exactly one DISA release; each spike `results.xml` has its datastream's content fingerprint |
+| Release match | `spike/fingerprint.py`: SSG `stig` profile SV-ids vs each DISA manual XCCDF | each pinned datastream matches exactly one DISA release |
 | Schema | `spike/cklb_schema_check.py`: DISA's `SV3_CKLB_1_0_JSON_SCHEMA.json` (sha256 `8b88205d…`), raw and patched to allow `stigs[].version`, `rules[].srg_id`, `target_data.classification` (fields STIG Viewer 3.7+ itself writes) | 0 errors patched; raw schema rejects only `stigs[].version` and `target_data.classification` |
 
 DISA files came from `https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip/U_<STIG>_V<v>R<r>_STIG.zip`
@@ -126,9 +126,10 @@ datastream sha256, target digest, scan time).
    | `ssg-rhel10-ds.xml` | V1R2 | **V1R2** (01 Jul 2026), 434/434 | V1R3 (30 Sep 2026) | 133 |
    | `ssg-ubuntu2204-ds.xml` | **V2R7** | **V2R8** (01 Apr 2026), 188/188 | V2R10 (30 Sep 2026) | 47 |
 
-   The release a checklist claims must come from a fingerprint that a test
-   checks against the pin, not from the profile title. Today every pinned
-   product is one DISA quarter behind.
+   The release a checklist claims must come from this SV-id match, recorded
+   per pinned datastream (plan D4 keys it on the datastream's sha256) and
+   refreshed with each pin bump, not from the profile title. Today every
+   pinned product is one DISA quarter behind.
 
 6. **Most revision bumps don't change the check.** Of 206 RHEL 9 V2R9→V2R10
    rule-revision bumps, 153 changed none of the title, discussion,
@@ -194,4 +195,4 @@ datastream sha256, target digest, scan time).
 - Import into **STIG Viewer 3** itself (desktop app; not runnable here) and
   into **eMASS**. STIG Manager's parser is the automated check; a human
   STIG Viewer import is an acceptance step in the first implementation PR.
-- RHEL 10 end-to-end scan (fingerprint only; RHEL 8 was run end to end).
+- RHEL 10 end-to-end scan (release match only; RHEL 8 was run end to end).
