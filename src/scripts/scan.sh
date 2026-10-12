@@ -99,7 +99,9 @@ image_id() {
 }
 # Registry digests (repo@sha256:...) the local image is known by, comma-
 # separated. Empty for an image that never came from a registry (built or
-# loaded locally).
+# loaded locally). Always pass the image id captured by image_id, never the
+# tag: a tag can be repointed by another pull between the two inspects, and
+# the digests must describe the image that actually runs.
 image_repo_digests() {
     docker image inspect --format '{{join .RepoDigests ","}}' "$1"
 }
@@ -111,7 +113,7 @@ resolve_donor() {
     if [ -z "${DONOR_ID}" ]; then
         ensure_image "${DONOR_IMAGE}" "helper image"
         DONOR_ID="$(image_id "${DONOR_IMAGE}")"
-        DONOR_REPO_DIGESTS="$(image_repo_digests "${DONOR_IMAGE}")"
+        DONOR_REPO_DIGESTS="$(image_repo_digests "${DONOR_ID}")"
     fi
     DONOR_USED_FOR="${DONOR_USED_FOR:+${DONOR_USED_FOR},}$1"
 }
@@ -163,7 +165,7 @@ if [ -n "${IMAGE}" ]; then
         fi
     fi
     TARGET_IMAGE_ID="$(image_id "${IMAGE}")"
-    TARGET_REPO_DIGESTS="$(image_repo_digests "${IMAGE}")"
+    TARGET_REPO_DIGESTS="$(image_repo_digests "${TARGET_IMAGE_ID}")"
     # Pull the donor image first — we use it as a root-privileged tar
     # host so the extracted rootfs preserves the original numeric UID/
     # GID from the image. Host-side `tar -xf` running as the runner
@@ -460,7 +462,7 @@ fi
 # --- 5. pull scanner image -----------------------------------------------
 ensure_image "${SCANNER}" "scanner image"
 SCANNER_ID="$(image_id "${SCANNER}")"
-SCANNER_REPO_DIGESTS="$(image_repo_digests "${SCANNER}")"
+SCANNER_REPO_DIGESTS="$(image_repo_digests "${SCANNER_ID}")"
 
 # --- 6. run oscap-chroot -------------------------------------------------
 ds_mount_args=()
@@ -472,8 +474,10 @@ fi
 mount_args=( -v "${ROOTFS_DIR}:/target:ro" -v "${OUTPUT_DIR_ABS}:/out" ${ds_mount_args[@]+"${ds_mount_args[@]}"} )
 
 # Hash the datastream as the scanner sees it: same image, same mount, same
-# path oscap-chroot evaluates below.
-DATASTREAM_SHA256="$(docker run --rm ${ds_mount_args[@]+"${ds_mount_args[@]}"} \
+# path and same user (root) as oscap-chroot below. The image's default user
+# can be unprivileged (65532 in the Chainguard image) and unable to read a
+# datastream_path kept in a private directory that the root scan still reads.
+DATASTREAM_SHA256="$(docker run --rm -u 0:0 ${ds_mount_args[@]+"${ds_mount_args[@]}"} \
     --entrypoint sha256sum "${SCANNER_ID}" "${DATASTREAM_IN_SCANNER_PATH}" 2>/dev/null \
     | awk '{print $1}')" || DATASTREAM_SHA256=""
 case "${DATASTREAM_SHA256}" in
