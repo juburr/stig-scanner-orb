@@ -86,7 +86,7 @@ def parse_results(path):
             "svs": {n: sorted({v for h, v in refs if h == HREF_RULE and re.match(rf"SV-{n}(?!\d)", v)})
                     for n in {re.match(r"SV-(\d+)", v).group(1) for h, v in refs if h == HREF_RULE and re.match(r"SV-\d+", v)}},
             "vids": [v for h, v in refs if h == HREF_VULN],
-            "stig_id": ref(lambda h, v: "unix-linux" in h),
+            "stig_ids": [v for h, v in refs if "unix-linux" in h],
             "srg": ref(lambda h, v: v.startswith("SRG-")),
             "cce": next((text_of(i) for i in r.findall(X12 + "ident") if "cce" in (i.get("system") or "")), None),
             "platform_levels": chain_platforms(r),
@@ -618,6 +618,15 @@ def build_model(res, disa, plan, runner_arch=None):
                 status, na_category = "Not_Reviewed", None
                 comment = ("Not reviewed: the scanner content cites more than one revision of this requirement, "
                            "so the result can't be tied to this checklist's release. Re-verify.")
+            # Rule_Ver (the DISA STIG id, e.g. RHEL-09-211010) carries no V-ID
+            # number to pair on, so use it only when it can only belong to
+            # this row: one id across the contributors, each citing one SV.
+            # Otherwise leave it empty and list the candidates as evidence.
+            stig_ids = sorted({sid for r in rids for sid in res["rules"][r]["stig_ids"]})
+            pairable = len(stig_ids) == 1 and all(len(res["rules"][r]["svs"]) == 1 for r in rids)
+            if stig_ids and not pairable:
+                detail += (f"\n\nSTIG IDs cited by the contributing rules: {', '.join(stig_ids)}. They can't be "
+                           f"paired with this V-ID, so Rule_Ver is left empty.")
             # SSG-only text follows ComplianceAsCode's own convention
             # (discussion <- rationale, fix text <- description), from *every*
             # contributing rule, failing ones first, so a fix for the rule that
@@ -630,7 +639,7 @@ def build_model(res, disa, plan, runner_arch=None):
                 return "\n\n".join(f"[{r['id'].replace('xccdf_org.ssgproject.content_rule_', '')}] {r[field]}" for r in rules_)
             vulns.append({
                 "vid": vid, "group_title": first["srg"] or "", "rule_id": sorted(ssg_rule_ids)[0], "severity": sev,
-                "weight": "10.0", "rule_ver": first["stig_id"] or "",
+                "weight": "10.0", "rule_ver": stig_ids[0] if pairable else "",
                 "rule_title": " / ".join(dict.fromkeys(r["title"] for r in rules_)),
                 "discussion": labeled("rationale"), "check_content": "Automated OpenSCAP check: " + ", ".join(sorted(rids)),
                 "check_ref": "M", "fix_text": labeled("description"), "ccis": [], "legacy": [], "documentable": "false",
@@ -846,6 +855,9 @@ def main():
             if disa["benchmark_id"] != expected:
                 return emit({"outcome": "failed", "reason": f"the DISA file is {disa['benchmark_id']}, but this scan's "
                              f"content implements {expected}"}, 1)
+            dups = sorted(v for v, c in collections.Counter(g["vid"] for g in disa["groups"]).items() if c > 1)
+            if dups:
+                return emit({"outcome": "failed", "reason": f"the DISA file repeats V-IDs: {', '.join(dups[:10])}"}, 1)
         if not disa and res["benchmark_id"].replace("xccdf_org.ssgproject.content_benchmark_", "") not in SSG_STIG_IDS:
             # A DISA benchmark id can't be derived from an SSG benchmark name,
             # and consumers merge rows on the exact id: never invent one.
@@ -856,6 +868,15 @@ def main():
         # whose references moved to another URL (or a custom datastream without
         # them) would yield an empty "checklist" that row-count checks can't
         # catch. Require at least one selected rule mapped to a DISA V-ID.
+        if disa and stig["mapped_vids"]:
+            # A truncated file can keep the right id and one shared V-ID. Real
+            # release drift leaves out at most a handful of the scan's V-IDs
+            # (measured: 1 across overlays up to three releases apart), so a
+            # skeleton missing more than that is incomplete or the wrong file.
+            missing, mapped = len(stig["unmatched_ssg_vids"]), len(stig["unmatched_ssg_vids"]) + stig["mapped_vids"]
+            if missing > max(10, mapped // 20):
+                return emit({"outcome": "failed", "reason": f"the DISA file lacks {missing} of the {mapped} V-IDs this scan "
+                             f"maps (e.g. {', '.join(stig['unmatched_ssg_vids'][:5])}): incomplete, or not this STIG"}, 1)
         if not stig["mapped_vids"]:
             if disa:
                 # The user's DISA file shares no V-ID with the scan: wrong STIG.
@@ -881,7 +902,8 @@ def main():
         try:
             for ext in formats:
                 writers[ext](staged[ext])
-            meta = {"outcome": "generated", "stig": {k: stig[k] for k in ("benchmark_id", "version", "releaseinfo")},
+            meta = {"outcome": "generated", "host_name": host_name,
+                    "stig": {k: stig[k] for k in ("benchmark_id", "version", "releaseinfo")},
                     "formats": {ext: hashlib.sha256(open(staged[ext], "rb").read()).hexdigest() for ext in formats},
                     "vulns": len(vulns), "status": counts, "na_by_reason": na,
                     "ssg_vids_not_in_disa": stig["unmatched_ssg_vids"], "unpaired_refs": stig["unpaired_refs"],

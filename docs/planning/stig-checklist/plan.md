@@ -124,7 +124,7 @@ it is Not_Reviewed: "no automated check in the scanner content" or
   - per STIG `stig_name`, `display_name`, `stig_id`, `release_info`, `uuid`, `size`, plus `version`. Without `version`, STIG Manager records `V0R…`.
   - every rule has `rule_id_src` (the full `SV-…_rule`; STIG Manager ignores `rule_id`) and a lowercase status (`not_a_finding`, `open`, `not_applicable`, `not_reviewed`). Rows with a wrong status or no `rule_id_src` are silently dropped.
   - severity override, if ever used: `overrides.severity = {severity, reason}`.
-- **SSG-only text:** `Rule_Title` ← SSG title; `Vuln_Discuss` ← SSG rationale; `Fix_Text` ← SSG description (ComplianceAsCode's own convention; OCIL text is not in `results.xml`); `Check_Content` ← "Automated OpenSCAP check: <rule ids>"; `Group_Title` ← SRG id; CCIs empty. When several SSG rules map to one V-ID, the text comes from **every** contributing rule, not one of them:
+- **SSG-only text:** `Rule_Title` ← SSG title; `Vuln_Discuss` ← SSG rationale; `Fix_Text` ← SSG description (ComplianceAsCode's own convention; OCIL text is not in `results.xml`); `Check_Content` ← "Automated OpenSCAP check: <rule ids>"; `Group_Title` ← SRG id; CCIs empty. `Rule_Ver` ← the SSG rule's DISA STIG id (e.g. `RHEL-09-211010`) **only when it can only belong to that row**: one STIG id across the contributing rules, each citing one SV. A STIG id carries no V-ID number to pair on, so a rule citing several SVs or STIG ids can't say which is whose. Such a row gets an empty `Rule_Ver`, and FINDING_DETAILS lists the candidates. Measured against DISA's own files: of the rows this empties (17 on ubi9, 19 on ubi8), the old first-reference value was wrong on 7 and 12; every value still set (419, 343) matches DISA. When several SSG rules map to one V-ID, the text comes from **every** contributing rule, not one of them:
   - titles are joined with " / ";
   - discussion and fix text are labelled per rule (`[rule] text`), with failing rules first, so the fix for what actually failed is never missing.
 - **Provenance** in every row's FINDING_DETAILS and in `TARGET_COMMENT`: target digest **and** platform (`os/arch[/variant]`), because a digest can name a multi-platform index. Also the runner architecture. A locally built or loaded image has no registry digest; the target and scanner are then identified by the captured `image_id` that ran, with the tag only for readability, never by the mutable tag alone.
@@ -148,8 +148,9 @@ files and parameters and changes no existing behaviour.
 
   The table is keyed by the datastream sha256 exactly as D4 defines it.
   Each entry holds the datastream file name, its benchmark id and version,
-  the accepted STIG profile ids, and the DISA benchmark id, title,
-  version, release and benchmark date. It ships in the generator itself.
+  the accepted STIG profile ids (each with its unmapped-rule allowlist and
+  expected V-ID count), and the DISA benchmark id, title, version, release
+  and benchmark date. It ships in the generator itself.
   The README bump procedure gains a step: record each new pinned
   datastream's sha256 (the bump already pulls the image), and pick each
   entry's release with `spike/fingerprint.py`'s SV-id match. It is fed a
@@ -162,10 +163,27 @@ files and parameters and changes no existing behaviour.
 
   The match runs once per accepted profile (`stig`, and `stig_gui` where
   the entry lists it), each from its own scan with `profile_id` set.
-  Every profile's selected SV set must be found in full in the entry's
-  release, or that profile doesn't go in the entry. Measured on the
-  current pins, `stig_gui` selects no rule `stig` lacks, and matches in
-  full: RHEL 9 V2R9 432/432, RHEL 8 V2R8 359/359, RHEL 10 V1R2 431/431.
+  `fingerprint.py` passes only when:
+  - **exactly one** candidate release contains the profile's whole
+    selected SV set. Two releases that both contain it (e.g. a quarter
+    that changed none of the selected Rule IDs) leave the release
+    ambiguous, so it stays out of the table;
+  - every selected rule without a DISA reference is on the entry's
+    recorded allowlist (today `enable_authselect`, a helper rule, on RHEL
+    8/9). A new pin that drops references from some rules would otherwise
+    shrink the checklist silently, and the smoke row counts, derived from
+    the same mapping, wouldn't notice.
+
+  Every accepted profile must name the same release. The entry records,
+  per profile, that allowlist and the expected V-ID count, and the smoke
+  jobs assert the row count against it. Measured on the current pins (stig /
+  stig_gui), all unique:
+  - RHEL 9 V2R9, 436/436 and 432/432;
+  - RHEL 8 V2R8, 362/362 and 359/359;
+  - RHEL 10 V1R2, 434/434 and 431/431;
+  - Ubuntu V2R8, 188/188.
+
+  `stig_gui` selects no rule `stig` lacks.
 - **New** command `src/commands/checklist.yml`. `src/jobs/scan.yml` calls it
   between `scan` and `summarize`. Parameters, using the CLAUDE.md
   four-place convention:
@@ -306,7 +324,13 @@ files and parameters and changes no existing behaviour.
     `failed` meta with the reason; an asset name that is empty after
     sanitizing fails;
   - (PR 2) a DISA file whose `Benchmark/@id` isn't the scanned content's
-    STIG fails, including one that shares a V-ID with the scan;
+    STIG fails, including one that shares a V-ID with the scan; so do a
+    truncated file with the right id and one with a repeated V-ID;
+  - `Rule_Ver`: a rule citing two SVs, or a V-ID whose contributors cite
+    different STIG ids, gets an empty `Rule_Ver` with the candidates in
+    FINDING_DETAILS; a one-SV, one-id rule keeps its id;
+  - `fingerprint.py`: two candidate releases containing the whole set, and
+    an unmapped selected rule not on the allowlist, each fail;
   - `checklist_formats`: empty, `pdf` and `ckl,,pdf` fail with a `failed`
     meta; `CKL, ckl` writes one `.ckl`; `cklb` writes only the `.cklb`; a
     meta-rename failure or SIGTERM before it leaves no checklist file and
@@ -350,6 +374,9 @@ files and parameters and changes no existing behaviour.
          `V2R9`) that differs from the STIG id and release in
          `checklist-meta.json`. Every row can import while the checklist
          still lands on the wrong STIG or release;
+       - a parsed target name that differs from the meta's `host_name` (STIG
+         Manager keys assets on it, so a wrong one merges rows into another
+         asset);
        - parsed reviews ≠ rows written;
        - a parsed `result` tally (pass / fail / notapplicable / notchecked)
          that differs from the status counts in `checklist-meta.json`. This
@@ -384,8 +411,18 @@ files and parameters and changes no existing behaviour.
   resolved `target_base`; if neither names one, the file can't be checked
   and the checklist fails. At least one selected rule must also map to one
   of its V-IDs (D11), but that alone doesn't prove the identity: a
-  mislabeled file with one copied row would pass it. On a mismatch the
-  checklist fails and `summarize` reports it.
+  mislabeled file with one copied row would pass it. The file is also
+  rejected if it:
+  - repeats a V-ID;
+  - lacks more than `max(10, 5%)` of the V-IDs the scan maps. That means it
+    is truncated or the wrong STIG. Real release drift leaves out at most a
+    handful: 1, across overlays up to three releases apart (RHEL 8 V2R9
+    dropped V-230285). A one-group file keeping the right id fails with 435
+    of 436 missing.
+
+  Once PR 3 records each known release's V-ID inventory, a skeleton
+  claiming one of those releases must match it exactly. On any mismatch
+  the checklist fails and `summarize` reports it.
 - **Behaviour:**
   - Every DISA Vuln becomes a row with DISA text and CCIs, and every Rule
     ID comes from the skeleton (D4).
