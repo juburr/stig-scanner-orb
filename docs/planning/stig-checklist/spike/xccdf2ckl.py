@@ -10,6 +10,7 @@ Stdlib only. Prototype quality: the point is to learn the data, not ship.
 import argparse
 import collections
 import datetime as dt
+import hashlib
 import html
 import json
 import os
@@ -80,7 +81,10 @@ def parse_results(path):
             "rationale": text_of(r.find(X12 + "rationale")),
             # Many-to-many: one SSG rule can cite several DISA rules, and
             # several SSG rules can cite one. Pair SV-n…_rule with V-n by n.
-            "svs": {re.match(r"SV-(\d+)", v).group(1): v for h, v in refs if h == HREF_RULE and re.match(r"SV-\d+", v)},
+            # n -> every SV-n…_rule revision the rule cites (normally one;
+            # never let XML order pick one of several).
+            "svs": {n: sorted({v for h, v in refs if h == HREF_RULE and re.match(rf"SV-{n}(?!\d)", v)})
+                    for n in {re.match(r"SV-(\d+)", v).group(1) for h, v in refs if h == HREF_RULE and re.match(r"SV-\d+", v)}},
             "vids": [v for h, v in refs if h == HREF_VULN],
             "stig_id": ref(lambda h, v: "unix-linux" in h),
             "srg": ref(lambda h, v: v.startswith("SRG-")),
@@ -461,7 +465,7 @@ def build_model(res, disa, plan, runner_arch=None):
             # can't name a DISA rule, so report it instead of keying on it.
             vids = [v for v in r["vids"] if v[2:] in r["svs"]]
             unpaired += [f"{rid}: {v}" for v in r["vids"] if v[2:] not in r["svs"]]
-            unpaired += [f"{rid}: {sv}" for n, sv in r["svs"].items() if f"V-{n}" not in r["vids"]]
+            unpaired += [f"{rid}: {sv}" for n, revs in r["svs"].items() if f"V-{n}" not in r["vids"] for sv in revs]
         else:
             # SSG < 0.1.82 has no #vulnerability_id references: derive V-n from SV-n.
             vids = [f"V-{n}" for n in r["svs"]]
@@ -487,8 +491,7 @@ def build_model(res, disa, plan, runner_arch=None):
         na_cats, effective, uncertain = set(), [], set()
         for rid in sorted(rids):
             r, result = res["rules"][rid], res["results"][rid]
-            if vid[2:] in r["svs"]:
-                ruleids.add(r["svs"][vid[2:]])
+            ruleids.update(r["svs"].get(vid[2:], ()))
             line = f"{rid.replace('xccdf_org.ssgproject.content_rule_', '')}: {result}"
             if rid in res["instances"]:
                 tally = collections.Counter(res["instances"][rid])
@@ -587,6 +590,14 @@ def build_model(res, disa, plan, runner_arch=None):
             first = res["rules"][sorted(rids)[0]]
             sev = max((res["rules"][r]["severity"] for r in rids), key=lambda s: {"high": 3, "medium": 2, "low": 1}.get(s, 0))
             status, detail, comment, ssg_rule_ids, na_category = vuln_from_ssg(vid, rids)
+            if len(ssg_rule_ids) > 1:
+                # The content itself cites several revisions of this
+                # requirement, so no single Rule ID (D4) is provably right.
+                detail += (f"\n\nRevision ambiguity: the scanner content cites {', '.join(sorted(ssg_rule_ids))} "
+                           f"for this requirement. Automated result across them: {status}.")
+                status, na_category = "Not_Reviewed", None
+                comment = ("Not reviewed: the scanner content cites more than one revision of this requirement, "
+                           "so the result can't be tied to this checklist's release. Re-verify.")
             # SSG-only text follows ComplianceAsCode's own convention
             # (discussion <- rationale, fix text <- description), from *every*
             # contributing rule, failing ones first, so a fix for the rule that
@@ -730,6 +741,7 @@ def main():
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--stem", default="checklist")
     ap.add_argument("--runner-arch", default=platform.machine(), help="architecture OpenSCAP ran on (default: this host)")
+    ap.add_argument("--formats", default="ckl,cklb", help="comma-separated: ckl, cklb")
     a = ap.parse_args()
 
     # Python's default SIGTERM/SIGHUP handling exits without unwinding, so a
@@ -741,19 +753,37 @@ def main():
         signal.signal(sig, terminate)
 
     # Never leave a previous run's checklist behind for this run to "publish".
-    for ext in ("ckl", "cklb", "ckl.partial", "cklb.partial"):
+    meta_path = f"{a.out_dir}/{a.stem}-meta.json"
+    for path in [f"{a.out_dir}/{a.stem}.{e}{p}" for e in ("ckl", "cklb") for p in ("", ".partial")] + [meta_path, meta_path + ".partial"]:
         try:
-            os.remove(f"{a.out_dir}/{a.stem}.{ext}")
+            os.remove(path)
         except FileNotFoundError:
             pass
+
+    with open(a.results, "rb") as f:
+        results_sha = hashlib.sha256(f.read()).hexdigest()
+
+    def emit(meta, rc):
+        """Write the meta (staged, then renamed) and print it."""
+        meta = {**meta, "results_sha256": results_sha}
+        with open(meta_path + ".partial", "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=1, default=list)
+        os.replace(meta_path + ".partial", meta_path)
+        print(json.dumps(meta, indent=1, default=list))
+        return rc
+
+    # Only known tokens; an empty or unknown selection is a config error, not
+    # a silently empty "generated" checklist (D8).
+    formats = list(dict.fromkeys(t.strip().lower() for t in a.formats.split(",") if t.strip()))
+    if not formats or set(formats) - {"ckl", "cklb"}:
+        return emit({"outcome": "failed", "reason": f"checklist_formats {a.formats!r}: use one or both of ckl, cklb"}, 1)
 
     res = parse_results(a.results)
     # Gate on the evaluated profile, not on SV references: SSG reuses rules
     # across profiles, so e.g. RHEL 9 CIS L1 selects 160 rules that carry
     # DISA references and would otherwise yield a partial "STIG" checklist.
     if not re.search(r"_profile_stig(_gui)?$", res["profile_id"]):
-        print(json.dumps({"outcome": "skipped", "reason": f"profile {res['profile_id']} is not a DISA STIG profile"}))
-        return 0
+        return emit({"outcome": "skipped", "reason": f"profile {res['profile_id']} is not a DISA STIG profile"}, 0)
     plan = {}
     if a.plan:
         for line in open(a.plan, encoding="utf-8"):
@@ -769,11 +799,9 @@ def main():
     if not stig["mapped_vids"]:
         if disa:
             # The user's DISA file shares no V-ID with the scan: wrong STIG.
-            print(json.dumps({"outcome": "failed", "reason": f"no selected rule maps to a V-ID in {stig['filename']}"}))
-            return 1
-        print(json.dumps({"outcome": "skipped", "reason": f"profile {res['profile_id']} has no selected rule "
-                          f"with a DISA reference ({HREF_RULE} SV-..._rule)"}))
-        return 0
+            return emit({"outcome": "failed", "reason": f"no selected rule maps to a V-ID in {stig['filename']}"}, 1)
+        return emit({"outcome": "skipped", "reason": f"profile {res['profile_id']} has no selected rule "
+                     f"with a DISA reference ({HREF_RULE} SV-..._rule)"}, 0)
     asset = {
         "ROLE": "None", "ASSET_TYPE": "Computing", "MARKING": "CUI", "HOST_NAME": a.host_name,
         "TARGET_COMMENT": "Container image " + target_ref(plan)
@@ -781,29 +809,40 @@ def main():
         "TECH_AREA": "", "TARGET_KEY": "", "WEB_OR_DATABASE": "false",
     }
     now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-    # Stage every format first and publish only when all succeeded, so a
-    # failure can never leave one half of the checklist for upload.
-    final = {ext: f"{a.out_dir}/{a.stem}.{ext}" for ext in ("ckl", "cklb")}
+    # Stage every requested format and the meta, then publish them in one
+    # handler, the meta last: a failure or termination anywhere before the
+    # meta is in place removes every final file, so no checklist is ever
+    # left for store_artifacts without its "generated" meta (D8).
+    final = {ext: f"{a.out_dir}/{a.stem}.{ext}" for ext in formats}
     staged = {ext: path + ".partial" for ext, path in final.items()}
+    writers = {"ckl": lambda p: write_ckl(p, asset, stig, vulns), "cklb": lambda p: write_cklb(p, asset, stig, vulns, now)}
+    counts = collections.Counter(v["status"] for v in vulns)
+    na = collections.Counter(v["na_category"] for v in vulns if v["status"] == "Not_Applicable")
     try:
-        write_ckl(staged["ckl"], asset, stig, vulns)
-        write_cklb(staged["cklb"], asset, stig, vulns, now)
-        # Publication is inside the handler too: if the second rename fails
-        # (or the run is interrupted), the first final file goes as well.
-        for ext in final:
+        for ext in formats:
+            writers[ext](staged[ext])
+        meta = {"outcome": "generated", "stig": {k: stig[k] for k in ("benchmark_id", "version", "releaseinfo")},
+                "formats": {ext: hashlib.sha256(open(staged[ext], "rb").read()).hexdigest() for ext in formats},
+                "vulns": len(vulns), "status": counts, "na_by_reason": na,
+                "ssg_vids_not_in_disa": stig["unmatched_ssg_vids"], "unpaired_refs": stig["unpaired_refs"],
+                "results_sha256": results_sha}
+        with open(meta_path + ".partial", "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=1, default=list)
+        for ext in formats:
             os.replace(staged[ext], final[ext])
-    except BaseException:
-        for path in (*staged.values(), *final.values()):
+        os.replace(meta_path + ".partial", meta_path)
+    except BaseException as e:
+        for path in (*staged.values(), *final.values(), meta_path + ".partial", meta_path):
             try:
                 os.remove(path)
             except FileNotFoundError:
                 pass
+        try:
+            emit({"outcome": "failed", "reason": f"writing the checklist failed: {type(e).__name__}"}, 1)
+        except Exception:
+            pass  # best effort; summarize fails a missing meta anyway
         raise
-    counts = collections.Counter(v["status"] for v in vulns)
-    na = collections.Counter(v["na_category"] for v in vulns if v["status"] == "Not_Applicable")
-    print(json.dumps({"outcome": "generated", "stig": {k: stig[k] for k in ("benchmark_id", "version", "releaseinfo")},
-                      "vulns": len(vulns), "status": counts, "na_by_reason": na,
-                      "ssg_vids_not_in_disa": stig["unmatched_ssg_vids"], "unpaired_refs": stig["unpaired_refs"]}, indent=1, default=list))
+    print(json.dumps(meta, indent=1, default=list))
 
 
 if __name__ == "__main__":

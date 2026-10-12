@@ -50,12 +50,12 @@ The spike's V-258241 row shows why the evidence matters: `configure_crypto_polic
 
 ## DISA's October 2026 release put every pinned STIG one quarter ahead
 
-DISA ships on a **quarterly cadence (January, April, July, October)**. The October 2026 release carries benchmark date 30 Sep 2026, and its files were posted 5–7 October ([DISA CDN listing](https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip/); [October 2026 library](https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip/U_SRG-STIG_Library_October_2026.zip)). SSG 0.1.82 (tagged 2026-09-01) predates that release, and CaC master had not ingested it by 2026-10-12 ([CaC shared/references](https://github.com/ComplianceAsCode/content/tree/master/shared/references)). The spike matched each pinned datastream's `SV-…r…` ids against every DISA release instead of trusting the profile title:
+DISA ships on a **quarterly cadence (January, April, July, October)**. The October 2026 release carries benchmark date 30 Sep 2026, and its files were posted 5–7 October ([DISA CDN listing](https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip/); [October 2026 library](https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip/U_SRG-STIG_Library_October_2026.zip)). SSG 0.1.82 (tagged 2026-09-01) predates that release, and CaC master had not ingested it by 2026-10-12 ([CaC shared/references](https://github.com/ComplianceAsCode/content/tree/master/shared/references)). The spike matched each pinned datastream's `SV-…r…` ids (from the rules OpenSCAP actually selected in a `stig` scan) against every DISA release instead of trusting the profile title:
 
 | Product | SSG 0.1.82 profile title says | Exact SV-id match (spike) | Current DISA (Oct 2026) | SSG SV-ids differing from current | V-ID delta to current |
 |---|---|---|---|---|---|
-| RHEL 8 | V2R8 | V2R8, 366/366 | V2R9 | 57 | +3 / −1 |
-| RHEL 9 | V2R9 | V2R9, 440/440 | V2R10 | 204 | +2 / −2 |
+| RHEL 8 | V2R8 | V2R8, 362/362 | V2R9 | 57 | +3 / −1 |
+| RHEL 9 | V2R9 | V2R9, 436/436 | V2R10 | 200 | +2 / −2 |
 | RHEL 10 | V1R2 | V1R2, 434/434 | V1R3 | 133 | +2 / −1 |
 | Ubuntu 22.04 | **V2R7** | **V2R8**, 188/188 | V2R10 | 47 | +3 / 0 |
 | GPOS SRG (Wolfi, via Chainguard) | v3r2p17 | n/a | V3R4 | n/a | n/a |

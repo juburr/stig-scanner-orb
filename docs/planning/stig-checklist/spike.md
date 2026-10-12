@@ -121,10 +121,16 @@ datastream sha256, target digest, scan time).
 
    | Datastream | Label in profile | Exact SV-id match | DISA newest (2026-10-12) | SV-ids that differ from newest |
    |---|---|---|---|---|
-   | `ssg-rhel8-ds.xml` | V2R8 | **V2R8** (01 Jul 2026), 366/366 | V2R9 (30 Sep 2026) | 57 |
-   | `ssg-rhel9-ds.xml` | V2R9 | **V2R9** (01 Jul 2026), 440/440 | V2R10 (30 Sep 2026) | 204 |
+   | `ssg-rhel8-ds.xml` | V2R8 | **V2R8** (01 Jul 2026), 362/362 | V2R9 (30 Sep 2026) | 57 |
+   | `ssg-rhel9-ds.xml` | V2R9 | **V2R9** (01 Jul 2026), 436/436 | V2R10 (30 Sep 2026) | 200 |
    | `ssg-rhel10-ds.xml` | V1R2 | **V1R2** (01 Jul 2026), 434/434 | V1R3 (30 Sep 2026) | 133 |
    | `ssg-ubuntu2204-ds.xml` | **V2R7** | **V2R8** (01 Apr 2026), 188/188 | V2R10 (30 Sep 2026) | 47 |
+
+   SV ids come from the rules OpenSCAP actually selected in a scan of the
+   `stig` profile (RHEL 10: a local scan with the pinned datastream).
+   Counting the profile's explicit selects instead gives 366 and 440 on
+   RHEL 8/9, because `conflicts` deselects 4 coredump rules there. The
+   chosen releases are the same either way.
 
    The release a checklist claims must come from this SV-id match, recorded
    per pinned datastream (plan D4 keys it on the datastream's sha256) and
