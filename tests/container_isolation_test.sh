@@ -23,6 +23,14 @@ if [ "${runs}" -eq 0 ]; then
     exit 1
 fi
 
+# output-dir belongs to the caller (it may be shared, hold sockets, or
+# contain the scratch rootfs); no container may mount it. The scanner
+# writes to a private staging dir that the host copies out of.
+if grep -nE 'OUTPUT_DIR(_ABS)?\}?"?:/' "${ROOT}"/src/scripts/*.sh; then
+    echo "FAIL: a container mounts output-dir (see above)" >&2
+    failures=$((failures + 1))
+fi
+
 # A rootfs_path holding a Unix socket (a live filesystem, e.g. one with
 # /run/docker.sock) must be refused before any container sees it. No
 # docker: the stub fails any call, and the socket check runs before one.

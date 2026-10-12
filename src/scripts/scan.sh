@@ -155,11 +155,32 @@ resolve_donor() {
     DONOR_USED_FOR="${DONOR_USED_FOR:+${DONOR_USED_FOR},}$1"
 }
 
+# paths_overlap A B: true if A and B (physical paths) are the same
+# directory or one contains the other.
+paths_overlap() {
+    case "${1%/}/" in "${2%/}/"*) return 0 ;; esac
+    case "${2%/}/" in "${1%/}/"*) return 0 ;; esac
+    return 1
+}
+
+# has_nested_mounts DIR: true if a mount point sits strictly below DIR
+# (read from /proc/self/mountinfo; false where that doesn't exist).
+has_nested_mounts() {
+    [ -r /proc/self/mountinfo ] || return 1
+    awk -v root="${1%/}/" '
+        { mp = $5; gsub(/\\040/, " ", mp); m = (mp == "/") ? "/" : mp "/" }
+        index(m, root) == 1 && m != root { found = 1; exit }
+        END { exit !found }
+    ' /proc/self/mountinfo
+}
+
 # --- 2. extract target rootfs (if image mode) ----------------------------
 ROOTFS_DIR=""
 CLEANUP_ROOTFS=0
 CID=""
 DATASTREAM_SNAP_DIR=""
+OUT_STAGE_DIR=""
+ROOTFS_MOUNT=()
 TARGET_IMAGE_ID=""
 TARGET_REPO_DIGESTS=""
 TARGET_PLATFORM=""
@@ -175,6 +196,12 @@ cleanup() {
         rm -rf "${DATASTREAM_SNAP_DIR}" 2>/dev/null || true
         if [ -e "${DATASTREAM_SNAP_DIR}" ]; then
             echo "WARNING: could not remove the datastream snapshot ${DATASTREAM_SNAP_DIR}; remove it manually." >&2
+        fi
+    fi
+    if [ -n "${OUT_STAGE_DIR}" ]; then
+        rm -rf "${OUT_STAGE_DIR}" 2>/dev/null || true
+        if [ -e "${OUT_STAGE_DIR}" ]; then
+            echo "WARNING: could not remove the scanner output staging dir ${OUT_STAGE_DIR}; remove it manually." >&2
         fi
     fi
     if [ "${CLEANUP_ROOTFS}" = "1" ] && [ -n "${ROOTFS_DIR}" ] && [ -d "${ROOTFS_DIR}" ]; then
@@ -255,6 +282,21 @@ else
     # what Docker bind-mounts, so it is what must be checked; find would
     # not descend into a symlink given as its starting point.
     ROOTFS_DIR="$(cd "${ROOTFS_PATH}" && pwd -P)"
+    # -v SRC:DST:ro makes mounts nested in SRC read-only only on kernels
+    # >= 5.12 (best effort); on older ones they stay writable. If the tree
+    # has nested mounts (a mounted VM disk with its own /boot or /var),
+    # require a recursively read-only bind, which errors where unsupported.
+    if has_nested_mounts "${ROOTFS_DIR}"; then
+        case "${ROOTFS_DIR}" in
+            *,*)
+                echo "ERROR: rootfs-path '${ROOTFS_PATH}' has nested mounts and a comma in its path, which --mount can't express." >&2
+                exit 2 ;;
+        esac
+        echo "==> rootfs-path has nested mounts; requiring a recursively read-only bind (Docker 25+, kernel 5.12+)"
+        ROOTFS_MOUNT=( --mount "type=bind,source=${ROOTFS_DIR},target=/target,readonly,bind-propagation=rprivate,bind-recursive=readonly" )
+    else
+        ROOTFS_MOUNT=( -v "${ROOTFS_DIR}:/target:ro" )
+    fi
     # The scanner gets this tree bind-mounted read-only, and a read-only
     # mount still lets a process connect to a Unix socket inside it. A
     # live filesystem (rootfs_path: /, or a tree with /run bound into it)
@@ -274,7 +316,7 @@ else
         echo "==> rootfs-path is not fully readable by this user; checking it for sockets as root in the helper image"
         resolve_donor rootfs-check
         find_rc=0
-        sock="$(docker run --rm --network none -u 0:0 -v "${ROOTFS_DIR}:/target:ro" \
+        sock="$(docker run --rm --network none -u 0:0 "${ROOTFS_MOUNT[@]}" \
             --entrypoint find "${DONOR_ID}" /target -type s -print)" || find_rc=$?
         sock="${sock%%$'\n'*}"
         if [ -z "${sock}" ] && [ "${find_rc}" -ne 0 ]; then
@@ -290,13 +332,9 @@ else
         echo "       the scanner could connect to a socket through its read-only mount." >&2
         exit 2
     fi
-    # The scanner mounts the output dir read-write at /out. Overlapping
-    # the target in either direction would give it a writable alias of
-    # the tree it must only read.
-    out_phys="$(cd "${OUTPUT_DIR_ABS}" && pwd -P)"
-    case "${out_phys%/}/" in "${ROOTFS_DIR%/}/"*) overlap=1 ;; *) overlap=0 ;; esac
-    case "${ROOTFS_DIR%/}/" in "${out_phys%/}/"*) overlap=1 ;; esac
-    if [ "${overlap}" = "1" ]; then
+    # Keep the reports out of the scanned tree and the tree out of the
+    # reports dir: the caller's tree is never written to.
+    if paths_overlap "$(cd "${OUTPUT_DIR_ABS}" && pwd -P)" "${ROOTFS_DIR}"; then
         echo "ERROR: output-dir '${OUTPUT_DIR}' overlaps rootfs-path '${ROOTFS_PATH}'." >&2
         echo "       The scanner writes to output-dir; keep it outside the scanned tree (and vice versa)." >&2
         exit 2
@@ -676,7 +714,18 @@ if [ -n "${DATASTREAM_HOST_DIR}" ]; then
 fi
 # ${a[@]+"${a[@]}"}: an empty array is an unbound variable under set -u
 # in bash < 4.4 (e.g. the macOS system bash used for local runs).
-mount_args=( -v "${ROOTFS_DIR}:/target:ro" -v "${OUTPUT_DIR_ABS}:/out" ${ds_mount_args[@]+"${ds_mount_args[@]}"} )
+[ "${#ROOTFS_MOUNT[@]}" -gt 0 ] || ROOTFS_MOUNT=( -v "${ROOTFS_DIR}:/target:ro" )
+# The scanner writes into a fresh private dir, never into output-dir
+# itself: output-dir is the caller's (it may be shared, hold sockets, or
+# contain the scratch rootfs), and /out is the scanner's one writable
+# mount. The two reports are copied out afterwards.
+OUT_STAGE_DIR="$(mktemp -d -t stig-out.XXXXXX)"
+OUT_STAGE_DIR="$(cd "${OUT_STAGE_DIR}" && pwd -P)"
+if paths_overlap "${OUT_STAGE_DIR}" "${ROOTFS_DIR}"; then
+    echo "ERROR: the temp dir (${OUT_STAGE_DIR}) is inside the scanned tree; set TMPDIR elsewhere." >&2
+    exit 2
+fi
+mount_args=( "${ROOTFS_MOUNT[@]}" -v "${OUT_STAGE_DIR}:/out" ${ds_mount_args[@]+"${ds_mount_args[@]}"} )
 
 # Hash the datastream as the scanner sees it: same image, same mount, same
 # path and same user (root) as oscap-chroot below. The image's default user
@@ -712,7 +761,6 @@ docker run --rm --network none -u 0:0 \
             --results /out/results.xml \
             "${DS_PATH}"
         rc=$?
-        # Only the files oscap wrote: output-dir may be shared (even /tmp).
         chown "${HOST_UID}:${HOST_GID}" /out/report.html /out/results.xml 2>/dev/null || true
         # oscap exits 2 when the scan completed but at least one rule
         # failed. Treat that as success; the gate decision lives in the
@@ -729,6 +777,11 @@ if [ "${oscap_rc}" -ne 0 ]; then
     echo "ERROR: oscap-chroot failed (exit ${oscap_rc})." >&2
     exit "${oscap_rc}"
 fi
+for f in results.xml report.html; do
+    if [ -s "${OUT_STAGE_DIR}/${f}" ]; then
+        cp "${OUT_STAGE_DIR}/${f}" "${OUTPUT_DIR_ABS}/${f}"
+    fi
+done
 
 if [ ! -s "${OUTPUT_DIR_ABS}/results.xml" ] || [ ! -s "${OUTPUT_DIR_ABS}/report.html" ]; then
     echo "ERROR: oscap-chroot reported success but did not produce non-empty results.xml and report.html." >&2

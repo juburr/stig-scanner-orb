@@ -85,9 +85,15 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   (`donor.used_for` gains `rootfs-check`) and fails closed if it can't finish.
   A symlinked `rootfs_path` is checked where it points.
 - A `rootfs_path` that overlaps `output_dir` (either inside the other) is
-  refused: the scanner mounts the output dir read-write, which would have
-  given it a writable alias of the tree. The scanner now `chown`s only the
-  two files it writes rather than the whole output dir.
+  refused, so the caller's tree is never written to.
+- The scanner no longer mounts `output_dir`. It writes into a fresh private
+  staging directory, its only writable mount, and the host copies
+  `results.xml` and `report.html` out. A shared `output_dir` (`/tmp`, one
+  holding sockets, one containing the scratch rootfs) is never exposed to
+  it, and it `chown`s only the two files it writes.
+- Mounts nested inside a `rootfs_path` are bound recursively read-only
+  (`--mount …,bind-recursive=readonly`, Docker 25+ on kernel 5.12+); the scan
+  fails on hosts that can't, rather than leaving the submounts writable.
 - The cleanup trap warns when it cannot remove the scratch rootfs or the
   datastream snapshot (e.g. the Docker daemon is gone, so the root-privileged
   removal helper can't run) instead of failing silently.
