@@ -255,6 +255,10 @@ def parse_disa(path):
     root = ET.parse(path).getroot()
     ns = X11 if root.tag.startswith(X11) else X12
     info = {
+        # DISA's manual XCCDFs carry profiles (9 on every file seen) that each
+        # select exactly the file's groups: an inventory inside the file.
+        "profiles": [{s.get("idref") for s in p.findall(ns + "select") if s.get("selected") == "true"}
+                     for p in root.findall(ns + "Profile")],
         "benchmark_id": root.get("id"),
         "title": text_of(root.find(ns + "title")),
         "description": text_of(root.find(ns + "description")),
@@ -303,6 +307,25 @@ SSG_STIG_IDS = {  # SSG benchmark -> DISA benchmark id / title (SSG-only mode)
     "RHEL-8": ("RHEL_8_STIG", "Red Hat Enterprise Linux 8 Security Technical Implementation Guide"),
     "RHEL-10": ("RHEL_10_STIG", "Red Hat Enterprise Linux 10 Security Technical Implementation Guide"),
     "UBUNTU_22-04": ("CAN_Ubuntu_22-04_LTS_STIG", "Canonical Ubuntu 22.04 LTS Security Technical Implementation Guide"),
+}
+
+
+# Known DISA releases: (benchmark id, version, release) -> (V-ID count, sha256
+# of the sorted V-IDs). Identifiers only; a skeleton claiming one of these
+# releases must carry exactly this V-ID set.
+STIG_INVENTORY = {
+    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "7"): (188, "057d88f473469138365442c6a1a8e9fd9e3e2c1ac99bb9adadffaa17414f8473"),
+    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "8"): (188, "057d88f473469138365442c6a1a8e9fd9e3e2c1ac99bb9adadffaa17414f8473"),
+    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "9"): (188, "057d88f473469138365442c6a1a8e9fd9e3e2c1ac99bb9adadffaa17414f8473"),
+    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "10"): (191, "4ab85974c4bc9537fe6d4b27eba8688edd7dfae544a8e03c565f71852872fa28"),
+    ("RHEL_8_STIG", "2", "7"): (366, "05ff1772e712ca39f54d9dd1b34c50234bf415437696bcb3840e6671d9b4bedc"),
+    ("RHEL_8_STIG", "2", "8"): (369, "0a6c8c84a1f867c2c289ea912ddf706e51f3908128c77bfe5ad61916a1a89ad8"),
+    ("RHEL_8_STIG", "2", "9"): (371, "a7de5e8c6b7787ec29693f28be135d22b717ebdb86137815bac4bd811266fe8e"),
+    ("RHEL_9_STIG", "2", "9"): (445, "e7347370a894e040b849b14d45310fd4acc101384d7e56557845cb3792ca638f"),
+    ("RHEL_9_STIG", "2", "10"): (445, "d6e1abc5b579a1ae2780facd480594151b747d0676019f786bbc62b84e341cec"),
+    ("RHEL_10_STIG", "1", "1"): (434, "764d847966c0724eb7fdefb81b475a004f2050a0249b7a96040e6ee3e70a73ca"),
+    ("RHEL_10_STIG", "1", "2"): (434, "764d847966c0724eb7fdefb81b475a004f2050a0249b7a96040e6ee3e70a73ca"),
+    ("RHEL_10_STIG", "1", "3"): (435, "f45603f15d06bb9ed1ad855d4e7409ce23f2cfdaf2e62510e6649085fa76203f"),
 }
 
 
@@ -524,7 +547,10 @@ def build_model(res, disa, plan, runner_arch=None):
                     line += " -> not reviewed " + arch_note
                 else:
                     na_cats.add((cat, tuple(gates)))
-            elif result != "notselected":
+            elif result in ("pass", "fixed", "fail"):
+                # Only an evaluated result is recomputed for the target; an
+                # error/unknown/notchecked/informational stays unevaluated
+                # (Not_Reviewed), never hidden as an N/A row.
                 verdict, level = target_verdict(r)
                 if verdict == "na":
                     # Every alternative at this level is false for the target.
@@ -858,6 +884,21 @@ def main():
             dups = sorted(v for v, c in collections.Counter(g["vid"] for g in disa["groups"]).items() if c > 1)
             if dups:
                 return emit({"outcome": "failed", "reason": f"the DISA file repeats V-IDs: {', '.join(dups[:10])}"}, 1)
+            # Completeness, independent of what this scan maps: the file's own
+            # profiles must each select exactly its groups (deleting groups,
+            # mapped or manual-only, breaks that), and a known release must
+            # carry exactly its recorded V-ID set.
+            vids = {g["vid"] for g in disa["groups"]}
+            if not disa["profiles"] or any(sel != vids for sel in disa["profiles"]):
+                return emit({"outcome": "failed", "reason": "the DISA file's profiles don't select exactly its V-IDs: "
+                             "groups were removed or added (truncated or edited file)"}, 1)
+            rel_m = re.search(r"Release: *(\d+)", disa["releaseinfo"])
+            inv = STIG_INVENTORY.get((disa["benchmark_id"], disa["version"], rel_m.group(1) if rel_m else ""))
+            if inv and (len(vids), hashlib.sha256("\n".join(sorted(vids)).encode()).hexdigest()) != inv:
+                return emit({"outcome": "failed", "reason": f"the DISA file claims {disa['benchmark_id']} "
+                             f"V{disa['version']}R{rel_m.group(1)}, but its {len(vids)} V-IDs don't match that "
+                             f"release's {inv[0]}"}, 1)
+            skeleton_check = "inventory" if inv else "internal"
         if not disa and res["benchmark_id"].replace("xccdf_org.ssgproject.content_benchmark_", "") not in SSG_STIG_IDS:
             # A DISA benchmark id can't be derived from an SSG benchmark name,
             # and consumers merge rows on the exact id: never invent one.
@@ -903,6 +944,7 @@ def main():
             for ext in formats:
                 writers[ext](staged[ext])
             meta = {"outcome": "generated", "host_name": host_name,
+                    "skeleton_completeness": skeleton_check if disa else None,
                     "stig": {k: stig[k] for k in ("benchmark_id", "version", "releaseinfo")},
                     "formats": {ext: hashlib.sha256(open(staged[ext], "rb").read()).hexdigest() for ext in formats},
                     "vulns": len(vulns), "status": counts, "na_by_reason": na,
