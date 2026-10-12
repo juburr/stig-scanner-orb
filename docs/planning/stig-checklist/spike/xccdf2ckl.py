@@ -141,7 +141,9 @@ def classify_na(gates):
         return "host"
     pk = [t[len("package_"):] for t in terms if t.startswith("package_")]
     if pk and len(pk) == len(terms):
-        return ("gui:" if set(pk) & GUI_PACKAGES else "package:") + ",".join(pk)
+        # "gui" only when every package is a GUI component: a mixed compound
+        # (package_gdm_and_package_pam) must not call PAM a graphical component.
+        return ("gui:" if set(pk) <= GUI_PACKAGES else "package:") + ",".join(pk)
     if all(t.endswith("_arch") for t in terms):
         return "arch"
     return "platform"
@@ -283,6 +285,16 @@ def arch_term_value(term, arch):
     return not hit if m.group(1) else hit
 
 
+def target_ref(plan):
+    """Digest-bound target identity: registry digest, else the local image id
+    that ran (with the tag for readability), else the rootfs path."""
+    if plan.get("image_repo_digests"):
+        return plan["image_repo_digests"]
+    if plan.get("image_id"):
+        return " ".join(filter(None, (plan.get("image"), f"(image id {plan['image_id']})")))
+    return plan.get("image") or plan.get("rootfs_path") or ""
+
+
 def build_model(res, disa, plan, runner_arch=None):
     # OpenSCAP's architecture platforms read the scanning host's /proc, not
     # the target. Image mode records the target platform (os/arch[/variant]);
@@ -294,11 +306,12 @@ def build_model(res, disa, plan, runner_arch=None):
     true_p = res["true_platforms"]
 
     # Platforms known to have evaluated *false*: OpenSCAP walks top-down, so
-    # the outermost level of a processed (selected) rule with no true
-    # platform was evaluated, and every platform on it came out false.
+    # the outermost level of a notapplicable rule with no true platform was
+    # evaluated, and every platform on it came out false. (An evaluated rule
+    # has no such level: everything it passed is in the true set.)
     known_false = set()
     for rid, result in res["results"].items():
-        if result != "notselected" and rid in res["rules"]:
+        if result == "notapplicable" and rid in res["rules"]:
             known_false.update(unmet_gates(res["rules"][rid], true_p))
 
     def term_state(t):
@@ -343,16 +356,41 @@ def build_model(res, disa, plan, runner_arch=None):
             return "arch?"
         return cats.pop() if len(cats) == 1 else "platform"
 
+    def platform_target_truth(p):
+        """True / False / None: does platform p hold for the *target*?"""
+        terms = gate_terms([p])
+        arch_ts = [t for t in terms if t.endswith("_arch")]
+        if any(arch_term_value(t, target_arch) is False for t in arch_ts):
+            return False
+        if arch_trusted(arch_ts):  # runner verdict carries over (vacuously so without arch terms)
+            if p in true_p:
+                return True
+            if p in known_false:
+                return False
+        if "_or_" in p:
+            return None
+        other = [t for t in terms if not t.endswith("_arch")]
+        if any(term_state(t) is False for t in other):
+            return False
+        if all(arch_term_value(t, target_arch) is True for t in arch_ts) and all(term_state(t) is True for t in other):
+            return True
+        return None
+
     def target_verdict(rule):
-        """For a rule OpenSCAP evaluated (got past every gate on the runner):
-        'na' when some level's every platform has an arch term false for the
-        target, 'uncertain' when an arch term can't be decided for it, else None."""
+        """For a rule OpenSCAP evaluated (got past every gate on the runner).
+        Platforms on one level are alternatives: the level holds for the
+        target if any alternative holds. Returns ('na', level) when every
+        alternative on some level is false for the target, ('uncertain',
+        None) when some level has no alternative known to hold, else None."""
+        uncertain = False
         for level in rule["platform_levels"]:
-            if all(any(arch_term_value(t, target_arch) is False for t in gate_terms([p]) if t.endswith("_arch"))
-                   for p in level):
+            truths = [platform_target_truth(p) for p in level]
+            if any(t is True for t in truths):
+                continue
+            if all(t is False for t in truths):
                 return "na", level
-        arch_ts = [t for level in rule["platform_levels"] for t in gate_terms(level) if t.endswith("_arch")]
-        return (None, None) if arch_trusted(arch_ts) else ("uncertain", None)
+            uncertain = True
+        return ("uncertain", None) if uncertain else (None, None)
 
     by_vid = collections.defaultdict(list)
     for rid, result in res["results"].items():
@@ -365,9 +403,11 @@ def build_model(res, disa, plan, runner_arch=None):
 
     prov = []
     if plan:
-        prov.append(f"Scanner: {plan.get('scanner_repo_digests') or plan.get('scanner')}; "
-                    f"datastream {plan.get('datastream')} sha256 {plan.get('datastream_sha256')}")
-        target = plan.get("image_repo_digests") or plan.get("image") or plan.get("rootfs_path")
+        # Registry digest first; a locally built or loaded image has none, so
+        # fall back to the image id that actually ran, never the mutable tag.
+        scanner = plan.get("scanner_repo_digests") or " ".join(filter(None, (plan.get("scanner"), plan.get("scanner_image_id") and f"(image id {plan['scanner_image_id']})")))
+        prov.append(f"Scanner: {scanner}; datastream {plan.get('datastream')} sha256 {plan.get('datastream_sha256')}")
+        target = target_ref(plan)
         prov.append(f"Target: {target}" + (f" [{target_platform}]" if target_platform else "")
                     + (f"; scanned on {runner_arch}" if runner_arch else ""))
     prov.append(f"Content: {res['benchmark_id']} {res['benchmark_version']}, profile {res['profile_id']}; "
@@ -607,7 +647,7 @@ def main():
     a = ap.parse_args()
 
     # Never leave a previous run's checklist behind for this run to "publish".
-    for ext in ("ckl", "cklb"):
+    for ext in ("ckl", "cklb", "ckl.partial", "cklb.partial"):
         try:
             os.remove(f"{a.out_dir}/{a.stem}.{ext}")
         except FileNotFoundError:
@@ -630,13 +670,27 @@ def main():
     stig, vulns = build_model(res, disa, plan, a.runner_arch)
     asset = {
         "ROLE": "None", "ASSET_TYPE": "Computing", "MARKING": "CUI", "HOST_NAME": a.host_name,
-        "TARGET_COMMENT": "Container image " + (plan.get("image_repo_digests") or plan.get("image") or "")
+        "TARGET_COMMENT": "Container image " + target_ref(plan)
                           + (f" [{plan['image_platform']}]" if plan.get("image_platform") else ""),
         "TECH_AREA": "", "TARGET_KEY": "", "WEB_OR_DATABASE": "false",
     }
     now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-    write_ckl(f"{a.out_dir}/{a.stem}.ckl", asset, stig, vulns)
-    write_cklb(f"{a.out_dir}/{a.stem}.cklb", asset, stig, vulns, now)
+    # Stage every format first and publish only when all succeeded, so a
+    # failure can never leave one half of the checklist for upload.
+    final = {ext: f"{a.out_dir}/{a.stem}.{ext}" for ext in ("ckl", "cklb")}
+    staged = {ext: path + ".partial" for ext, path in final.items()}
+    try:
+        write_ckl(staged["ckl"], asset, stig, vulns)
+        write_cklb(staged["cklb"], asset, stig, vulns, now)
+    except BaseException:
+        for path in staged.values():
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+        raise
+    for ext in final:
+        os.replace(staged[ext], final[ext])
     counts = collections.Counter(v["status"] for v in vulns)
     na = collections.Counter(v["na_category"] for v in vulns if v["status"] == "Not_Applicable")
     print(json.dumps({"stig": {k: stig[k] for k in ("benchmark_id", "version", "releaseinfo")},
