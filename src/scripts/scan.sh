@@ -10,12 +10,12 @@
 #   3b. For dpkg-family targets laid out like Google distroless (per-
 #      package stanzas in /var/lib/dpkg/status.d/, no status file),
 #      synthesize /var/lib/dpkg/status in the extracted scratch copy.
-#   4. For RPM-family targets, copy the datastream out of the Chainguard
+#   4. Pull the resolved scanner image (cacheable).
+#   5. For RPM-family targets, copy the datastream out of the Chainguard
 #      openscap image (which bundles all major datastreams) into a private
 #      per-scan snapshot dir (a datastream_path file is snapshotted the
 #      same way). The compliance-operator scanner that ships rpm probes
 #      doesn't bundle SCAP content, so we donate it from Chainguard.
-#   5. Pull the resolved scanner image (cacheable).
 #   6. Run oscap-chroot inside the scanner against the extracted rootfs,
 #      writing report.html + results.xml to the output dir.
 #   7. Record what produced them in scan-plan.env: image references and
@@ -518,7 +518,13 @@ if [ "${DPKG_STATUS}" = "missing" ]; then
     echo "         will report 'error'. See the README (Distroless images)." >&2
 fi
 
-# --- 4. acquire datastream -----------------------------------------------
+# --- 4. pull scanner image -----------------------------------------------
+ensure_image "${SCANNER}" "scanner image"
+SCANNER_ID="$(image_id "${SCANNER}")"
+SCANNER_REPO_DIGESTS="$(image_repo_digests "${SCANNER_ID}")"
+SCANNER_PLATFORM="$(image_platform "${SCANNER_ID}")"
+
+# --- 5. acquire datastream -----------------------------------------------
 # The Chainguard scanner ships datastreams inside its (immutable, digest-
 # pinned) image; for non-RPM targets oscap-chroot reads
 # /usr/share/xml/scap/ssg/content/<ds> there. Every other source is first
@@ -534,19 +540,45 @@ DATASTREAM_HOST_DIR=""
 DATASTREAM_IN_SCANNER_PATH=""
 DATASTREAM_SOURCE=""
 
+# snapshot_datastream IMAGE_ID SRC [docker run args...]: copy SRC (a path
+# inside IMAGE_ID's container) into a fresh snapshot dir as root, the user
+# oscap-chroot runs as, so any file the scan could read can be snapshotted
+# (e.g. a root-owned 0600 datastream_path written by an earlier root
+# container). The copy is handed to the runner and made read-only.
+snapshot_datastream() {
+    local image="$1" src="$2"
+    shift 2
+    DATASTREAM_SNAP_DIR="$(mktemp -d -t stig-datastream.XXXXXX)"
+    docker run --rm -u 0:0 "$@" \
+        -v "${DATASTREAM_SNAP_DIR}:/out" \
+        -e SRC="${src}" \
+        -e DS="${DATASTREAM}" \
+        -e HOST_UID="${HOST_UID}" \
+        -e HOST_GID="${HOST_GID}" \
+        --entrypoint sh \
+        "${image}" -c '
+            set -e
+            cp "${SRC}" "/out/${DS}"
+            test -s "/out/${DS}"
+            chown "${HOST_UID}:${HOST_GID}" "/out/${DS}"
+            chmod 0444 "/out/${DS}"
+        '
+}
+
 if [ -n "${DATASTREAM_PATH_OVERRIDE}" ]; then
     if [ ! -f "${DATASTREAM_PATH_OVERRIDE}" ]; then
         echo "ERROR: datastream-path '${DATASTREAM_PATH_OVERRIDE}' not found." >&2
         exit 2
     fi
-    DATASTREAM_SNAP_DIR="$(mktemp -d -t stig-datastream.XXXXXX)"
-    if ! cp "${DATASTREAM_PATH_OVERRIDE}" "${DATASTREAM_SNAP_DIR}/${DATASTREAM}"; then
-        echo "ERROR: could not read datastream-path '${DATASTREAM_PATH_OVERRIDE}'." >&2
+    ds_src="$(cd "$(dirname "${DATASTREAM_PATH_OVERRIDE}")" && pwd)/$(basename "${DATASTREAM_PATH_OVERRIDE}")"
+    echo "==> Using consumer-supplied datastream: ${DATASTREAM_PATH_OVERRIDE}"
+    # The scanner image is the one image every scan has.
+    if ! snapshot_datastream "${SCANNER_ID}" /src/datastream.xml \
+        -v "${ds_src}:/src/datastream.xml:ro"; then
+        echo "ERROR: could not read datastream-path '${DATASTREAM_PATH_OVERRIDE}' (or it is empty)." >&2
         exit 2
     fi
-    chmod 0444 "${DATASTREAM_SNAP_DIR}/${DATASTREAM}"
     DATASTREAM_SOURCE="datastream_path"
-    echo "==> Using consumer-supplied datastream: ${DATASTREAM_PATH_OVERRIDE}"
 elif [ "${FAMILY}" != "rpm" ]; then
     # Non-RPM target families resolve to a Chainguard-shape scanner that
     # bundles every major datastream at /usr/share/xml/scap/ssg/content.
@@ -562,32 +594,13 @@ elif [ "${FAMILY}" != "rpm" ]; then
 else
     resolve_donor datastream
     DATASTREAM_SOURCE="donated"
-    DATASTREAM_SNAP_DIR="$(mktemp -d -t stig-datastream.XXXXXX)"
     echo "==> Donating ${DATASTREAM} from ${DONOR_IMAGE}"
-    docker run --rm -u 0:0 \
-        -v "${DATASTREAM_SNAP_DIR}:/out" \
-        -e DS="${DATASTREAM}" \
-        -e HOST_UID="${HOST_UID}" \
-        -e HOST_GID="${HOST_GID}" \
-        --entrypoint sh \
-        "${DONOR_ID}" -c '
-            set -e
-            cp "/usr/share/xml/scap/ssg/content/${DS}" "/out/${DS}"
-            test -s "/out/${DS}"
-            chown "${HOST_UID}:${HOST_GID}" "/out/${DS}"
-            chmod 0444 "/out/${DS}"
-        '
+    snapshot_datastream "${DONOR_ID}" "/usr/share/xml/scap/ssg/content/${DATASTREAM}"
 fi
 if [ -n "${DATASTREAM_SNAP_DIR}" ]; then
     DATASTREAM_HOST_DIR="${DATASTREAM_SNAP_DIR}"
     DATASTREAM_IN_SCANNER_PATH="/ds/${DATASTREAM}"
 fi
-
-# --- 5. pull scanner image -----------------------------------------------
-ensure_image "${SCANNER}" "scanner image"
-SCANNER_ID="$(image_id "${SCANNER}")"
-SCANNER_REPO_DIGESTS="$(image_repo_digests "${SCANNER_ID}")"
-SCANNER_PLATFORM="$(image_platform "${SCANNER_ID}")"
 
 # --- 6. run oscap-chroot -------------------------------------------------
 ds_mount_args=()
@@ -600,8 +613,8 @@ mount_args=( -v "${ROOTFS_DIR}:/target:ro" -v "${OUTPUT_DIR_ABS}:/out" ${ds_moun
 
 # Hash the datastream as the scanner sees it: same image, same mount, same
 # path and same user (root) as oscap-chroot below. The image's default user
-# can be unprivileged (65532 in the Chainguard image) and unable to read a
-# datastream_path kept in a private directory that the root scan still reads.
+# can be unprivileged (65532 in the Chainguard image) and unable to enter
+# the snapshot directory (mktemp -d, mode 0700) that the root scan reads.
 DATASTREAM_SHA256="$(docker run --rm -u 0:0 ${ds_mount_args[@]+"${ds_mount_args[@]}"} \
     --entrypoint sha256sum "${SCANNER_ID}" "${DATASTREAM_IN_SCANNER_PATH}" 2>/dev/null \
     | awk '{print $1}')" || DATASTREAM_SHA256=""
