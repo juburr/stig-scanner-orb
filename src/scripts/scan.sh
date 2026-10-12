@@ -428,9 +428,11 @@ echo "    output:        ${OUTPUT_DIR_ABS}"
 # `pass`. In image mode the extracted rootfs is our scratch copy, so build
 # the status file there from the stanzas. In rootfs_path mode the tree
 # belongs to the caller and stays untouched; summarize warns instead.
-# Recorded as dpkg_status=synthesized|missing in scan-plan.env.
+# Recorded as dpkg_status=synthesized|missing in scan-plan.env, with the
+# reason when the file could not be built.
 DPKG_STATUS=""
 DPKG_STATUS_PACKAGES=""
+DPKG_STATUS_REASON=""
 if [ "${FAMILY}" = "dpkg" ] && [ "${CLEANUP_ROOTFS}" = "1" ]; then
     # Decide and write inside the helper container, which sees only the
     # scratch rootfs: a symlinked var/lib/dpkg in the target image can't
@@ -471,18 +473,22 @@ if [ "${FAMILY}" = "dpkg" ] && [ "${CLEANUP_ROOTFS}" = "1" ]; then
             set -eu
             d=/target/var/lib/dpkg
             if [ -e "$d/status" ] || [ -L "$d/status" ]; then echo present; exit 0; fi
-            if [ ! -d "$d/status.d" ] || [ "$(readlink -f "$d")" != "$d" ]; then echo absent; exit 0; fi
-            tmp="$d/.status.stig-scanner-orb.tmp"
-            find "$d/status.d" -maxdepth 1 -type f ! -name "*.md5sums" | sort > "$tmp.list"
-            : > "$tmp"
+            if [ ! -d "$d/status.d" ]; then echo absent; exit 0; fi
+            if [ "$(readlink -f "$d")" != "$d" ]; then echo symlinked; exit 0; fi
+            # Build in container-private temporaries, never at a fixed
+            # path in the image, where a planted symlink would redirect
+            # the write. The one write into the rootfs is the final copy
+            # to status, which was just checked to be absent.
+            list="$(mktemp)"
+            tmp="$(mktemp)"
+            find "$d/status.d" -maxdepth 1 -type f ! -name "*.md5sums" | sort > "$list"
             while IFS= read -r f; do
                 awk "$STANZA_AWK" "$f" >> "$tmp"
-            done < "$tmp.list"
-            rm -f "$tmp.list"
+            done < "$list"
             count="$(grep -c "^Package:" "$tmp" || true)"
-            if [ "${count:-0}" -eq 0 ]; then rm -f "$tmp"; echo empty; exit 0; fi
-            chmod 0644 "$tmp"
-            mv "$tmp" "$d/status"
+            if [ "${count:-0}" -eq 0 ]; then echo empty; exit 0; fi
+            cp "$tmp" "$d/status"
+            chmod 0644 "$d/status"
             echo "synthesized ${count}"
         ')"
     case "${dpkg_result}" in
@@ -491,14 +497,25 @@ if [ "${FAMILY}" = "dpkg" ] && [ "${CLEANUP_ROOTFS}" = "1" ]; then
             DPKG_STATUS_PACKAGES="${dpkg_result#synthesized }"
             echo "==> Synthesized /var/lib/dpkg/status from status.d/ (${DPKG_STATUS_PACKAGES} packages) in the scratch rootfs"
             ;;
+        empty)
+            DPKG_STATUS="missing"
+            DPKG_STATUS_REASON="status.d/ holds no package stanzas"
+            ;;
+        symlinked)
+            DPKG_STATUS="missing"
+            DPKG_STATUS_REASON="/var/lib/dpkg is a symlink, which the orb does not write through"
+            ;;
     esac
 elif [ "${FAMILY}" = "dpkg" ] && [ -d "${ROOTFS_DIR}/var/lib/dpkg/status.d" ] \
         && [ ! -e "${ROOTFS_DIR}/var/lib/dpkg/status" ]; then
     DPKG_STATUS="missing"
-    echo "WARNING: ${ROOTFS_PATH} has /var/lib/dpkg/status.d/ but no /var/lib/dpkg/status." >&2
-    echo "         OpenSCAP's dpkg probe reads only the status file, so package rules will" >&2
-    echo "         report 'error'. The orb does not modify a rootfs_path tree; see the README" >&2
-    echo "         (Distroless images) to add the file, or scan the image instead." >&2
+    DPKG_STATUS_REASON="the orb does not modify a rootfs_path tree"
+fi
+if [ "${DPKG_STATUS}" = "missing" ]; then
+    echo "WARNING: the target has /var/lib/dpkg/status.d/ but no /var/lib/dpkg/status," >&2
+    echo "         and none was built (${DPKG_STATUS_REASON})." >&2
+    echo "         OpenSCAP's dpkg probe reads only the status file, so package rules" >&2
+    echo "         will report 'error'. See the README (Distroless images)." >&2
 fi
 
 # --- 4. acquire datastream -----------------------------------------------
@@ -665,6 +682,7 @@ fi
     if [ -n "${DPKG_STATUS}" ]; then
         echo "dpkg_status=${DPKG_STATUS}"
         echo "dpkg_status_packages=${DPKG_STATUS_PACKAGES}"
+        echo "dpkg_status_reason=${DPKG_STATUS_REASON}"
     fi
     if [ -n "${IMAGE}" ]; then
         echo "image=${IMAGE}"

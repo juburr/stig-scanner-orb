@@ -47,7 +47,9 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   probe cannot read, so package rules came back `error`. In image mode the orb
   now builds `/var/lib/dpkg/status` from those stanzas in its scratch copy of
   the rootfs and records that in `summary.txt` / `provenance.json`;
-  `rootfs_path` trees are left untouched and get a warning instead. With no
+  `rootfs_path` trees are left untouched and get a warning instead, as does
+  an image whose file can't be built (no package stanzas in `status.d/`, or a
+  symlinked `/var/lib/dpkg`). With no
   `/etc/os-release`, `target_base: auto` now also recognizes the `status.d/`
   layout as `debian12` (it previously failed to detect such images).
 - Smoke coverage for `ubi9/ubi-minimal`, `ubi8/ubi-minimal` (CIS L1), and
