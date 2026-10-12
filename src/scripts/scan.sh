@@ -87,17 +87,28 @@ paths_overlap() {
 }
 
 # phys_path PATH: the physical absolute path PATH names, which need not
-# exist yet: its deepest existing ancestor is resolved with pwd -P.
+# exist yet. Walks it a component at a time from /: existing directories
+# are resolved with pwd -P, and "." / ".." are applied to that physical
+# path, which is what mkdir -p does with the directories it creates.
 phys_path() {
-    local p="$1" rest=""
+    local p="$1" cur="/" rest comp
     case "${p}" in /*) ;; *) p="${PWD}/${p}" ;; esac
-    while [ "${p}" != "/" ] && [ "${p%/}" != "${p}" ]; do p="${p%/}"; done
-    while [ ! -d "${p}" ]; do
-        rest="/${p##*/}${rest}"
-        p="${p%/*}"
-        [ -n "${p}" ] || p="/"
+    rest="${p#/}/"
+    while [ -n "${rest}" ]; do
+        comp="${rest%%/*}"
+        rest="${rest#*/}"
+        case "${comp}" in
+            ""|.) ;;
+            ..) cur="${cur%/*}"; [ -n "${cur}" ] || cur="/" ;;
+            *)
+                if [ -d "${cur%/}/${comp}" ]; then
+                    cur="$(cd "${cur%/}/${comp}" && pwd -P)"
+                else
+                    cur="${cur%/}/${comp}"
+                fi ;;
+        esac
     done
-    printf '%s%s\n' "$(cd "${p}" && pwd -P)" "${rest}"
+    printf '%s\n' "${cur}"
 }
 
 # In rootfs_path mode the reports stay out of the scanned tree, and the

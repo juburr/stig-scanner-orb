@@ -78,6 +78,14 @@ if [ -e "${tree}/new" ]; then
     echo "FAIL: a refused scan created ${tree}/new inside the scanned tree" >&2
     failures=$((failures + 1))
 fi
+# ".." after a not-yet-existing component still lands in the tree.
+sibling="$(mktemp -d)"
+refused "dot-dot into rootfs" "overlaps rootfs-path" "${tree}" \
+    "${sibling}/new/../../$(basename "${tree}")/reports"
+if [ -e "${tree}/reports" ]; then
+    echo "FAIL: a refused scan created ${tree}/reports inside the scanned tree" >&2
+    failures=$((failures + 1))
+fi
 
 # Bind relative to the directory: socket paths are length-limited.
 (cd "${tree}/run" && python3 -c 'import socket; socket.socket(socket.AF_UNIX).bind("docker.sock")')
