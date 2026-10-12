@@ -87,8 +87,9 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   (`donor.used_for` gains `rootfs-check`) and fails closed if it can't finish.
   A symlinked `rootfs_path` is checked where it points.
 - A `rootfs_path` that overlaps `output_dir` (either inside the other) is
-  refused before `output_dir` is created, so the caller's tree is never
-  written to; so is a `TMPDIR` inside it, before any scratch dir is made.
+  refused before `output_dir` is created, so the orb doesn't write into the
+  caller's tree; so is a `TMPDIR` inside it, before any scratch dir is made.
+  The comparison is by physical path; a bind-mount alias isn't detected.
 - The scanner no longer mounts `output_dir`. It writes into a fresh private
   staging directory, its only writable mount, and the host copies
   `results.xml` and `report.html` out, refusing anything that isn't a

@@ -112,9 +112,11 @@ phys_path() {
 }
 
 # In rootfs_path mode the reports stay out of the scanned tree, and the
-# tree out of the reports dir: the caller's tree is never written to.
-# Checked before output-dir is created, so a refused scan hasn't already
-# made a directory inside the tree.
+# tree out of the reports dir, so the orb doesn't write into the caller's
+# tree. Checked before output-dir is created, so a refused scan hasn't
+# already made a directory inside the tree. The comparison is by physical
+# path: a bind-mount alias of the tree that the caller set up themselves
+# is not detected (the scanner never sees output-dir either way).
 if [ -n "${ROOTFS_PATH}" ] && [ -d "${ROOTFS_PATH}" ] \
         && paths_overlap "$(phys_path "${OUTPUT_DIR}")" "$(cd "${ROOTFS_PATH}" && pwd -P)"; then
     echo "ERROR: output-dir '${OUTPUT_DIR}' overlaps rootfs-path '${ROOTFS_PATH}'." >&2

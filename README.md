@@ -207,7 +207,7 @@ A container-tailored RHEL STIG tailoring file is on the roadmap.
 | `fail_on_finding` | boolean | `false` | When true, exit 1 on any non-ignored `fail`, `error`, or `unknown` result. |
 | `require_evaluated_rules` | boolean | `true` | Fail the job when zero rules evaluate to pass, fail, fixed, or informational. Set false only on a job that intentionally records an all-notapplicable baseline (see [Gates](#-gates)). |
 | `ignore_findings` | string | `""` | Comma-separated rule IDs to subtract from the fail/error/unknown gate count. |
-| `output_dir` | string | `build/stig` | Where reports and summary land. In `rootfs_path` mode it must not overlap the scanned tree. |
+| `output_dir` | string | `build/stig` | Where reports and summary land. In `rootfs_path` mode it must not overlap the scanned tree; that is checked by physical path (symlinks resolved), so don't point it at a bind-mount alias of the tree either. |
 | `resource_class` | string | `medium` | Pass-through to the machine executor. |
 | `no_output_timeout` | string | `30m` | OpenSCAP can be silent for several minutes during evaluation. |
 | `checkout` | boolean | `true` | Whether to `checkout` before scanning. |
