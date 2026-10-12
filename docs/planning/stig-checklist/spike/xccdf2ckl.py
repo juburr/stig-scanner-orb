@@ -412,12 +412,21 @@ def build_model(res, disa, plan, runner_arch=None):
         return ("uncertain", None) if uncertain else (None, None)
 
     by_vid = collections.defaultdict(list)
+    unpaired = []
     for rid, result in res["results"].items():
         r = res["rules"].get(rid)
         if result == "notselected" or not r:
             continue
-        # SSG < 0.1.82 has no #vulnerability_id references: derive V-n from SV-n.
-        for vid in r["vids"] or [f"V-{n}" for n in r["svs"]]:
+        if r["vids"]:
+            # Only a V-n with a matching SV-n is a row (D3); anything else
+            # can't name a DISA rule, so report it instead of keying on it.
+            vids = [v for v in r["vids"] if v[2:] in r["svs"]]
+            unpaired += [f"{rid}: {v}" for v in r["vids"] if v[2:] not in r["svs"]]
+            unpaired += [f"{rid}: {sv}" for n, sv in r["svs"].items() if f"V-{n}" not in r["vids"]]
+        else:
+            # SSG < 0.1.82 has no #vulnerability_id references: derive V-n from SV-n.
+            vids = [f"V-{n}" for n in r["svs"]]
+        for vid in vids:
             by_vid[vid].append(rid)
 
     prov = []
@@ -502,13 +511,17 @@ def build_model(res, disa, plan, runner_arch=None):
             na_category = None
             if rids:
                 status, detail, comment, ssg_rule_ids, na_category = vuln_from_ssg(g["vid"], rids)
-                if g["rule_id"] not in ssg_rule_ids:
+                if ssg_rule_ids != {g["rule_id"]}:
                     # The requirement was revised after the release the content
                     # targets, and nothing here proves the check is unchanged,
                     # so don't carry the verdict: keep it as evidence only.
+                    # Every contributing rule must cite the skeleton's revision:
+                    # a mixed set still evaluates part of the older requirement.
+                    stale = sorted(ssg_rule_ids - {g["rule_id"]})
                     detail += (f"\n\nRevision mismatch: the scanner content maps this check to "
-                               f"{', '.join(sorted(ssg_rule_ids))}; this checklist's STIG release has {g['rule_id']}. "
-                               f"Automated result for the older revision: {status}.")
+                               f"{', '.join(sorted(ssg_rule_ids))}; this checklist's STIG release has {g['rule_id']}, "
+                               f"so {', '.join(stale)} {'is' if len(stale) == 1 else 'are'} stale. "
+                               f"Automated result across the content's revisions: {status}.")
                     status, na_category = "Not_Reviewed", None
                     comment = (f"Not reviewed: this STIG release revised the requirement ({g['rule_id']}), and the "
                                f"automated result comes from content aligned to an earlier revision. Re-verify.")
@@ -517,6 +530,7 @@ def build_model(res, disa, plan, runner_arch=None):
             vulns.append({**g, "status": status, "finding_details": detail, "comments": comment, "na_category": na_category})
         stig["unmatched_ssg_vids"] = sorted(set(by_vid) - seen)
         stig["mapped_vids"] = len(set(by_vid) & seen)
+        stig["unpaired_refs"] = sorted(unpaired)
     else:
         key = res["benchmark_id"].replace("xccdf_org.ssgproject.content_benchmark_", "")
         bid, title = SSG_STIG_IDS.get(key, (key + "_STIG", res["profile_title"]))
@@ -524,7 +538,7 @@ def build_model(res, disa, plan, runner_arch=None):
         stig = {"benchmark_id": bid, "title": title, "description": res["profile_title"], "version": ver,
                 "releaseinfo": f"Release: {rel} Benchmark Date: unknown (derived from {res['benchmark_id']} {res['benchmark_version']})",
                 "filename": f"{res['benchmark_id']}-{res['profile_id']}.xml", "unmatched_ssg_vids": [],
-                "mapped_vids": len(by_vid)}
+                "mapped_vids": len(by_vid), "unpaired_refs": sorted(unpaired)}
         for vid in sorted(by_vid, key=lambda v: int(v[2:])):
             rids = by_vid[vid]
             first = res["rules"][sorted(rids)[0]]
@@ -723,20 +737,22 @@ def main():
     try:
         write_ckl(staged["ckl"], asset, stig, vulns)
         write_cklb(staged["cklb"], asset, stig, vulns, now)
+        # Publication is inside the handler too: if the second rename fails
+        # (or the run is interrupted), the first final file goes as well.
+        for ext in final:
+            os.replace(staged[ext], final[ext])
     except BaseException:
-        for path in staged.values():
+        for path in (*staged.values(), *final.values()):
             try:
                 os.remove(path)
             except FileNotFoundError:
                 pass
         raise
-    for ext in final:
-        os.replace(staged[ext], final[ext])
     counts = collections.Counter(v["status"] for v in vulns)
     na = collections.Counter(v["na_category"] for v in vulns if v["status"] == "Not_Applicable")
     print(json.dumps({"outcome": "generated", "stig": {k: stig[k] for k in ("benchmark_id", "version", "releaseinfo")},
                       "vulns": len(vulns), "status": counts, "na_by_reason": na,
-                      "ssg_vids_not_in_disa": stig["unmatched_ssg_vids"]}, indent=1, default=list))
+                      "ssg_vids_not_in_disa": stig["unmatched_ssg_vids"], "unpaired_refs": stig["unpaired_refs"]}, indent=1, default=list))
 
 
 if __name__ == "__main__":
