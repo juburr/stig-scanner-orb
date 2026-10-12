@@ -626,7 +626,7 @@ def build_model(res, disa, plan, runner_arch=None):
     else:
         key = res["benchmark_id"].replace("xccdf_org.ssgproject.content_benchmark_", "")
         bid, title = SSG_STIG_IDS[key]  # main() skips unknown benchmarks
-        ver, rel = res["disa_version"] or ("0", "0")
+        ver, rel = res["disa_version"]  # main() skips content without a parseable release
         stig = {"benchmark_id": bid, "title": title, "description": res["profile_title"], "version": ver,
                 "releaseinfo": f"Release: {rel} Benchmark Date: unknown (derived from {res['benchmark_id']} {res['benchmark_version']})",
                 "filename": f"{res['benchmark_id']}-{res['profile_id']}.xml", "unmatched_ssg_vids": [],
@@ -903,6 +903,11 @@ def main():
             # A DISA benchmark id can't be derived from an SSG benchmark name,
             # and consumers merge rows on the exact id: never invent one.
             return emit({"outcome": "skipped", "reason": f"no known DISA STIG id for {res['benchmark_id']}; "
+                         f"supply the DISA STIG file to name it"}, 0)
+        if not disa and not res["disa_version"]:
+            # Same rule for the release: a made-up V0R0 merges with nothing.
+            # (PR 1's release table resolves pinned content first.)
+            return emit({"outcome": "skipped", "reason": f"profile {res['profile_id']} names no DISA release (VnRm); "
                          f"supply the DISA STIG file to name it"}, 0)
         stig, vulns = build_model(res, disa, plan, a.runner_arch)
         # A STIG-named profile still proves nothing about the mapping: content
