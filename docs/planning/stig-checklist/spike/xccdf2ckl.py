@@ -337,22 +337,35 @@ SSG_STIG_IDS = {  # SSG benchmark -> DISA benchmark id / title (SSG-only mode)
 
 
 # Known DISA releases: (benchmark id, version, release) -> (row count, sha256
-# of the sorted "V-ID Rule-ID" pairs). Identifiers only. Pairs, not just V-IDs:
+# of the sorted "V-ID Rule-ID" pairs, the release's canonical release info).
+# Identifiers only. Pairs, not just V-IDs:
 # several releases share a V-ID set (Ubuntu V2R7-V2R9, RHEL 10 V1R1-V1R2) and
 # differ only in Rule ID revisions, which consumers match exactly.
 STIG_INVENTORY = {
-    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "7"): (188, "12de845e06062acb595732396579707e79d18217e8f3b430ef19733bf90cbb7f"),
-    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "8"): (188, "f0c0a27b9381f0e6fc35556b3ae5fc90c2238f91f7057e0c9b793e37ba0a3ddd"),
-    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "9"): (188, "19f8465e1cc1c16910e152252023ca1050a8fdc1143931a200f6e3a2c900427c"),
-    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "10"): (191, "7851e77f61f7fc4597369ee394cd13da0041612e7fea6fe34951fddf7659ae60"),
-    ("RHEL_8_STIG", "2", "7"): (366, "bc381b88e0f69335edcf6eb86a17695df981162e5d0ab9ee58c7efb3f771a2d7"),
-    ("RHEL_8_STIG", "2", "8"): (369, "edb2cb7a36599a78a6b3d0c8223d7d13faa9753a81a9e9515c9be9fd554ce922"),
-    ("RHEL_8_STIG", "2", "9"): (371, "1984e68e60f9772174c278f062f5b949e089dfb0d250ce8898a4a118c874aafc"),
-    ("RHEL_9_STIG", "2", "9"): (445, "d1290dec54ac0c7bac3a0ea0e3f76175e382245725409fc80f1c0a4d6f4baa89"),
-    ("RHEL_9_STIG", "2", "10"): (445, "71c7dd9d19b48e606700d0f3a4d39530eb7666272271fb68db045eefa26595dc"),
-    ("RHEL_10_STIG", "1", "1"): (434, "04685a247e535e1a2e770d8097e417c11fe5c55daecb5fa03fa624a39c2e33e5"),
-    ("RHEL_10_STIG", "1", "2"): (434, "ef19aa40608019b68764c2628f35faf9117b9c721c9d42a2ede0366c425f4ed6"),
-    ("RHEL_10_STIG", "1", "3"): (435, "65bcc7e6af3a182ff9b738448f0432ae81f680e0da715fc9ff1974c85e3e41e8"),
+    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "7"): (188, "12de845e06062acb595732396579707e79d18217e8f3b430ef19733bf90cbb7f",
+        "Release: 7 Benchmark Date: 05 Jan 2026"),
+    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "8"): (188, "f0c0a27b9381f0e6fc35556b3ae5fc90c2238f91f7057e0c9b793e37ba0a3ddd",
+        "Release: 8 Benchmark Date: 01 Apr 2026"),
+    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "9"): (188, "19f8465e1cc1c16910e152252023ca1050a8fdc1143931a200f6e3a2c900427c",
+        "Release: 9 Benchmark Date: 01 Jul 2026"),
+    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "10"): (191, "7851e77f61f7fc4597369ee394cd13da0041612e7fea6fe34951fddf7659ae60",
+        "Release: 10 Benchmark Date: 30 Sep 2026"),
+    ("RHEL_8_STIG", "2", "7"): (366, "bc381b88e0f69335edcf6eb86a17695df981162e5d0ab9ee58c7efb3f771a2d7",
+        "Release: 7 Benchmark Date: 01 Apr 2026"),
+    ("RHEL_8_STIG", "2", "8"): (369, "edb2cb7a36599a78a6b3d0c8223d7d13faa9753a81a9e9515c9be9fd554ce922",
+        "Release: 8 Benchmark Date: 01 Jul 2026"),
+    ("RHEL_8_STIG", "2", "9"): (371, "1984e68e60f9772174c278f062f5b949e089dfb0d250ce8898a4a118c874aafc",
+        "Release: 9 Benchmark Date: 30 Sep 2026"),
+    ("RHEL_9_STIG", "2", "9"): (445, "d1290dec54ac0c7bac3a0ea0e3f76175e382245725409fc80f1c0a4d6f4baa89",
+        "Release: 9 Benchmark Date: 01 Jul 2026"),
+    ("RHEL_9_STIG", "2", "10"): (445, "71c7dd9d19b48e606700d0f3a4d39530eb7666272271fb68db045eefa26595dc",
+        "Release: 10 Benchmark Date: 30 Sep 2026"),
+    ("RHEL_10_STIG", "1", "1"): (434, "04685a247e535e1a2e770d8097e417c11fe5c55daecb5fa03fa624a39c2e33e5",
+        "Release: 1 Benchmark Date: 26 Feb 2026"),
+    ("RHEL_10_STIG", "1", "2"): (434, "ef19aa40608019b68764c2628f35faf9117b9c721c9d42a2ede0366c425f4ed6",
+        "Release: 2 Benchmark Date: 01 Jul 2026"),
+    ("RHEL_10_STIG", "1", "3"): (435, "65bcc7e6af3a182ff9b738448f0432ae81f680e0da715fc9ff1974c85e3e41e8",
+        "Release: 3 Benchmark Date: 30 Sep 2026"),
 }
 
 
@@ -841,7 +854,9 @@ def write_ckl(path, asset, stig, vulns):
         ET.SubElement(ve, "SEVERITY_JUSTIFICATION").text = ""
     ET.indent(ck, "\t")
     with open(path, "w", encoding="utf-8") as f:
-        f.write('<?xml version="1.0" encoding="UTF-8"?>\n<!--DISA STIG Viewer :: 2.18-->\n')
+        # Neutral tool provenance (D9): this file isn't STIG Viewer's output.
+        # Neither STIG Viewer 3's import nor STIG Manager's parser reads it.
+        f.write('<?xml version="1.0" encoding="UTF-8"?>\n<!--stig-scanner-orb :: checklist spike-->\n')
         f.write(ET.tostring(ck, encoding="unicode"))
         f.write("\n")
 
@@ -1058,7 +1073,10 @@ def main():
             if not disa["profiles"] or any(sel != vids for sel in disa["profiles"]):
                 return emit({"outcome": "failed", "reason": "the DISA file's profiles don't select exactly its V-IDs: "
                              "groups were removed or added (truncated or edited file)"}, 1)
-            rel_m = re.search(r"Release: *(\d+)", disa["releaseinfo"])
+            # The release info is copied into the checklist as its release
+            # identity, so it must have DISA's whole format (every DISA file
+            # does), not merely start with "Release: N".
+            rel_m = re.fullmatch(r"Release: (\d+) Benchmark Date: \d{2} [A-Z][a-z]{2} \d{4}", disa["releaseinfo"])
             if not re.fullmatch(r"\d+", disa["version"]) or not rel_m:
                 # Without both, the checklist can't name its release (CKL
                 # version empty, CKLB version null) and no inventory applies.
@@ -1066,10 +1084,16 @@ def main():
                              f"{disa['version']!r}, release-info {disa['releaseinfo'][:60]!r}"}, 1)
             inv = STIG_INVENTORY.get((disa["benchmark_id"], disa["version"], rel_m.group(1)))
             pairs = sorted(f"{g['vid']} {g['rule_id']}" for g in disa["groups"])
-            if inv and (len(pairs), hashlib.sha256("\n".join(pairs).encode()).hexdigest()) != inv:
+            if inv and (len(pairs), hashlib.sha256("\n".join(pairs).encode()).hexdigest()) != inv[:2]:
                 return emit({"outcome": "failed", "reason": f"the DISA file claims {disa['benchmark_id']} "
                              f"V{disa['version']}R{rel_m.group(1)}, but its {len(pairs)} V-ID/Rule ID pairs don't match "
                              f"that release's {inv[0]}"}, 1)
+            if inv and disa["releaseinfo"] != inv[2]:
+                # Right pairs, wrong date: the published identity must be the
+                # release's own.
+                return emit({"outcome": "failed", "reason": f"the DISA file claims {disa['benchmark_id']} "
+                             f"V{disa['version']}R{rel_m.group(1)} with release info {disa['releaseinfo']!r}; that "
+                             f"release's is {inv[2]!r}"}, 1)
             skeleton_check = "inventory" if inv else "internal"
         if not disa and res["benchmark_id"].replace("xccdf_org.ssgproject.content_benchmark_", "") not in SSG_STIG_IDS:
             # A DISA benchmark id can't be derived from an SSG benchmark name,

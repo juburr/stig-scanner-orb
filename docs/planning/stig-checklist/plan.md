@@ -470,8 +470,10 @@ files and parameters and changes no existing behaviour.
   of its V-IDs (D11), but that alone doesn't prove the identity: a
   mislabeled file with one copied row would pass it. The file is also
   rejected if it:
-  - has no numeric `<version>` or no `Release: <n>` in its release info,
-    so it names no release (the CKLB `version` would be null);
+  - has no numeric `<version>`, or release info not in DISA's whole
+    format (`Release: N Benchmark Date: DD Mon YYYY`, as every DISA file
+    has), so it names no release (the CKLB `version` would be null) or
+    would publish a malformed one;
   - has a Group with other than exactly one Rule. An extra Rule would be
     dropped silently while the profile inventory still matched;
   - has a V-ID or Rule ID that isn't well formed (`V-<digits>`,
@@ -495,9 +497,11 @@ files and parameters and changes no existing behaviour.
     21 releases), each selecting exactly the file's groups. A file whose
     profiles don't select exactly its groups was cut or padded, and fails.
   - **Known releases.** PR 2 ships an inventory per known release: the row
-    count plus the sha256 of the sorted `V-ID Rule-ID` pairs, as
-    identifiers only, no DISA text. A file claiming one of those releases
-    must carry exactly that set. That catches an edit that also rewrote the
+    count, the sha256 of the sorted `V-ID Rule-ID` pairs and the release's
+    own release info, as identifiers only, no DISA text. A file claiming
+    one of those releases must carry exactly that set, and that release
+    info: the checklist publishes it as the release identity, so a changed
+    date fails too. That catches an edit that also rewrote the
     profiles. It also catches a mislabeled neighbour: several releases share
     a V-ID set and differ only in Rule ID revisions (Ubuntu V2R7–V2R9, RHEL
     10 V1R1–V1R2), so a V-ID-only fingerprint would accept a V2R7 file
@@ -538,7 +542,9 @@ files and parameters and changes no existing behaviour.
 - **Tests:** a tiny hand-made DISA-format XCCDF fixture (no DISA files in
   the repo before the PR 3 decision); revision-mismatch, added/removed-Vuln,
   wrong-STIG, missing version/release, two Rules (or none) in a Group,
-  a `V-n` Group carrying another number's Rule ID, and repeated or
+  a `V-n` Group carrying another number's Rule ID, release info that is
+  bare, has trailing text, or has another date for a known release, and
+  repeated or
   malformed V-ID/Rule ID cases (the latter claiming an unknown release,
   where only the profile check applies).
 - **CI:** a `smoke-rhel9` variant that fetches the DISA zip in CI, pinned

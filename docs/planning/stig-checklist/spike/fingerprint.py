@@ -27,7 +27,6 @@ import sys
 import xml.etree.ElementTree as ET
 
 X = '{http://checklists.nist.gov/xccdf/1.2}'
-X11 = '{http://checklists.nist.gov/xccdf/1.1}'
 HREF = 'https://www.cyber.mil/stigs/srg-stig-tools/'
 HREF_VULN = HREF.rstrip('/') + '#vulnerability_id'
 RULE = 'xccdf_org.ssgproject.content_rule_'
@@ -86,7 +85,9 @@ for rid in sorted(r for r in sel if r in rules):
 print('  selection', len(fp_lines), 'sha256', hashlib.sha256('\n'.join(fp_lines).encode()).hexdigest())
 full = []
 for f in sorted(glob.glob(a.pattern)):
-    ids = {r.get('id') for r in ET.parse(f).getroot().iter(X11 + 'Rule')}
+    droot = ET.parse(f).getroot()
+    dns = droot.tag[:droot.tag.index('}') + 1] if droot.tag.startswith('{') else ''  # 1.1 or 1.2, as the generator accepts
+    ids = {r.get('id') for r in droot.iter(dns + 'Rule')}
     print(f'  {os.path.basename(f):50s} DISA rules {len(ids):4d}  SSG SV ids found {len(svs & ids):4d}  revision/unknown {len(svs - ids):4d}  DISA rules with no SSG {len(ids - svs):3d}')
     if svs and svs <= ids:
         full.append(os.path.basename(f))
@@ -104,4 +105,5 @@ if problems:
     sys.exit(1)
 # The table entry records this release info verbatim (the checklist's releaseinfo).
 m = ET.parse(sorted(f for f in glob.glob(a.pattern) if os.path.basename(f) == full[0])[0]).getroot()
-print(f"MATCH: {full[0]} ({next((''.join(x.itertext()) for x in m.iter(X11 + 'plain-text') if x.get('id') == 'release-info'), '?')})")
+mns = m.tag[:m.tag.index('}') + 1] if m.tag.startswith('{') else ''
+print(f"MATCH: {full[0]} ({next((''.join(x.itertext()) for x in m.iter(mns + 'plain-text') if x.get('id') == 'release-info'), '?')})")
