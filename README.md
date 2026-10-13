@@ -10,7 +10,7 @@
 
 
 ## 📖 Overview
-This CircleCI orb uses the same process outlined by Chainguard in their [STIGs for Chainguard Containers](https://edu.chainguard.dev/chainguard/chainguard-images/features/image-stigs/) guide. I've extended it to work with other non-Wolfi operating systems such as UBI8, UBI9, Ubuntu, Debian, Fedora, and certain distroless images.
+This CircleCI orb uses the same process outlined by Chainguard in their [STIGs for Chainguard Containers](https://edu.chainguard.dev/chainguard/chainguard-images/features/image-stigs/) guide. I've extended it to work with other non-Wolfi operating systems such as UBI8, UBI9, UBI10, Ubuntu, Debian, Fedora, and certain distroless images.
 
 The orb includes optional failure gates, ignore lists to exclude findings from the failure gates, summarized outputs, and the ability to emit artifacts to use as ATO evidence or to attach to your container as in-toto attestations using Cosign.
 
@@ -64,7 +64,7 @@ Both scanner images are pinned by digest; see [Reproducibility and provenance](#
 
 `auto` recognizes RHEL, Rocky, Alma, Oracle Linux, Fedora, Debian 12, Ubuntu 22.04, Wolfi, and Chainguard via the target's `/etc/os-release`, with filesystem-shape fallbacks (`apk`, `rpm`, `dpkg` including the distroless `status.d/` layout) for images that lack one. For `scratch` images that ship neither `/etc/os-release` nor a package database, set `target_base` explicitly.
 
-Tested in CI against `ubi9/ubi`, `ubi9/ubi-minimal`, `ubi8/ubi`, `ubi8/ubi-minimal`, `gcr.io/distroless/cc-debian12`, `debian:12-slim`, `ubuntu:22.04`, `fedora`, and `cgr.dev/chainguard/static`.
+Tested in CI against `ubi10/ubi`, `ubi9/ubi`, `ubi9/ubi-minimal`, `ubi8/ubi`, `ubi8/ubi-minimal`, `gcr.io/distroless/cc-debian12`, `debian:12-slim`, `ubuntu:22.04`, `fedora`, and `cgr.dev/chainguard/static`.
 
 ### Debian 12 profiles
 
@@ -171,6 +171,8 @@ Measured with SSG content 0.1.82 (rule results; `evaluated` = pass + fail):
 
 | Image | Profile | pass | fail | notapplicable | evaluated |
 |---|---|---|---|---|---|
+| `ubi10/ubi` | DISA STIG | 63 | 6 | 404 | 69 |
+| `ubi10/ubi-minimal` | DISA STIG | 61 | 4 | 408 | 65 |
 | `ubi9/ubi` | DISA STIG | 62 | 8 | 406 | 70 |
 | `ubi9/ubi-minimal` | DISA STIG | 60 | 6 | 410 | 66 |
 | `ubi9/ubi-minimal` | CIS L1 Server | 64 | 5 | 226 | 69 |

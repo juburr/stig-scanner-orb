@@ -207,3 +207,5 @@ datastream sha256, target digest, scan time).
   into **eMASS**. STIG Manager's parser is the automated check; a human
   STIG Viewer import is an acceptance step in the first implementation PR.
 - RHEL 10 end-to-end scan (release match only; RHEL 8 was run end to end).
+  Since covered in CI by `smoke-rhel10-auto` (69 evaluated rules on
+  `ubi10/ubi`).

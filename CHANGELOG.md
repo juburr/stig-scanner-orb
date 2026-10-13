@@ -66,6 +66,13 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   layout as `debian12` (it previously failed to detect such images).
 - Smoke coverage for `ubi9/ubi-minimal`, `ubi8/ubi-minimal` (CIS L1), and
   `gcr.io/distroless/cc-debian12` in both image and `rootfs_path` mode.
+- Smoke coverage for RHEL 10 (`rhel10` has had none since 1.0.0).
+  `ubi10/ubi` runs through `target_base: auto` and the RPM path. It checks
+  that the pinned `ssg-rhel10-ds.xml` ships the DISA STIG for RHEL 10 as the
+  `rhel10` default profile, and that the compliance-operator scanner reads
+  RHEL 10's package database: 69 evaluated rules (63 pass, 6 fail), 0
+  `error`. The README's measured table adds `ubi10/ubi` and
+  `ubi10/ubi-minimal`.
 
 - **"Info for security teams" README section**: every host a scan contacts
   (measured, including registry blob CDNs: Chainguard's Cloudflare R2 host and

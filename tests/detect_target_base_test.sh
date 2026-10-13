@@ -58,8 +58,16 @@ r="$(mk etc/)"; printf 'ID=debian\nVERSION_ID="12"\n' > "${r}/etc/os-release"
 expect "debian os-release" "debian12 (from os-release)" "${r}"
 r="$(mk etc/)"; printf 'ID="rhel"\nVERSION_ID="9.4"\n' > "${r}/etc/os-release"
 expect "rhel os-release" "rhel9 (from os-release)" "${r}"
+# ubi10's layout: etc/os-release is a relative symlink into usr/lib.
+r="$(mk etc/ usr/lib/)"; printf 'ID="rhel"\nVERSION_ID="10.2"\n' > "${r}/usr/lib/os-release"
+ln -s ../usr/lib/os-release "${r}/etc/os-release"
+expect "rhel 10 os-release (ubi10 symlink layout)" "rhel10 (from os-release)" "${r}"
+r="$(mk etc/)"; printf 'ID="almalinux"\nVERSION_ID="10.0"\n' > "${r}/etc/os-release"
+expect "rhel 10 rebuild os-release" "rhel10 (from os-release)" "${r}"
 r="$(mk etc/ var/lib/dpkg/status)"; printf 'ID=ubuntu\nVERSION_ID="24.04"\n' > "${r}/etc/os-release"
 expect "unsupported os-release beats package-db" "ERROR" "${r}"
+r="$(mk etc/ var/lib/rpm/)"; printf 'ID="rhel"\nVERSION_ID="11.0"\n' > "${r}/etc/os-release"
+expect "unsupported rhel major beats package-db" "ERROR" "${r}"
 
 # No os-release: filesystem-shape fallbacks.
 expect "apk db" "wolfi (from package-db)" "$(mk lib/apk/db/)"
