@@ -15,7 +15,6 @@ import html
 import io
 import json
 import os
-import platform
 import re
 import signal
 import sys
@@ -29,6 +28,19 @@ HREF_VULN = "https://www.cyber.mil/stigs/srg-stig-tools#vulnerability_id"
 # A DISA Rule ID, whole: a prefix match would pair "SV-123garbage" with V-123
 # and write it as the row's Rule_ID.
 SV_RE = re.compile(r"SV-(\d+)r\d+_rule")
+# Caps on the untrusted XML read into memory (ElementTree holds several times
+# the file): real results.xml ~15-20 MB, DISA manual XCCDF ~1.4 MB.
+MAX_RESULTS_BYTES = 128 << 20
+MAX_DISA_BYTES = 16 << 20
+
+
+def read_capped(path, cap, what):
+    """Read at most cap bytes; a bigger file is refused, never parsed."""
+    with open(path, "rb") as f:
+        data = f.read(cap + 1)
+    if len(data) > cap:
+        raise ValueError(f"{what} is larger than {cap >> 20} MiB; refusing to parse it")
+    return data
 
 # ---------------------------------------------------------------- results
 
@@ -346,29 +358,30 @@ STIG_INVENTORY = {
 # STIG profiles and DISA release (version, the release file's canonical
 # release info), as fingerprint.py verified it. The profile label is never used: it says V2R7 for the pinned
 # Ubuntu content, whose Rule IDs are V2R8's. Each profile records OpenSCAP's
-# selection for it (count, sha256 of the sorted selected rule ids, as
-# fingerprint.py prints them): it depends only on the datastream and profile,
-# so a results.xml selecting anything else is incomplete or edited.
+# selection for it with each selected rule's DISA references
+# (selection_fingerprint(), as fingerprint.py prints it): it depends only on
+# the datastream and profile, so a results.xml with anything else is
+# incomplete or edited, and the verified release wouldn't hold for it.
 _P = "xccdf_org.ssgproject.content_profile_"
 RELEASE_TABLE = {
     "27fc84bb2ea29619a944d5a75b361961e1ac7a8dadd48f4165f00d106b0ef944":
         ("xccdf_org.ssgproject.content_benchmark_RHEL-9", "0.1.82", {
-            _P + "stig": (477, "9392f44a3205c7b707424d07a67d02d03939c58129105e0c1f6c8221a8f216cc"),
-            _P + "stig_gui": (473, "aa643ac6026919c1d49bbe301a4e594cc208f986c0c764cdce7d350b2cafe0b9")},
+            _P + "stig": (477, "652da520e8547896c036ba82e2585fd750970adfc0cb022bfeb92a96c964d9c4"),
+            _P + "stig_gui": (473, "aba132bb3ed0e4ffe329bb69c2345c157ea5519428bec7d8c301c744d750068a")},
         ("2", "Release: 9 Benchmark Date: 01 Jul 2026")),
     "b0c25f6ef5cdbb5cf72d88c8e17a300aa24e4536ca5d1037c92f67474435217a":
         ("xccdf_org.ssgproject.content_benchmark_RHEL-8", "0.1.82", {
-            _P + "stig": (393, "4f1d0729ae4b04b57922e87f73fe5389edc91d932138f4c537a3bc839c83ee50"),
-            _P + "stig_gui": (389, "9246ef094fb2c140bbac87157cb479e99c31d5ee0fc301318409aface63815ab")},
+            _P + "stig": (393, "691a53c539ed337d263d80d1627f25a3717643fd23fb709c55ee7fa4ba761799"),
+            _P + "stig_gui": (389, "416660b3d7ce7b44f95df04cc0bb373785cae96537b548464588df97b6b5c327")},
         ("2", "Release: 8 Benchmark Date: 01 Jul 2026")),
     "58b6e4cb1032a29b21aede508817dc83335e1a3e34304f3093538e8b64c3988d":
         ("xccdf_org.ssgproject.content_benchmark_RHEL-10", "0.1.82", {
-            _P + "stig": (473, "98d3c965d076190f5fec2e1e0c80b9247ed117c42600678ccdbad7aa1d9a4acd"),
-            _P + "stig_gui": (470, "6b8e990ff582867c261a9c20d8796e784d27a5eba3475e75388bac22a55062b2")},
+            _P + "stig": (473, "0affd61e27fe8b9ae73bcbc0923e2e61f40db158ba21f957d3440dbde9076a13"),
+            _P + "stig_gui": (470, "09cf674acec4476d057b22f4954b6407e34cb53ec0e2abf63987d7842e0302a1")},
         ("1", "Release: 2 Benchmark Date: 01 Jul 2026")),
     "5ee6c1d4dcf8ca1245e1f532771e9c56a615a415ac076092229209d680f90989":
         ("xccdf_org.ssgproject.content_benchmark_UBUNTU_22-04", "0.1.82", {
-            _P + "stig": (230, "74e56900e44245724f258614c48132bd7a152bbc8ed790bbf0a8801e1a320c5f")},
+            _P + "stig": (230, "7ea0d29d10d1ff3b661be39aa431ab77d44650bd2e686dc5fff43f85331c1564")},
         ("2", "Release: 8 Benchmark Date: 01 Apr 2026")),
 }
 
@@ -406,6 +419,20 @@ def arch_term_value(term, arch):
         return None
     hit = SSG_CPU[m.group(2)] == arch
     return not hit if m.group(1) else hit
+
+
+def selection_fingerprint(res):
+    """(count, sha256) of OpenSCAP's selection with each selected rule's DISA
+    references: one line per rule, "rule<TAB>SV refs<TAB>V-ID refs", sorted.
+    The rows and Rule IDs come from exactly these references, so the release
+    the table verified holds only for this mapping. fingerprint.py computes
+    the same from the XML."""
+    lines = []
+    for rid in sorted(rid for rid, r in res["results"].items() if r != "notselected"):
+        r = res["rules"][rid]
+        svs = sorted({v for revs in r["svs"].values() for v in revs} | set(r["bad_svs"]))
+        lines.append(f"{rid}\t{' '.join(svs)}\t{' '.join(sorted(set(r['vids'])))}")
+    return len(lines), hashlib.sha256("\n".join(lines).encode()).hexdigest()
 
 
 def target_ref(plan):
@@ -866,7 +893,7 @@ def main():
     ap.add_argument("--host-name", required=True)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--stem", default="checklist")
-    ap.add_argument("--runner-arch", default=platform.machine(), help="architecture OpenSCAP ran on (default: this host)")
+    ap.add_argument("--runner-arch", help="override for the architecture OpenSCAP ran on (default: the plan's scanner_platform)")
     ap.add_argument("--formats", default="ckl,cklb", help="comma-separated: ckl, cklb")
     a = ap.parse_args()
 
@@ -934,8 +961,7 @@ def main():
             raise OSError(f"can't remove previous checklist outputs: {', '.join(stuck)}")
         # Hash and parse the same bytes, so the recorded sha256 is what the
         # checklist was built from.
-        with open(a.results, "rb") as f:
-            results_bytes = f.read()
+        results_bytes = read_capped(a.results, MAX_RESULTS_BYTES, "results.xml")
         results_sha = hashlib.sha256(results_bytes).hexdigest()
 
         # Only known tokens; an empty or unknown selection is a config error, not
@@ -983,8 +1009,7 @@ def main():
                          "(scanner_repo_digests/scanner_image_id, image_repo_digests/image_id/rootfs_path)"}, 1)
         disa = None
         if a.disa:
-            with open(a.disa, "rb") as f:
-                disa_bytes = f.read()
+            disa_bytes = read_capped(a.disa, MAX_DISA_BYTES, "the DISA file")
             disa = parse_disa(io.BytesIO(disa_bytes))
             disa["sha256"] = hashlib.sha256(disa_bytes).hexdigest()
         if disa:
@@ -1055,10 +1080,11 @@ def main():
             # Known datastream and profile, so OpenSCAP's selection is known:
             # a results.xml selecting anything else is incomplete or edited,
             # whatever names the release.
-            sel = sorted(rid for rid, r in res["results"].items() if r != "notselected")
-            if (len(sel), hashlib.sha256("\n".join(sel).encode()).hexdigest()) != ent[2][res["profile_id"]]:
-                return emit({"outcome": "failed", "reason": f"results.xml selects {len(sel)} rules, but this datastream's "
-                             f"{res['profile_id']} selects {ent[2][res['profile_id']][0]} (a different set): incomplete or edited file"}, 1)
+            sel, fp = selection_fingerprint(res)
+            if (sel, fp) != ent[2][res["profile_id"]]:
+                return emit({"outcome": "failed", "reason": f"results.xml selects {sel} rules, but this datastream's "
+                             f"{res['profile_id']} selects {ent[2][res['profile_id']][0]}, or their DISA references differ "
+                             f"from what the release table verified: incomplete or edited file"}, 1)
         release = None
         if not disa:
             # Same rule for the release: only the table names it without a
@@ -1070,7 +1096,13 @@ def main():
                              f"{plan.get('datastream_sha256') or 'not recorded'}) isn't in the verified release table; "
                              f"supply the DISA STIG file to name it"}, 0)
             release = ent[3]
-        stig, vulns = build_model(res, disa, plan, a.runner_arch, release)
+        # The architecture OpenSCAP's arch platforms saw is the scanner
+        # image's that ran on the daemon (natively, or emulated: uname then
+        # reports the image's), never this host's: a remote daemon or a later
+        # conversion elsewhere differs. Unknown leaves arch rows unreviewed.
+        sp = plan.get("scanner_platform", "")
+        runner_arch = a.runner_arch or (sp.split("/")[1] if sp.count("/") >= 1 else None)
+        stig, vulns = build_model(res, disa, plan, runner_arch, release)
         if stig.get("ambiguous_vids"):
             # Same rule as the STIG id and release: never write an arbitrary
             # Rule ID under the claimed release. A skeleton supplies them (D7).

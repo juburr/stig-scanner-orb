@@ -70,9 +70,17 @@ allowed = {r.strip() for r in a.allow_unmapped.split(',') if r.strip()}
 label = re.search(r'V\d+R\d+', ''.join(prof.find(X + 'title').itertext()) + ' ' + ''.join(prof.find(X + 'description').itertext()))
 print(os.path.basename(a.results), pid.split('_profile_')[-1], 'profile label', label.group(0) if label else '?',
       'selected rules', len(sel), 'SV ids', len(svs), 'unmapped', unmapped)
-# What the release table records for this profile (the generator rejects a
-# results.xml whose selection differs).
-print('  selection', len(sel), 'sha256', hashlib.sha256('\n'.join(sorted(sel)).encode()).hexdigest())
+# What the release table records for this profile: the selection with each
+# selected rule's DISA references, one "rule<TAB>SV refs<TAB>V-ID refs" line
+# per rule (the generator's selection_fingerprint()); it rejects a results.xml
+# with anything else.
+fp_lines = []
+for rid in sorted(r for r in sel if r in rules):
+    refs = rules[rid].findall(X + 'reference')
+    sv_refs = sorted({(x.text or '').strip() for x in refs if x.get('href') == HREF})
+    v_refs = sorted({(x.text or '').strip() for x in refs if x.get('href') == HREF_VULN})
+    fp_lines.append(f"{rid}\t{' '.join(sv_refs)}\t{' '.join(v_refs)}")
+print('  selection', len(fp_lines), 'sha256', hashlib.sha256('\n'.join(fp_lines).encode()).hexdigest())
 full = []
 for f in sorted(glob.glob(a.pattern)):
     ids = {r.get('id') for r in ET.parse(f).getroot().iter(X11 + 'Rule')}
