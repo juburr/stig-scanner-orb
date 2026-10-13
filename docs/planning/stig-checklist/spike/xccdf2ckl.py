@@ -34,6 +34,19 @@ MAX_RESULTS_BYTES = 128 << 20
 MAX_DISA_BYTES = 16 << 20
 
 
+def open_fresh(path):
+    """Open path for writing as a new file: drop whatever is there first (a
+    stale or planted symlink only loses the link) and create it exclusively,
+    never following a link, so a leftover in a reused output_dir can't
+    redirect the write elsewhere."""
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644)
+    return os.fdopen(fd, "w", encoding="utf-8")
+
+
 def read_capped(path, cap, what):
     """Read at most cap bytes; a bigger file is refused, never parsed."""
     with open(path, "rb") as f:
@@ -376,30 +389,30 @@ STIG_INVENTORY = {
 # STIG profiles and DISA release (version, the release file's canonical
 # release info), as fingerprint.py verified it. The profile label is never used: it says V2R7 for the pinned
 # Ubuntu content, whose Rule IDs are V2R8's. Each profile records OpenSCAP's
-# selection for it with each selected rule's DISA references
-# (selection_fingerprint(), as fingerprint.py prints it): it depends only on
-# the datastream and profile, so a results.xml with anything else is
-# incomplete or edited, and the verified release wouldn't hold for it.
+# selection for it with every Rule's DISA references (selection_fingerprint(),
+# as fingerprint.py prints it): it depends only on the datastream and
+# profile, so a results.xml with anything else is incomplete or edited, and
+# the verified release wouldn't hold for it.
 _P = "xccdf_org.ssgproject.content_profile_"
 RELEASE_TABLE = {
     "27fc84bb2ea29619a944d5a75b361961e1ac7a8dadd48f4165f00d106b0ef944":
         ("xccdf_org.ssgproject.content_benchmark_RHEL-9", "0.1.82", {
-            _P + "stig": (477, "652da520e8547896c036ba82e2585fd750970adfc0cb022bfeb92a96c964d9c4"),
-            _P + "stig_gui": (473, "aba132bb3ed0e4ffe329bb69c2345c157ea5519428bec7d8c301c744d750068a")},
+            _P + "stig": (477, "ab340c9d784fcd1cf70833256729658e2dbb63bc0b43bf3900788527e3bd0476"),
+            _P + "stig_gui": (473, "fa7d1f76d13a890b70d56bf7ad087dfc8f42ecb77e0e4f95e20def174a2be001")},
         ("2", "Release: 9 Benchmark Date: 01 Jul 2026")),
     "b0c25f6ef5cdbb5cf72d88c8e17a300aa24e4536ca5d1037c92f67474435217a":
         ("xccdf_org.ssgproject.content_benchmark_RHEL-8", "0.1.82", {
-            _P + "stig": (393, "691a53c539ed337d263d80d1627f25a3717643fd23fb709c55ee7fa4ba761799"),
-            _P + "stig_gui": (389, "416660b3d7ce7b44f95df04cc0bb373785cae96537b548464588df97b6b5c327")},
+            _P + "stig": (393, "f0d35edf3a0e08a2fe6d597a1210c187f852da8bf8d65fe4f90f9f10a9dc4015"),
+            _P + "stig_gui": (389, "4d91163c3a88ab70e05ccf928ad67972cf79b4301eea4f9a03de60f9fc742b4d")},
         ("2", "Release: 8 Benchmark Date: 01 Jul 2026")),
     "58b6e4cb1032a29b21aede508817dc83335e1a3e34304f3093538e8b64c3988d":
         ("xccdf_org.ssgproject.content_benchmark_RHEL-10", "0.1.82", {
-            _P + "stig": (473, "0affd61e27fe8b9ae73bcbc0923e2e61f40db158ba21f957d3440dbde9076a13"),
-            _P + "stig_gui": (470, "09cf674acec4476d057b22f4954b6407e34cb53ec0e2abf63987d7842e0302a1")},
+            _P + "stig": (473, "27d0e02530f6b2b6f9891edda642582c3e1905215dad2cb9b507b1fe41b96979"),
+            _P + "stig_gui": (470, "2ccaf4a401b15a07d1c7e8427d1ac4864160d462649f2f23e52df4d5932ead2e")},
         ("1", "Release: 2 Benchmark Date: 01 Jul 2026")),
     "5ee6c1d4dcf8ca1245e1f532771e9c56a615a415ac076092229209d680f90989":
         ("xccdf_org.ssgproject.content_benchmark_UBUNTU_22-04", "0.1.82", {
-            _P + "stig": (230, "7ea0d29d10d1ff3b661be39aa431ab77d44650bd2e686dc5fff43f85331c1564")},
+            _P + "stig": (230, "0056fded4ac8ca00f90907285150142852c3bed8676036a4d21589286914fdfb")},
         ("2", "Release: 8 Benchmark Date: 01 Apr 2026")),
 }
 
@@ -440,17 +453,20 @@ def arch_term_value(term, arch):
 
 
 def selection_fingerprint(res):
-    """(count, sha256) of OpenSCAP's selection with each selected rule's DISA
-    references: one line per rule, "rule<TAB>SV refs<TAB>V-ID refs", sorted.
-    The rows and Rule IDs come from exactly these references, so the release
-    the table verified holds only for this mapping. fingerprint.py computes
-    the same from the XML."""
-    lines = []
-    for rid in sorted(rid for rid, r in res["results"].items() if r != "notselected"):
+    """(selected count, sha256) over every Rule's selection and DISA
+    references: one line per Rule, "rule<TAB>S|N<TAB>SV refs<TAB>V-ID refs",
+    sorted. Rows and Rule IDs come from the selected rules' references, and
+    the "deselected" wording from the notselected ones', so the release the
+    table verified holds only for this exact mapping. fingerprint.py
+    computes the same from the XML."""
+    lines, selected = [], 0
+    for rid in sorted(res["rules"]):
         r = res["rules"][rid]
+        sel = res["results"].get(rid, "notselected") != "notselected"
+        selected += sel
         svs = sorted({v for revs in r["svs"].values() for v in revs} | set(r["bad_svs"]))
-        lines.append(f"{rid}\t{' '.join(svs)}\t{' '.join(sorted(set(r['vids'])))}")
-    return len(lines), hashlib.sha256("\n".join(lines).encode()).hexdigest()
+        lines.append(f"{rid}\t{'S' if sel else 'N'}\t{' '.join(svs)}\t{' '.join(sorted(set(r['vids'])))}")
+    return selected, hashlib.sha256("\n".join(lines).encode()).hexdigest()
 
 
 def target_ref(plan):
@@ -853,7 +869,7 @@ def write_ckl(path, asset, stig, vulns):
         ET.SubElement(ve, "SEVERITY_OVERRIDE").text = ""
         ET.SubElement(ve, "SEVERITY_JUSTIFICATION").text = ""
     ET.indent(ck, "\t")
-    with open(path, "w", encoding="utf-8") as f:
+    with open_fresh(path) as f:
         # Neutral tool provenance (D9): this file isn't STIG Viewer's output.
         # Neither STIG Viewer 3's import nor STIG Manager's parser reads it.
         f.write('<?xml version="1.0" encoding="UTF-8"?>\n<!--stig-scanner-orb :: checklist spike-->\n')
@@ -903,7 +919,7 @@ def write_cklb(path, asset, stig, vulns, now):
         },
         "cklb_version": "1.0",
     }
-    with open(path, "w", encoding="utf-8") as f:
+    with open_fresh(path) as f:
         json.dump(doc, f, indent=2)
         f.write("\n")
 
@@ -960,7 +976,7 @@ def main():
 
     def write_meta(meta):
         """Replace the meta atomically (staged, then renamed)."""
-        with open(meta_path + ".partial", "w", encoding="utf-8") as f:
+        with open_fresh(meta_path + ".partial") as f:
             json.dump(meta, f, indent=1, default=list)
         os.replace(meta_path + ".partial", meta_path)
 
@@ -1033,6 +1049,12 @@ def main():
                 not (plan.get("image_repo_digests") or plan.get("image_id") or plan.get("rootfs_path")):
             return emit({"outcome": "failed", "reason": "the scan plan doesn't identify the scanner and the target "
                          "(scanner_repo_digests/scanner_image_id, image_repo_digests/image_id/rootfs_path)"}, 1)
+        # And it must be this results.xml's scan: scan.sh records the profile
+        # it evaluated, so another profile's results can't borrow its
+        # scanner and target provenance.
+        if plan.get("profile") != res["profile_id"]:
+            return emit({"outcome": "failed", "reason": f"the scan plan's profile {plan.get('profile') or '(none)'} isn't "
+                         f"results.xml's {res['profile_id']}: results and plan come from different scans"}, 1)
         disa = None
         if a.disa:
             disa_bytes = read_capped(a.disa, MAX_DISA_BYTES, "the DISA file")
@@ -1058,6 +1080,12 @@ def main():
                 if bad or dups:
                     why = [f"malformed {label}: {', '.join(bad[:5])}"] * bool(bad) + [f"repeated {label}: {', '.join(dups[:5])}"] * bool(dups)
                     return emit({"outcome": "failed", "reason": f"the DISA file has {'; '.join(why)}"}, 1)
+            # A DISA severity is the row's CAT level: every DISA Rule has
+            # high/medium/low, so a missing or other value is an edited file.
+            bad_sev = sorted({f"{g['vid']}={g['severity']!r}" for g in disa["groups"] if g["severity"] not in ("high", "medium", "low")})
+            if bad_sev:
+                return emit({"outcome": "failed", "reason": f"the DISA file has {len(bad_sev)} Rule(s) without a "
+                             f"high/medium/low severity, e.g. {', '.join(bad_sev[:5])}"}, 1)
             # And each Group's Rule must be its own: V-n carries SV-n…_rule
             # (every DISA file), or the row joins one requirement to another's
             # Rule ID.
@@ -1138,6 +1166,13 @@ def main():
         sp = plan.get("scanner_platform", "")
         runner_arch = a.runner_arch or (sp.split("/")[1] if sp.count("/") >= 1 else None)
         stig, vulns = build_model(res, disa, plan, runner_arch, release)
+        # Severity is published as is: it must be a CKLB severity (the
+        # schema's enum; SSG itself marks a few rules "unknown", which SSG-only
+        # rows carry), never a blank, null or made-up value.
+        bad_sev = sorted({f"{v['vid']}={v['severity']!r}" for v in vulns if v["severity"] not in ("unknown", "low", "medium", "high")})
+        if bad_sev:
+            return emit({"outcome": "failed", "reason": f"{len(bad_sev)} row(s) have no valid severity, "
+                         f"e.g. {', '.join(bad_sev[:5])}"}, 1)
         if stig.get("ambiguous_vids"):
             # Same rule as the STIG id and release: never write an arbitrary
             # Rule ID under the claimed release. A skeleton supplies them (D7).
@@ -1194,7 +1229,7 @@ def main():
                     "vulns": len(vulns), "status": counts, "na_by_reason": na, "not_reviewed_by_reason": nr,
                     "ssg_vids_not_in_disa": stig["unmatched_ssg_vids"], "unpaired_refs": stig["unpaired_refs"],
                     "results_sha256": results_sha}
-            with open(meta_path + ".partial", "w", encoding="utf-8") as f:
+            with open_fresh(meta_path + ".partial") as f:
                 json.dump(meta, f, indent=1, default=list)
             for ext in formats:
                 os.replace(staged[ext], final[ext])
