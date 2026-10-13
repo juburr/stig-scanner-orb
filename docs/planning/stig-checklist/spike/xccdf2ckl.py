@@ -96,12 +96,19 @@ def parse_results(source):
     parent = {c: p for p in bench.iter() for c in p}
 
     def chain_platforms(el):
-        """Platform idrefs per level, rule first, then ancestor groups."""
+        """Platform idrefs per level: the rule, its ancestor groups, then the
+        Benchmark. Every level must hold: OpenSCAP checks an item's platforms
+        only once its parent is applicable, up to the Benchmark
+        (xccdf_policy_model_item_is_applicable), and XCCDF's processing model
+        stops at a non-applicable Group, so a rule's own platforms never
+        override an ancestor's."""
         levels = []
-        while el is not None and el is not bench:
+        while el is not None:
             ps = [p.get("idref") for p in el.findall(X12 + "platform")]
             if ps:
                 levels.append(ps)
+            if el is bench:
+                break
             el = parent.get(el)
         return levels
 
@@ -171,6 +178,7 @@ def parse_results(source):
         "benchmark_version": bench.findtext(X12 + "version"),
         "profile_id": profile_id,
         "profile_title": text_of(profile.find(X12 + "title")),
+        "bench_platforms": [p.get("idref") for p in bench.findall(X12 + "platform")],
         "true_platforms": true_platforms,
         "rules": rules,
         "results": results,
@@ -187,9 +195,10 @@ def unmet_gates(rule, true_platforms):
     """Platforms at the outermost level where none evaluated true.
 
     XCCDF: an item is applicable if any of its platforms match, and only if
-    every ancestor group is applicable too. OpenSCAP evaluates top-down and
-    lists in TestResult only the platforms it evaluated true, so a gate below
-    a failed group gate was never evaluated: walk outermost group -> rule.
+    every ancestor group (and the Benchmark) is applicable too. OpenSCAP
+    evaluates top-down and lists in TestResult only the platforms it
+    evaluated true, so a gate below a failed outer gate was never evaluated:
+    walk Benchmark -> outermost group -> rule.
     """
     for level in reversed(rule["platform_levels"]):
         if not any(p in true_platforms for p in level):
@@ -763,11 +772,19 @@ def build_model(res, disa, plan, runner_arch=None, release=None):
                 # The content checks it, but the profile didn't select the
                 # check: say so, not "no automated check".
                 names = ", ".join(sorted(x.replace("xccdf_org.ssgproject.content_rule_", "") for x in deselected[g["vid"]]))
+                # Same revision rule as evaluated rows: a check citing another
+                # Rule ID revision isn't a check of this release's text.
+                revs = sorted({sv for x in deselected[g["vid"]] for sv in res["rules"][x]["svs"].get(g["vid"][2:], ())})
+                other = [sv for sv in revs if sv != g["rule_id"]]
+                # The reason stays "deselected" (nothing was evaluated, so no
+                # verdict is withheld); revision_mismatch counts withheld ones.
                 status, nr_reason = "Not_Reviewed", "deselected"
-                detail = (f"The scanner content checks this requirement with {names}, but OpenSCAP did not select it "
+                what = (f"a different revision of this requirement ({', '.join(revs)}; this checklist's STIG release "
+                        f"has {g['rule_id']})") if other else "this requirement"
+                detail = (f"The scanner content checks {what} with {names}, but OpenSCAP did not select it "
                           f"for the evaluated profile (notselected: a profile conflict, a selection default or "
                           f"tailoring), so nothing was evaluated.\n\n" + prov_txt)
-                comment = ("Not reviewed: the scanner content has an automated check for this requirement, but the "
+                comment = (f"Not reviewed: the scanner content has an automated check for {what}, but the "
                            "evaluated profile did not select it; manual review required.")
             else:
                 # Still name the scan and the skeleton file this row came from.
@@ -948,28 +965,41 @@ def write_cklb(path, asset, stig, vulns, now):
 
 
 def guard(argv):
-    """--guard --out-dir DIR [--stem S] [--results results.xml]: run as a
+    """--guard --out-dir DIR --results results.xml [--stem S]: run as a
     `when: always` step right before store_artifacts (D8). A SIGKILL between
     the format renames and the meta rename (or any kill of the checklist
     step, after which no later step but `when: always` ones runs) can leave
     checklist files beside a meta that doesn't vouch for them. Keep them only
     when the meta says generated, every format it lists is present with its
-    sha256, and it was built from this results.xml; otherwise delete them."""
+    sha256, and it was built from this results.xml; otherwise (a missing or
+    unreadable results.xml or meta included) delete them."""
     ap = argparse.ArgumentParser(prog="xccdf2ckl.py --guard")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--stem", default="checklist")
-    ap.add_argument("--results")
+    # Required: without it a previous run's valid pair would pass even when
+    # this scan never produced a results.xml.
+    ap.add_argument("--results", required=True)
     a = ap.parse_args(argv)
-    sha = lambda p: hashlib.sha256(open(p, "rb").read()).hexdigest()
+
+    def sha(p):
+        try:
+            with open(p, "rb") as f:
+                return hashlib.sha256(f.read()).hexdigest()
+        except OSError:
+            return None  # unreadable never matches a recorded hash
+
     files = {ext: f"{a.out_dir}/{a.stem}.{ext}" for ext in ("ckl", "cklb")}
     try:
         meta = json.load(open(f"{a.out_dir}/{a.stem}-meta.json", encoding="utf-8"))
     except (OSError, ValueError):
         meta = {}
-    listed = (meta.get("formats") or {}) if meta.get("outcome") == "generated" else {}
+    meta = meta if isinstance(meta, dict) else {}
+    listed = meta.get("formats") if meta.get("outcome") == "generated" else {}
+    listed = listed if isinstance(listed, dict) else {}
+    results_sha = sha(a.results)
     ok = bool(listed) and set(listed) <= set(files) \
         and all(os.path.isfile(files[e]) and not os.path.islink(files[e]) and sha(files[e]) == h for e, h in listed.items()) \
-        and (not a.results or meta.get("results_sha256") == sha(a.results))
+        and results_sha is not None and meta.get("results_sha256") == results_sha
     removed = []
     for ext, path in files.items():
         if (not ok or ext not in listed) and os.path.lexists(path):
@@ -1157,12 +1187,15 @@ def main():
             # And each Group's Rule must be its own: V-n carries SV-n…_rule
             # (every DISA file), or the row joins one requirement to another's
             # Rule ID.
-            # Every DISA Rule has a check procedure and fix text: manual-only
-            # rows are reviewed from them, so a blank one is an edited file.
-            blank = sorted(g["vid"] for g in disa["groups"] if not g["check_content"].strip() or not g["fix_text"].strip())
+            # Every DISA Rule has a title, discussion, check procedure and fix
+            # text: manual-only rows are reviewed from them (the requirement
+            # statement comes only from the skeleton), so a blank one is an
+            # edited file.
+            blank = sorted(g["vid"] for g in disa["groups"]
+                           if not all(g[k].strip() for k in ("rule_title", "discussion", "check_content", "fix_text")))
             if blank:
-                return emit({"outcome": "failed", "reason": f"the DISA file has {len(blank)} Rule(s) without check content "
-                             f"or fix text, e.g. {', '.join(blank[:5])}"}, 1)
+                return emit({"outcome": "failed", "reason": f"the DISA file has {len(blank)} Rule(s) without a title, "
+                             f"discussion, check content or fix text, e.g. {', '.join(blank[:5])}"}, 1)
             crossed = [f"{g['vid']} {g['rule_id']}" for g in disa["groups"] if SV_RE.fullmatch(g["rule_id"]).group(1) != g["vid"][2:]]
             if crossed:
                 return emit({"outcome": "failed", "reason": f"the DISA file pairs V-IDs with other numbers' Rule IDs: "
@@ -1242,6 +1275,21 @@ def main():
                              f"{plan.get('datastream_sha256') or 'not recorded'}) isn't in the verified release table; "
                              f"supply the DISA STIG file to name it"}, 0)
             release = ent[3]
+        # OpenSCAP evaluates a rule only after one of the Benchmark's own
+        # platforms holds, and lists every platform that held in TestResult.
+        # None listed: it assessed nothing against this target, and every row
+        # would blame inner gates it never evaluated ("gdm is not installed").
+        bench_ps = res["bench_platforms"]
+        if bench_ps and not set(bench_ps) & res["true_platforms"]:
+            named = ", ".join(bench_ps[:3]) + (f" and {len(bench_ps) - 3} more" if len(bench_ps) > 3 else "")
+            evaluated = [r for r, v in res["results"].items() if v in ("pass", "fail", "error", "unknown", "informational", "fixed")]
+            if evaluated:
+                return emit({"outcome": "failed", "reason": f"results.xml has {len(evaluated)} evaluated rule(s) but lists none "
+                             f"of the Benchmark's platforms ({named}) as true; OpenSCAP evaluates a rule only after one "
+                             f"holds: edited or incomplete file"}, 1)
+            return emit({"outcome": "skipped", "reason": f"OpenSCAP found none of the Benchmark's platforms ({named}) true "
+                         f"for the target, so it assessed no rule: wrong target_base, or a scanner that can't "
+                         f"recognize this OS"}, 0)
         # The architecture OpenSCAP's arch platforms saw is the scanner
         # image's that ran on the daemon (natively, or emulated: uname then
         # reports the image's), never this host's: a remote daemon or a later
