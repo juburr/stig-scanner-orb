@@ -124,14 +124,21 @@ def parse_results(source):
             # never let XML order pick one of several).
             "svs": dict(svs),
             "bad_svs": [v for v in sv_refs if not SV_RE.fullmatch(v)],
-            "vids": [v for h, v in refs if h == HREF_VULN],
+            # Unique, in order: a repeated reference must not count the rule
+            # twice toward its row.
+            "vids": list(dict.fromkeys(v for h, v in refs if h == HREF_VULN)),
             "stig_ids": [v for h, v in refs if "unix-linux" in h],
             "srg": ref(lambda h, v: v.startswith("SRG-")),
             "cce": next((text_of(i) for i in r.findall(X12 + "ident") if "cce" in (i.get("system") or "")), None),
             "platform_levels": chain_platforms(r),
         }
 
-    tr = next(root.iter(X12 + "TestResult"))
+    # oscap writes exactly one TestResult; with several, XML order would
+    # pick which evaluation the checklist reports.
+    trs = list(root.iter(X12 + "TestResult"))
+    if len(trs) != 1:
+        raise ValueError(f"results.xml has {len(trs)} TestResult elements; expected exactly one")
+    tr = trs[0]
     true_platforms = {p.get("idref") for p in tr.findall(X12 + "platform")}
     # XCCDF allows several rule-results per rule (multi-check, multiple
     # instances): keep them all and combine, never let the last one win.
@@ -1055,6 +1062,13 @@ def main():
         if plan.get("profile") != res["profile_id"]:
             return emit({"outcome": "failed", "reason": f"the scan plan's profile {plan.get('profile') or '(none)'} isn't "
                          f"results.xml's {res['profile_id']}: results and plan come from different scans"}, 1)
+        # The exact file: scan.sh records the sha256 of the results.xml it
+        # published (PR 1), so another scan of the same profile and
+        # datastream can't borrow this plan's scanner and target.
+        if plan.get("results_sha256") != results_sha:
+            return emit({"outcome": "failed", "reason": f"the scan plan records results.xml sha256 "
+                         f"{plan.get('results_sha256') or '(none)'}, but the file read is {results_sha}: results and plan "
+                         f"come from different scans"}, 1)
         disa = None
         if a.disa:
             disa_bytes = read_capped(a.disa, MAX_DISA_BYTES, "the DISA file")

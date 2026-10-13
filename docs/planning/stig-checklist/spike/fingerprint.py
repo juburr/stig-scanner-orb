@@ -39,9 +39,10 @@ ap.add_argument('--allow-unmapped', default='', help='comma-separated short rule
 a = ap.parse_args()
 
 root = ET.parse(a.results).getroot()
-tr = next(root.iter(X + 'TestResult'), None)
-if tr is None:
-    sys.exit(f'{a.results}: no TestResult; pass a results.xml from a scan of the STIG profile')
+trs = list(root.iter(X + 'TestResult'))
+if len(trs) != 1:
+    sys.exit(f'{a.results}: {len(trs)} TestResult elements; pass the results.xml of one scan of the STIG profile')
+tr = trs[0]
 bench = next(root.iter(X + 'Benchmark'))
 pid = tr.find(X + 'profile').get('idref')
 prof = next(p for p in bench.iter(X + 'Profile') if p.get('id') == pid)
