@@ -137,8 +137,10 @@ datastream sha256, target digest, scan time).
 
    The release a checklist claims must come from this SV-id match, recorded
    per pinned datastream (plan D4 keys it on the datastream's sha256) and
-   refreshed with each pin bump, not from the profile title. Today every
-   pinned product is one DISA quarter behind.
+   refreshed with each pin bump, not from the profile title. Content
+   outside that table gets no release from the label either; without a
+   DISA file it gets no checklist. Today every pinned product is one DISA
+   quarter behind.
 
 6. **Most revision bumps don't change the check.** Of 206 RHEL 9 V2R9→V2R10
    rule-revision bumps, 153 changed none of the title, discussion,

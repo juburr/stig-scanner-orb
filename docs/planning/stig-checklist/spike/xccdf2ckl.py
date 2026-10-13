@@ -112,14 +112,11 @@ def parse_results(source):
     results = {rid: combine_instances(rs) for rid, rs in instances.items()}
     profile_id = tr.find(X12 + "profile").get("idref")
     profile = next(p for p in bench.iter(X12 + "Profile") if p.get("id") == profile_id)
-    pdesc = text_of(profile.find(X12 + "description"))
-    m = re.search(r"DISA STIG for (.+?) V(\d+)R(\d+)", pdesc) or re.search(r"\(STIG\) V(\d+)R(\d+)", text_of(profile.find(X12 + "title")))
     return {
         "benchmark_id": bench.get("id"),
         "benchmark_version": bench.findtext(X12 + "version"),
         "profile_id": profile_id,
         "profile_title": text_of(profile.find(X12 + "title")),
-        "disa_version": m.groups()[-2:] if m else None,
         "true_platforms": true_platforms,
         "rules": rules,
         "results": results,
@@ -271,14 +268,17 @@ def parse_disa(source):
         "benchmark_id": root.get("id"),
         "title": text_of(root.find(ns + "title")),
         "description": text_of(root.find(ns + "description")),
-        "version": root.findtext(ns + "version"),
+        "version": (root.findtext(ns + "version") or "").strip(),
         "releaseinfo": next((text_of(p) for p in root.findall(ns + "plain-text") if p.get("id") == "release-info"), ""),
         "groups": [],
     }
     for g in root.iter(ns + "Group"):
-        r = g.find(ns + "Rule")
-        if r is None:
-            continue
+        # One Rule per Group in every DISA file: an extra Rule would be
+        # dropped silently while the group/profile inventory still matched.
+        rs = g.findall(ns + "Rule")
+        if len(rs) != 1:
+            raise ValueError(f"DISA group {g.get('id')} has {len(rs)} Rule elements, expected exactly one")
+        r = rs[0]
         desc_raw = r.findtext(ns + "description") or ""
         tags = dict(re.findall(r"<(\w+)>(.*?)</\1>", html.unescape(desc_raw), re.S))
         chk = r.find(ns + "check")
@@ -341,6 +341,23 @@ STIG_INVENTORY = {
 
 # scan-plan.env target_base -> DISA benchmark id, for checking a user's DISA file
 # when the results' benchmark isn't one of the SSG_STIG_IDS above.
+# D4 release table: the sha256 of the datastream the scan evaluated
+# (scan-plan.env datastream_sha256) -> its benchmark id and version, accepted
+# STIG profiles and DISA release (version, release), as fingerprint.py
+# verified it. The profile label is never used: it says V2R7 for the pinned
+# Ubuntu content, whose Rule IDs are V2R8's.
+_P = "xccdf_org.ssgproject.content_profile_"
+RELEASE_TABLE = {
+    "27fc84bb2ea29619a944d5a75b361961e1ac7a8dadd48f4165f00d106b0ef944":
+        ("xccdf_org.ssgproject.content_benchmark_RHEL-9", "0.1.82", (_P + "stig", _P + "stig_gui"), ("2", "9")),
+    "b0c25f6ef5cdbb5cf72d88c8e17a300aa24e4536ca5d1037c92f67474435217a":
+        ("xccdf_org.ssgproject.content_benchmark_RHEL-8", "0.1.82", (_P + "stig", _P + "stig_gui"), ("2", "8")),
+    "58b6e4cb1032a29b21aede508817dc83335e1a3e34304f3093538e8b64c3988d":
+        ("xccdf_org.ssgproject.content_benchmark_RHEL-10", "0.1.82", (_P + "stig", _P + "stig_gui"), ("1", "2")),
+    "5ee6c1d4dcf8ca1245e1f532771e9c56a615a415ac076092229209d680f90989":
+        ("xccdf_org.ssgproject.content_benchmark_UBUNTU_22-04", "0.1.82", (_P + "stig",), ("2", "8")),
+}
+
 TARGET_STIG = {"rhel8": "RHEL_8_STIG", "rhel9": "RHEL_9_STIG", "rhel10": "RHEL_10_STIG", "ubuntu2204": "CAN_Ubuntu_22-04_LTS_STIG"}
 
 
@@ -387,7 +404,7 @@ def target_ref(plan):
     return plan.get("image") or plan.get("rootfs_path") or ""
 
 
-def build_model(res, disa, plan, runner_arch=None):
+def build_model(res, disa, plan, runner_arch=None, release=None):
     # OpenSCAP's architecture platforms read the scanning host's /proc, not
     # the target. Image mode records the target platform (os/arch[/variant]);
     # rootfs_path doesn't. Compare architectures only, keep the full platform
@@ -637,7 +654,9 @@ def build_model(res, disa, plan, runner_arch=None):
                     comment = (f"Not reviewed: this checklist's STIG release has {g['rule_id']}, and the automated result "
                                f"comes from content aligned to a different revision of this requirement. Re-verify.")
             else:
-                status, detail, comment = "Not_Reviewed", "", "No automated check for this requirement in the scanner content; manual review required."
+                # Still name the scan and the skeleton file this row came from.
+                status, detail = "Not_Reviewed", "No scanner rule maps to this requirement.\n\n" + prov_txt
+                comment = "No automated check for this requirement in the scanner content; manual review required."
             vulns.append({**g, "status": status, "finding_details": detail, "comments": comment, "na_category": na_category})
         stig["unmatched_ssg_vids"] = sorted(set(by_vid) - seen)
         stig["mapped_vids"] = len(set(by_vid) & seen)
@@ -645,9 +664,10 @@ def build_model(res, disa, plan, runner_arch=None):
     else:
         key = res["benchmark_id"].replace("xccdf_org.ssgproject.content_benchmark_", "")
         bid, title = SSG_STIG_IDS[key]  # main() skips unknown benchmarks
-        ver, rel = res["disa_version"]  # main() skips content without a parseable release
+        ver, rel = release  # main() skips content the release table doesn't verify
         stig = {"benchmark_id": bid, "title": title, "description": res["profile_title"], "version": ver,
-                "releaseinfo": f"Release: {rel} Benchmark Date: unknown (derived from {res['benchmark_id']} {res['benchmark_version']})",
+                "releaseinfo": f"Release: {rel} Benchmark Date: unknown (release table: {res['benchmark_id']} "
+                               f"{res['benchmark_version']}, datastream sha256 {plan.get('datastream_sha256')})",
                 "filename": f"{res['benchmark_id']}-{res['profile_id']}.xml", "unmatched_ssg_vids": [],
                 "mapped_vids": len(by_vid), "unpaired_refs": sorted(unpaired), "ambiguous_vids": []}
         for vid in sorted(by_vid, key=lambda v: int(v[2:])):
@@ -950,7 +970,12 @@ def main():
                 return emit({"outcome": "failed", "reason": "the DISA file's profiles don't select exactly its V-IDs: "
                              "groups were removed or added (truncated or edited file)"}, 1)
             rel_m = re.search(r"Release: *(\d+)", disa["releaseinfo"])
-            inv = STIG_INVENTORY.get((disa["benchmark_id"], disa["version"], rel_m.group(1) if rel_m else ""))
+            if not re.fullmatch(r"\d+", disa["version"]) or not rel_m:
+                # Without both, the checklist can't name its release (CKL
+                # version empty, CKLB version null) and no inventory applies.
+                return emit({"outcome": "failed", "reason": f"the DISA file names no release: version "
+                             f"{disa['version']!r}, release-info {disa['releaseinfo'][:60]!r}"}, 1)
+            inv = STIG_INVENTORY.get((disa["benchmark_id"], disa["version"], rel_m.group(1)))
             pairs = sorted(f"{g['vid']} {g['rule_id']}" for g in disa["groups"])
             if inv and (len(pairs), hashlib.sha256("\n".join(pairs).encode()).hexdigest()) != inv:
                 return emit({"outcome": "failed", "reason": f"the DISA file claims {disa['benchmark_id']} "
@@ -962,12 +987,20 @@ def main():
             # and consumers merge rows on the exact id: never invent one.
             return emit({"outcome": "skipped", "reason": f"no known DISA STIG id for {res['benchmark_id']}; "
                          f"supply the DISA STIG file to name it"}, 0)
-        if not disa and not res["disa_version"]:
-            # Same rule for the release: a made-up V0R0 merges with nothing.
-            # (PR 1's release table resolves pinned content first.)
-            return emit({"outcome": "skipped", "reason": f"profile {res['profile_id']} names no DISA release (VnRm); "
-                         f"supply the DISA STIG file to name it"}, 0)
-        stig, vulns = build_model(res, disa, plan, a.runner_arch)
+        release = None
+        if not disa:
+            # Same rule for the release (D4): only the release table names it,
+            # by the exact datastream bytes the scan evaluated, and only for
+            # that entry's benchmark, version and STIG profiles. Never the
+            # profile label (wrong for pinned Ubuntu), never a made-up V0R0.
+            ent = RELEASE_TABLE.get(plan.get("datastream_sha256", ""))
+            if not ent or (res["benchmark_id"], res["benchmark_version"]) != ent[:2] or res["profile_id"] not in ent[2]:
+                return emit({"outcome": "skipped", "reason": f"the DISA release of {res['benchmark_id']} "
+                             f"{res['benchmark_version']} {res['profile_id']} (datastream sha256 "
+                             f"{plan.get('datastream_sha256') or 'not recorded'}) isn't in the verified release table; "
+                             f"supply the DISA STIG file to name it"}, 0)
+            release = ent[3]
+        stig, vulns = build_model(res, disa, plan, a.runner_arch, release)
         if stig.get("ambiguous_vids"):
             # Same rule as the STIG id and release: never write an arbitrary
             # Rule ID under the claimed release. A skeleton supplies them (D7).
@@ -1013,6 +1046,8 @@ def main():
             for ext in formats:
                 writers[ext](staged[ext])
             meta = {"outcome": "generated", "host_name": host_name,
+                    "release_source": "skeleton" if disa else "table",
+                    "datastream_sha256": plan.get("datastream_sha256"),
                     "skeleton_completeness": skeleton_check if disa else None,
                     "skeleton_sha256": disa["sha256"] if disa else None,
                     "stig": {k: stig[k] for k in ("benchmark_id", "version", "releaseinfo")},
