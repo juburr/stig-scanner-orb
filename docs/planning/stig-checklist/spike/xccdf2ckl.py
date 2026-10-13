@@ -343,8 +343,8 @@ STIG_INVENTORY = {
 # when the results' benchmark isn't one of the SSG_STIG_IDS above.
 # D4 release table: the sha256 of the datastream the scan evaluated
 # (scan-plan.env datastream_sha256) -> its benchmark id and version, accepted
-# STIG profiles and DISA release (version, release), as fingerprint.py
-# verified it. The profile label is never used: it says V2R7 for the pinned
+# STIG profiles and DISA release (version, the release file's canonical
+# release info), as fingerprint.py verified it. The profile label is never used: it says V2R7 for the pinned
 # Ubuntu content, whose Rule IDs are V2R8's. Each profile records OpenSCAP's
 # selection for it (count, sha256 of the sorted selected rule ids, as
 # fingerprint.py prints them): it depends only on the datastream and profile,
@@ -354,18 +354,22 @@ RELEASE_TABLE = {
     "27fc84bb2ea29619a944d5a75b361961e1ac7a8dadd48f4165f00d106b0ef944":
         ("xccdf_org.ssgproject.content_benchmark_RHEL-9", "0.1.82", {
             _P + "stig": (477, "9392f44a3205c7b707424d07a67d02d03939c58129105e0c1f6c8221a8f216cc"),
-            _P + "stig_gui": (473, "aa643ac6026919c1d49bbe301a4e594cc208f986c0c764cdce7d350b2cafe0b9")}, ("2", "9")),
+            _P + "stig_gui": (473, "aa643ac6026919c1d49bbe301a4e594cc208f986c0c764cdce7d350b2cafe0b9")},
+        ("2", "Release: 9 Benchmark Date: 01 Jul 2026")),
     "b0c25f6ef5cdbb5cf72d88c8e17a300aa24e4536ca5d1037c92f67474435217a":
         ("xccdf_org.ssgproject.content_benchmark_RHEL-8", "0.1.82", {
             _P + "stig": (393, "4f1d0729ae4b04b57922e87f73fe5389edc91d932138f4c537a3bc839c83ee50"),
-            _P + "stig_gui": (389, "9246ef094fb2c140bbac87157cb479e99c31d5ee0fc301318409aface63815ab")}, ("2", "8")),
+            _P + "stig_gui": (389, "9246ef094fb2c140bbac87157cb479e99c31d5ee0fc301318409aface63815ab")},
+        ("2", "Release: 8 Benchmark Date: 01 Jul 2026")),
     "58b6e4cb1032a29b21aede508817dc83335e1a3e34304f3093538e8b64c3988d":
         ("xccdf_org.ssgproject.content_benchmark_RHEL-10", "0.1.82", {
             _P + "stig": (473, "98d3c965d076190f5fec2e1e0c80b9247ed117c42600678ccdbad7aa1d9a4acd"),
-            _P + "stig_gui": (470, "6b8e990ff582867c261a9c20d8796e784d27a5eba3475e75388bac22a55062b2")}, ("1", "2")),
+            _P + "stig_gui": (470, "6b8e990ff582867c261a9c20d8796e784d27a5eba3475e75388bac22a55062b2")},
+        ("1", "Release: 2 Benchmark Date: 01 Jul 2026")),
     "5ee6c1d4dcf8ca1245e1f532771e9c56a615a415ac076092229209d680f90989":
         ("xccdf_org.ssgproject.content_benchmark_UBUNTU_22-04", "0.1.82", {
-            _P + "stig": (230, "74e56900e44245724f258614c48132bd7a152bbc8ed790bbf0a8801e1a320c5f")}, ("2", "8")),
+            _P + "stig": (230, "74e56900e44245724f258614c48132bd7a152bbc8ed790bbf0a8801e1a320c5f")},
+        ("2", "Release: 8 Benchmark Date: 01 Apr 2026")),
 }
 
 TARGET_STIG = {"rhel8": "RHEL_8_STIG", "rhel9": "RHEL_9_STIG", "rhel10": "RHEL_10_STIG", "ubuntu2204": "CAN_Ubuntu_22-04_LTS_STIG"}
@@ -692,10 +696,11 @@ def build_model(res, disa, plan, runner_arch=None, release=None):
     else:
         key = res["benchmark_id"].replace("xccdf_org.ssgproject.content_benchmark_", "")
         bid, title = SSG_STIG_IDS[key]  # main() skips unknown benchmarks
-        ver, rel = release  # main() skips content the release table doesn't verify
+        ver, releaseinfo = release  # main() skips content the release table doesn't verify
+        # The DISA file's own release info, verbatim: consumers read the
+        # release and date from it. The table lookup is in the meta.
         stig = {"benchmark_id": bid, "title": title, "description": res["profile_title"], "version": ver,
-                "releaseinfo": f"Release: {rel} Benchmark Date: unknown (release table: {res['benchmark_id']} "
-                               f"{res['benchmark_version']}, datastream sha256 {plan.get('datastream_sha256')})",
+                "releaseinfo": releaseinfo,
                 "filename": f"{res['benchmark_id']}-{res['profile_id']}.xml", "unmatched_ssg_vids": [],
                 "mapped_vids": len(by_vid), "unpaired_refs": sorted(unpaired), "ambiguous_vids": []}
         for vid in sorted(by_vid, key=lambda v: int(v[2:])):
@@ -996,6 +1001,13 @@ def main():
                 if bad or dups:
                     why = [f"malformed {label}: {', '.join(bad[:5])}"] * bool(bad) + [f"repeated {label}: {', '.join(dups[:5])}"] * bool(dups)
                     return emit({"outcome": "failed", "reason": f"the DISA file has {'; '.join(why)}"}, 1)
+            # And each Group's Rule must be its own: V-n carries SV-n…_rule
+            # (every DISA file), or the row joins one requirement to another's
+            # Rule ID.
+            crossed = [f"{g['vid']} {g['rule_id']}" for g in disa["groups"] if SV_RE.fullmatch(g["rule_id"]).group(1) != g["vid"][2:]]
+            if crossed:
+                return emit({"outcome": "failed", "reason": f"the DISA file pairs V-IDs with other numbers' Rule IDs: "
+                             f"{', '.join(crossed[:5])}"}, 1)
             # Completeness, independent of what this scan maps: the file's own
             # profiles must each select exactly its groups (deleting groups,
             # mapped or manual-only, breaks that), and a known release must
@@ -1026,7 +1038,13 @@ def main():
         # evaluated, for that entry's benchmark, version and STIG profiles.
         ent = RELEASE_TABLE.get(plan.get("datastream_sha256", ""))
         if ent and ((res["benchmark_id"], res["benchmark_version"]) != ent[:2] or res["profile_id"] not in ent[2]):
-            ent = None
+            # The plan names a known datastream, but results.xml can't have
+            # come from it: the inputs are from different scans. Never let a
+            # skeleton paper over that (provenance would name the wrong
+            # datastream and the selection check would be skipped).
+            return emit({"outcome": "failed", "reason": f"the plan's datastream sha256 is the pinned {ent[0]} {ent[1]}, "
+                         f"but results.xml is {res['benchmark_id']} {res['benchmark_version']} {res['profile_id']}: "
+                         f"results and plan come from different scans"}, 1)
         if ent:
             # Known datastream and profile, so OpenSCAP's selection is known:
             # a results.xml selecting anything else is incomplete or edited,

@@ -85,4 +85,6 @@ if len(full) != 1:
 if problems:
     print('NOT VERIFIED: ' + '; '.join(problems))
     sys.exit(1)
-print(f'MATCH: {full[0]}')
+# The table entry records this release info verbatim (the checklist's releaseinfo).
+m = ET.parse(sorted(f for f in glob.glob(a.pattern) if os.path.basename(f) == full[0])[0]).getroot()
+print(f"MATCH: {full[0]} ({next((''.join(x.itertext()) for x in m.iter(X11 + 'plain-text') if x.get('id') == 'release-info'), '?')})")
