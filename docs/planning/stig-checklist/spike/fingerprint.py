@@ -47,6 +47,9 @@ bench = next(root.iter(X + 'Benchmark'))
 pid = tr.find(X + 'profile').get('idref')
 prof = next(p for p in bench.iter(X + 'Profile') if p.get('id') == pid)
 sel = {rr.get('idref') for rr in tr.findall(X + 'rule-result') if (rr.findtext(X + 'result') or '').strip() != 'notselected'}
+rule_ids = [r.get('id') for r in bench.iter(X + 'Rule')]
+if len(set(rule_ids)) != len(rule_ids):
+    sys.exit(f'{a.results}: a Rule id is defined more than once; not a verifiable results.xml')
 rules = {r.get('id'): r for r in bench.iter(X + 'Rule')}
 undefined = sorted(rid for rid in sel if rid not in rules)
 # And the other way: OpenSCAP writes a rule-result for every Rule, notselected

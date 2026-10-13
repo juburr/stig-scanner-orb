@@ -86,6 +86,11 @@ def parse_results(source):
         return levels
 
     rules = {}
+    # XCCDF ids are unique; a repeated Rule id would let the last copy decide
+    # the mapping, text and gates silently.
+    dup_ids = sorted(i for i, c in collections.Counter(r.get("id") for r in bench.iter(X12 + "Rule")).items() if c > 1)
+    if dup_ids:
+        raise ValueError(f"results.xml defines {len(dup_ids)} Rule id(s) more than once (e.g. {', '.join(dup_ids[:5])})")
     for r in bench.iter(X12 + "Rule"):
         refs = [(x.get("href") or "", (x.text or "").strip()) for x in r.findall(X12 + "reference")]
         ref = lambda pred: next((v for h, v in refs if pred(h, v)), None)
@@ -672,8 +677,11 @@ def build_model(res, disa, plan, runner_arch=None, release=None):
         # The N/A category travels in the model, so reporting never has to
         # parse it back out of the justification prose.
         na_category = "+".join(sorted({c.partition(":")[0] for c, _ in na_cats})) if status == "Not_Applicable" else None
+        # Why a row is Not_Reviewed travels the same way, for the meta.
+        nr_reason = ("architecture" if uncertain else "unevaluated") if status == "Not_Reviewed" else None
         head = f"Automated result from OpenSCAP ({len(rids)} SSG rule{'s' if len(rids) > 1 else ''}):"
-        return status, head + "\n" + "\n".join(details) + "\n\n" + prov_txt, "\n".join(dict.fromkeys(comments)), ruleids, na_category
+        return (status, head + "\n" + "\n".join(details) + "\n\n" + prov_txt, "\n".join(dict.fromkeys(comments)), ruleids,
+                na_category, nr_reason)
 
     vulns = []
     if disa:
@@ -686,7 +694,7 @@ def build_model(res, disa, plan, runner_arch=None, release=None):
             seen.add(g["vid"])
             na_category = None
             if rids:
-                status, detail, comment, ssg_rule_ids, na_category = vuln_from_ssg(g["vid"], rids)
+                status, detail, comment, ssg_rule_ids, na_category, nr_reason = vuln_from_ssg(g["vid"], rids)
                 if ssg_rule_ids != {g["rule_id"]}:
                     # The content's revision of the requirement differs from the
                     # skeleton's (the skeleton may be newer *or* older), and
@@ -699,14 +707,14 @@ def build_model(res, disa, plan, runner_arch=None, release=None):
                                f"{', '.join(sorted(ssg_rule_ids))}; this checklist's STIG release has {g['rule_id']}, "
                                f"so {', '.join(other_revs)} {'is a different revision' if len(other_revs) == 1 else 'are different revisions'}. "
                                f"Automated result across the content's revisions: {status}.")
-                    status, na_category = "Not_Reviewed", None
+                    status, na_category, nr_reason = "Not_Reviewed", None, "revision_mismatch"
                     comment = (f"Not reviewed: this checklist's STIG release has {g['rule_id']}, and the automated result "
                                f"comes from content aligned to a different revision of this requirement. Re-verify.")
             elif deselected.get(g["vid"]):
                 # The content checks it, but the profile didn't select the
                 # check: say so, not "no automated check".
                 names = ", ".join(sorted(x.replace("xccdf_org.ssgproject.content_rule_", "") for x in deselected[g["vid"]]))
-                status = "Not_Reviewed"
+                status, nr_reason = "Not_Reviewed", "deselected"
                 detail = (f"The scanner content checks this requirement with {names}, but OpenSCAP did not select it "
                           f"for the evaluated profile (notselected: a profile conflict, a selection default or "
                           f"tailoring), so nothing was evaluated.\n\n" + prov_txt)
@@ -714,9 +722,11 @@ def build_model(res, disa, plan, runner_arch=None, release=None):
                            "evaluated profile did not select it; manual review required.")
             else:
                 # Still name the scan and the skeleton file this row came from.
-                status, detail = "Not_Reviewed", "No scanner rule maps to this requirement.\n\n" + prov_txt
+                status, nr_reason = "Not_Reviewed", "no_scanner_rule"
+                detail = "No scanner rule maps to this requirement.\n\n" + prov_txt
                 comment = "No automated check for this requirement in the scanner content; manual review required."
-            vulns.append({**g, "status": status, "finding_details": detail, "comments": comment, "na_category": na_category})
+            vulns.append({**g, "status": status, "finding_details": detail, "comments": comment, "na_category": na_category,
+                          "nr_reason": nr_reason})
         stig["unmatched_ssg_vids"] = sorted(set(by_vid) - seen)
         stig["mapped_vids"] = len(set(by_vid) & seen)
         stig["unpaired_refs"] = sorted(unpaired)
@@ -734,7 +744,7 @@ def build_model(res, disa, plan, runner_arch=None, release=None):
             rids = by_vid[vid]
             first = res["rules"][sorted(rids)[0]]
             sev = max((res["rules"][r]["severity"] for r in rids), key=lambda s: {"high": 3, "medium": 2, "low": 1}.get(s, 0))
-            status, detail, comment, ssg_rule_ids, na_category = vuln_from_ssg(vid, rids)
+            status, detail, comment, ssg_rule_ids, na_category, nr_reason = vuln_from_ssg(vid, rids)
             if len(ssg_rule_ids) > 1:
                 # The content itself cites several revisions of this
                 # requirement, so no single Rule ID (D4) is provably right,
@@ -768,6 +778,7 @@ def build_model(res, disa, plan, runner_arch=None, release=None):
                 "discussion": labeled("rationale"), "check_content": "Automated OpenSCAP check: " + ", ".join(sorted(rids)),
                 "check_ref": "M", "fix_text": labeled("description"), "ccis": [], "legacy": [], "documentable": "false",
                 "status": status, "finding_details": detail, "comments": comment, "na_category": na_category,
+                "nr_reason": nr_reason,
             })
     stig["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, f"stig-scanner-orb:{stig['benchmark_id']}:{stig['version']}:{stig['releaseinfo']}"))
     return stig, vulns
@@ -1145,6 +1156,7 @@ def main():
         writers = {"ckl": lambda p: write_ckl(p, asset, stig, vulns), "cklb": lambda p: write_cklb(p, asset, stig, vulns, now)}
         counts = collections.Counter(v["status"] for v in vulns)
         na = collections.Counter(v["na_category"] for v in vulns if v["status"] == "Not_Applicable")
+        nr = collections.Counter(v["nr_reason"] for v in vulns if v["status"] == "Not_Reviewed")
         try:
             for ext in formats:
                 writers[ext](staged[ext])
@@ -1155,7 +1167,7 @@ def main():
                     "skeleton_sha256": disa["sha256"] if disa else None,
                     "stig": {k: stig[k] for k in ("benchmark_id", "version", "releaseinfo")},
                     "formats": {ext: hashlib.sha256(open(staged[ext], "rb").read()).hexdigest() for ext in formats},
-                    "vulns": len(vulns), "status": counts, "na_by_reason": na,
+                    "vulns": len(vulns), "status": counts, "na_by_reason": na, "not_reviewed_by_reason": nr,
                     "ssg_vids_not_in_disa": stig["unmatched_ssg_vids"], "unpaired_refs": stig["unpaired_refs"],
                     "results_sha256": results_sha}
             with open(meta_path + ".partial", "w", encoding="utf-8") as f:

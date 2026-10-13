@@ -98,6 +98,7 @@ pinned content has neither: no `multi-check`, no repeated `idref`.)
 A `rule-result` whose `idref` names no `Rule` in the results' benchmark (a
 truncated or edited file) fails the step: skipping it would drop its
 result, a `fail` included, while the other rules still generate. So does
+a `Rule` id defined twice (the last copy would decide silently), and
 a `Rule` with no `rule-result`: OpenSCAP writes one for every Rule,
 `notselected` included (1540 of 1540 on ubi9, 7 of 7 scans), and on ubi9
 dropping one `fail` turned its V-ID from Open to Not_Applicable.
@@ -236,7 +237,9 @@ files and parameters and changes no existing behaviour.
     - sha256 of the `results.xml` it read, hashed from the same bytes it parses;
     - profile id; STIG id, version, release, benchmark date;
     - release source (`table`, or `skeleton` from PR 2) and the datastream sha256 it was looked up by;
-    - formats written with each file's sha256, row counts by status, N/A counts by category;
+    - formats written with each file's sha256, row counts by status, N/A counts by category,
+      Not_Reviewed counts by reason (`revision_mismatch`, `no_scanner_rule`,
+      `deselected`, `unevaluated`, `architecture`);
     - unpaired V-ID/SV references (D3), if any;
     - generator version.
 
@@ -377,7 +380,8 @@ files and parameters and changes no existing behaviour.
     `Rule` each fail; the generator lists a malformed `XX123`,
     `SV-123garbage` or bare `SV-123` as unpaired instead of making it a
     row, and fails a `results.xml` whose `fail` rule-result names no
-    `Rule`, or that lacks a Rule's rule-result, or whose selection differs
+    `Rule`, that defines a Rule id twice, or that lacks a Rule's
+    rule-result, or whose selection differs
     from the table entry's (a result flipped to `notselected`, a Rule
     removed with its result), with or without a skeleton;
   - `checklist_formats`: empty, `pdf` and `ckl,,pdf` fail with a `failed`
@@ -527,7 +531,8 @@ files and parameters and changes no existing behaviour.
     FINDING_DETAILS. PR 3 later carries the unchanged checks.
   - Meta (`skeleton_sha256`) and each row's provenance record the file's
     sha256, hashed from the bytes parsed, plus its release and mismatch
-    count. The skeleton supplies the Rule IDs, check text and CCIs, so
+    count (`not_reviewed_by_reason.revision_mismatch`: 200 of the 209
+    Not_Reviewed rows for a V2R10 skeleton on ubi9). The skeleton supplies the Rule IDs, check text and CCIs, so
     two files with the same identifier pairs but different text must be
     told apart, above all under `skeleton_completeness: internal`.
 - **Tests:** a tiny hand-made DISA-format XCCDF fixture (no DISA files in
