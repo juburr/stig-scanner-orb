@@ -85,7 +85,13 @@ def combine_instances(rs):
 
 def parse_results(source):
     root = ET.parse(source).getroot()
-    bench = root if root.tag == X12 + "Benchmark" else next(root.iter(X12 + "Benchmark"))
+    # One Benchmark (oscap's results.xml is the Benchmark itself): with
+    # several, XML order would pair one's mappings and gates with another's
+    # verdicts. The single TestResult must sit inside it (checked below).
+    benches = list(root.iter(X12 + "Benchmark"))
+    if len(benches) != 1:
+        raise ValueError(f"results.xml has {len(benches)} Benchmark elements; expected exactly one")
+    bench = benches[0]
     parent = {c: p for p in bench.iter() for c in p}
 
     def chain_platforms(el):
@@ -139,6 +145,8 @@ def parse_results(source):
     if len(trs) != 1:
         raise ValueError(f"results.xml has {len(trs)} TestResult elements; expected exactly one")
     tr = trs[0]
+    if not any(t is tr for t in bench.iter(X12 + "TestResult")):
+        raise ValueError("results.xml's TestResult is outside its Benchmark")
     true_platforms = {p.get("idref") for p in tr.findall(X12 + "platform")}
     # XCCDF allows several rule-results per rule (multi-check, multiple
     # instances): keep them all and combine, never let the last one win.
@@ -1020,7 +1028,10 @@ def main():
             return emit({"outcome": "failed", "reason": f"checklist_formats {a.formats!r}: use one or both of ckl, cklb"}, 1)
         # HOST_NAME / host_name must be non-empty (STIG Manager rejects it):
         # control characters dropped, capped at 255.
-        host_name = re.sub(r"[\x00-\x1f\x7f]", "", a.host_name).strip()[:255]
+        # Only characters XML 1.0 allows, minus controls: anything else (e.g.
+        # U+FFFF, or a lone surrogate from undecodable argv bytes) would make
+        # the CKL unparseable.
+        host_name = re.sub(r"[^\x20-\x7e\x80-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]", "", a.host_name).strip()[:255]
         if not host_name:
             return emit({"outcome": "failed", "reason": "the checklist asset name is empty"}, 1)
 
@@ -1103,6 +1114,12 @@ def main():
             # And each Group's Rule must be its own: V-n carries SV-n…_rule
             # (every DISA file), or the row joins one requirement to another's
             # Rule ID.
+            # Every DISA Rule has a check procedure and fix text: manual-only
+            # rows are reviewed from them, so a blank one is an edited file.
+            blank = sorted(g["vid"] for g in disa["groups"] if not g["check_content"].strip() or not g["fix_text"].strip())
+            if blank:
+                return emit({"outcome": "failed", "reason": f"the DISA file has {len(blank)} Rule(s) without check content "
+                             f"or fix text, e.g. {', '.join(blank[:5])}"}, 1)
             crossed = [f"{g['vid']} {g['rule_id']}" for g in disa["groups"] if SV_RE.fullmatch(g["rule_id"]).group(1) != g["vid"][2:]]
             if crossed:
                 return emit({"outcome": "failed", "reason": f"the DISA file pairs V-IDs with other numbers' Rule IDs: "
@@ -1233,6 +1250,13 @@ def main():
         try:
             for ext in formats:
                 writers[ext](staged[ext])
+                # Never publish a file the consumers can't parse, whatever
+                # field broke it.
+                if ext == "ckl":
+                    ET.parse(staged[ext])
+                else:
+                    with open(staged[ext], encoding="utf-8") as f:
+                        json.load(f)
             meta = {"outcome": "generated", "host_name": host_name,
                     "release_source": "skeleton" if disa else "table",
                     "datastream_sha256": plan.get("datastream_sha256"),

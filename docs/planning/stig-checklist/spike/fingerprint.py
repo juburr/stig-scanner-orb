@@ -43,7 +43,10 @@ trs = list(root.iter(X + 'TestResult'))
 if len(trs) != 1:
     sys.exit(f'{a.results}: {len(trs)} TestResult elements; pass the results.xml of one scan of the STIG profile')
 tr = trs[0]
-bench = next(root.iter(X + 'Benchmark'))
+benches = list(root.iter(X + 'Benchmark'))
+if len(benches) != 1 or not any(t is tr for t in benches[0].iter(X + 'TestResult')):
+    sys.exit(f'{a.results}: needs exactly one Benchmark containing its TestResult')
+bench = benches[0]
 pid = tr.find(X + 'profile').get('idref')
 prof = next(p for p in bench.iter(X + 'Profile') if p.get('id') == pid)
 sel = {rr.get('idref') for rr in tr.findall(X + 'rule-result') if (rr.findtext(X + 'result') or '').strip() != 'notselected'}
