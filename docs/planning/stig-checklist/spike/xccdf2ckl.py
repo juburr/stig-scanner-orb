@@ -649,7 +649,7 @@ def build_model(res, disa, plan, runner_arch=None):
         stig = {"benchmark_id": bid, "title": title, "description": res["profile_title"], "version": ver,
                 "releaseinfo": f"Release: {rel} Benchmark Date: unknown (derived from {res['benchmark_id']} {res['benchmark_version']})",
                 "filename": f"{res['benchmark_id']}-{res['profile_id']}.xml", "unmatched_ssg_vids": [],
-                "mapped_vids": len(by_vid), "unpaired_refs": sorted(unpaired)}
+                "mapped_vids": len(by_vid), "unpaired_refs": sorted(unpaired), "ambiguous_vids": []}
         for vid in sorted(by_vid, key=lambda v: int(v[2:])):
             rids = by_vid[vid]
             first = res["rules"][sorted(rids)[0]]
@@ -657,12 +657,10 @@ def build_model(res, disa, plan, runner_arch=None):
             status, detail, comment, ssg_rule_ids, na_category = vuln_from_ssg(vid, rids)
             if len(ssg_rule_ids) > 1:
                 # The content itself cites several revisions of this
-                # requirement, so no single Rule ID (D4) is provably right.
-                detail += (f"\n\nRevision ambiguity: the scanner content cites {', '.join(sorted(ssg_rule_ids))} "
-                           f"for this requirement. Automated result across them: {status}.")
-                status, na_category = "Not_Reviewed", None
-                comment = ("Not reviewed: the scanner content cites more than one revision of this requirement, "
-                           "so the result can't be tied to this checklist's release. Re-verify.")
+                # requirement, so no single Rule ID (D4) is provably right,
+                # and any one written would be arbitrary: main() skips.
+                stig["ambiguous_vids"].append(f"{vid} ({', '.join(sorted(ssg_rule_ids))})")
+                continue
             # Rule_Ver (the DISA STIG id, e.g. RHEL-09-211010) carries no V-ID
             # number to pair on, so use it only when it can only belong to
             # this row: one id across the contributors, each citing one SV
@@ -934,9 +932,15 @@ def main():
             if disa["benchmark_id"] != expected:
                 return emit({"outcome": "failed", "reason": f"the DISA file is {disa['benchmark_id']}, but this scan's "
                              f"content implements {expected}"}, 1)
-            dups = sorted(v for v, c in collections.Counter(g["vid"] for g in disa["groups"]).items() if c > 1)
-            if dups:
-                return emit({"outcome": "failed", "reason": f"the DISA file repeats V-IDs: {', '.join(dups[:10])}"}, 1)
+            # Consumers key rows on the V-ID and on the full Rule ID: each must
+            # be well formed and unique, or two rows could collide.
+            for field, label, pat in (("vid", "V-IDs", r"V-\d+"), ("rule_id", "Rule IDs", SV_RE.pattern)):
+                ids = [g[field] or "" for g in disa["groups"]]
+                bad = sorted({i for i in ids if not re.fullmatch(pat, i)})
+                dups = sorted(i for i, c in collections.Counter(ids).items() if c > 1)
+                if bad or dups:
+                    why = [f"malformed {label}: {', '.join(bad[:5])}"] * bool(bad) + [f"repeated {label}: {', '.join(dups[:5])}"] * bool(dups)
+                    return emit({"outcome": "failed", "reason": f"the DISA file has {'; '.join(why)}"}, 1)
             # Completeness, independent of what this scan maps: the file's own
             # profiles must each select exactly its groups (deleting groups,
             # mapped or manual-only, breaks that), and a known release must
@@ -964,6 +968,12 @@ def main():
             return emit({"outcome": "skipped", "reason": f"profile {res['profile_id']} names no DISA release (VnRm); "
                          f"supply the DISA STIG file to name it"}, 0)
         stig, vulns = build_model(res, disa, plan, a.runner_arch)
+        if stig.get("ambiguous_vids"):
+            # Same rule as the STIG id and release: never write an arbitrary
+            # Rule ID under the claimed release. A skeleton supplies them (D7).
+            return emit({"outcome": "skipped", "reason": f"the scanner content cites several revisions for "
+                         f"{len(stig['ambiguous_vids'])} V-ID(s), e.g. {'; '.join(stig['ambiguous_vids'][:3])}, so no "
+                         f"single release's Rule ID can be written; supply the DISA STIG file to name them"}, 0)
         # A STIG-named profile still proves nothing about the mapping: content
         # whose references moved to another URL (or a custom datastream without
         # them) would yield an empty "checklist" that row-count checks can't
