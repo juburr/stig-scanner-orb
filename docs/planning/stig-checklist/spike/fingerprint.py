@@ -30,7 +30,7 @@ X = '{http://checklists.nist.gov/xccdf/1.2}'
 HREF = 'https://www.cyber.mil/stigs/srg-stig-tools/'
 HREF_VULN = HREF.rstrip('/') + '#vulnerability_id'
 RULE = 'xccdf_org.ssgproject.content_rule_'
-SV_RE = re.compile(r'SV-(\d+)r\d+_rule')
+SV_RE = re.compile(r'SV-([0-9]+)r[0-9]+_rule')
 
 ap = argparse.ArgumentParser()
 ap.add_argument('results')
@@ -49,6 +49,8 @@ if len(benches) != 1 or not any(t is tr for t in benches[0].iter(X + 'TestResult
 bench = benches[0]
 pid = tr.find(X + 'profile').get('idref')
 prof = next(p for p in bench.iter(X + 'Profile') if p.get('id') == pid)
+if any(len(rr.findall(X + 'result')) != 1 for rr in tr.findall(X + 'rule-result')):
+    sys.exit(f'{a.results}: a rule-result without exactly one result element; not a verifiable results.xml')
 sel = {rr.get('idref') for rr in tr.findall(X + 'rule-result') if (rr.findtext(X + 'result') or '').strip() != 'notselected'}
 rule_ids = [r.get('id') for r in bench.iter(X + 'Rule')]
 if len(set(rule_ids)) != len(rule_ids):
@@ -67,8 +69,8 @@ unmapped = sorted(rid.replace(RULE, '') for rid, s in svs_of.items() if not s)
 unpaired = []
 for rid in svs_of:
     refs = {x.text.strip() for x in rules[rid].findall(X + 'reference') if x.get('href') == HREF_VULN}
-    vids = {v[2:] for v in refs if re.fullmatch(r'V-\d+', v)}
-    malformed = sorted(v for v in refs if not re.fullmatch(r'V-\d+', v)) + sorted(sv for sv in svs_of[rid] if not SV_RE.fullmatch(sv))
+    vids = {v[2:] for v in refs if re.fullmatch(r'V-[0-9]+', v)}
+    malformed = sorted(v for v in refs if not re.fullmatch(r'V-[0-9]+', v)) + sorted(sv for sv in svs_of[rid] if not SV_RE.fullmatch(sv))
     nums = {SV_RE.fullmatch(sv).group(1) for sv in svs_of[rid] if SV_RE.fullmatch(sv)}
     if malformed or (refs and vids != nums):
         unpaired.append(f"{rid.replace(RULE, '')}: V-{sorted(vids - nums)} SV-{sorted(nums - vids)} malformed {malformed}")

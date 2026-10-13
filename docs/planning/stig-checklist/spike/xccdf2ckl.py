@@ -27,7 +27,7 @@ HREF_RULE = "https://www.cyber.mil/stigs/srg-stig-tools/"
 HREF_VULN = "https://www.cyber.mil/stigs/srg-stig-tools#vulnerability_id"
 # A DISA Rule ID, whole: a prefix match would pair "SV-123garbage" with V-123
 # and write it as the row's Rule_ID.
-SV_RE = re.compile(r"SV-(\d+)r\d+_rule")
+SV_RE = re.compile(r"SV-([0-9]+)r[0-9]+_rule")  # ASCII digits only (\d matches any Unicode digit)
 # Caps on the untrusted XML read into memory (ElementTree holds several times
 # the file): real results.xml ~15-20 MB, DISA manual XCCDF ~1.4 MB.
 MAX_RESULTS_BYTES = 128 << 20
@@ -152,7 +152,12 @@ def parse_results(source):
     # instances): keep them all and combine, never let the last one win.
     instances = collections.defaultdict(list)
     for rr in tr.findall(X12 + "rule-result"):
-        r = (rr.findtext(X12 + "result") or "").strip()
+        # Exactly one result per rule-result: with <result>pass</result>
+        # <result>fail</result>, findtext would read only the pass.
+        res_els = rr.findall(X12 + "result")
+        if len(res_els) != 1:
+            raise ValueError(f"rule-result {rr.get('idref')} has {len(res_els)} result elements; expected exactly one")
+        r = (res_els[0].text or "").strip()
         instances[rr.get("idref")].append(r if r in XCCDF_RESULTS else "unknown")
     results = {rid: combine_instances(rs) for rid, rs in instances.items()}
     profile_id = tr.find(X12 + "profile").get("idref")
@@ -616,7 +621,7 @@ def build_model(res, disa, plan, runner_arch=None, release=None):
     for rid, result in res["results"].items():
         r = res["rules"][rid]  # main() fails a rule-result with no Rule
         if result == "notselected":
-            deselected_vids = [v for v in r["vids"] if re.fullmatch(r"V-\d+", v) and v[2:] in r["svs"]] if r["vids"] \
+            deselected_vids = [v for v in r["vids"] if re.fullmatch(r"V-[0-9]+", v) and v[2:] in r["svs"]] if r["vids"] \
                 else [f"V-{n}" for n in r["svs"]]
             for vid in deselected_vids:
                 deselected[vid].append(rid)
@@ -629,7 +634,7 @@ def build_model(res, disa, plan, runner_arch=None, release=None):
             # can't name a DISA rule, so report it instead of keying on it.
             # Only a well-formed V-<digits> can pair; "XX123" must not key
             # a row just because its tail matches an SV number.
-            vids = [v for v in r["vids"] if re.fullmatch(r"V-\d+", v) and v[2:] in r["svs"]]
+            vids = [v for v in r["vids"] if re.fullmatch(r"V-[0-9]+", v) and v[2:] in r["svs"]]
             unpaired += [f"{rid}: {v}" for v in r["vids"] if v not in vids]
             unpaired += [f"{rid}: {sv}" for n, revs in r["svs"].items() if f"V-{n}" not in r["vids"] for sv in revs]
         else:
@@ -730,7 +735,7 @@ def build_model(res, disa, plan, runner_arch=None, release=None):
     vulns = []
     if disa:
         stig = {k: disa[k] for k in ("benchmark_id", "title", "description", "version", "releaseinfo")}
-        rel = re.search(r"Release: *(\d+)", disa["releaseinfo"]).group(1)
+        rel = re.search(r"Release: *([0-9]+)", disa["releaseinfo"]).group(1)
         stig["filename"] = f"U_{disa['benchmark_id']}_V{disa['version']}R{rel}_Manual-xccdf.xml"
         seen = set()
         for g in disa["groups"]:
@@ -1098,7 +1103,7 @@ def main():
                              f"content implements {expected}"}, 1)
             # Consumers key rows on the V-ID and on the full Rule ID: each must
             # be well formed and unique, or two rows could collide.
-            for field, label, pat in (("vid", "V-IDs", r"V-\d+"), ("rule_id", "Rule IDs", SV_RE.pattern)):
+            for field, label, pat in (("vid", "V-IDs", r"V-[0-9]+"), ("rule_id", "Rule IDs", SV_RE.pattern)):
                 ids = [g[field] or "" for g in disa["groups"]]
                 bad = sorted({i for i in ids if not re.fullmatch(pat, i)})
                 dups = sorted(i for i, c in collections.Counter(ids).items() if c > 1)
@@ -1135,8 +1140,11 @@ def main():
             # The release info is copied into the checklist as its release
             # identity, so it must have DISA's whole format (every DISA file
             # does), not merely start with "Release: N".
-            rel_m = re.fullmatch(r"Release: (\d+) Benchmark Date: \d{2} [A-Z][a-z]{2} \d{4}", disa["releaseinfo"])
-            if not re.fullmatch(r"\d+", disa["version"]) or not rel_m:
+            # Canonical ASCII numbers only: "02" or "Release: 09" (or other
+            # Unicode digits) would miss the inventory key and pass a known
+            # release off as unknown.
+            rel_m = re.fullmatch(r"Release: ([1-9][0-9]*) Benchmark Date: [0-9]{2} [A-Z][a-z]{2} [0-9]{4}", disa["releaseinfo"])
+            if not re.fullmatch(r"[1-9][0-9]*", disa["version"]) or not rel_m:
                 # Without both, the checklist can't name its release (CKL
                 # version empty, CKLB version null) and no inventory applies.
                 return emit({"outcome": "failed", "reason": f"the DISA file names no release: version "

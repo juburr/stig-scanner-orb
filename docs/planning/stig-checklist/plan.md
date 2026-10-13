@@ -98,8 +98,9 @@ pinned content has neither: no `multi-check`, no repeated `idref`.)
 A `rule-result` whose `idref` names no `Rule` in the results' benchmark (a
 truncated or edited file) fails the step: skipping it would drop its
 result, a `fail` included, while the other rules still generate. So does
-a file with other than exactly one `Benchmark` and one `TestResult`
-inside it (XML order would pick the evaluation or pair one benchmark's
+a `rule-result` with other than exactly one `result` (`pass` then `fail`
+would read as pass), a file with other than exactly one `Benchmark` and
+one `TestResult` inside it (XML order would pick the evaluation or pair one benchmark's
 mappings with another's verdicts), a `Rule` id defined twice (the last copy would decide
 silently), and
 a `Rule` with no `rule-result`: OpenSCAP writes one for every Rule,
@@ -489,9 +490,10 @@ files and parameters and changes no existing behaviour.
   of its V-IDs (D11), but that alone doesn't prove the identity: a
   mislabeled file with one copied row would pass it. The file is also
   rejected if it:
-  - has no numeric `<version>`, or release info not in DISA's whole
+  - has no canonical `<version>`, or release info not in DISA's whole
     format (`Release: N Benchmark Date: DD Mon YYYY`, as every DISA file
-    has), so it names no release (the CKLB `version` would be null) or
+    has), with ASCII numbers and no leading zero (`02` or `Release: 09`
+    would miss the inventory and pass a known release off as unknown), so it names no release (the CKLB `version` would be null) or
     would publish a malformed one;
   - has a Group with other than exactly one Rule. An extra Rule would be
     dropped silently while the profile inventory still matched;
@@ -566,10 +568,10 @@ files and parameters and changes no existing behaviour.
   the repo before the PR 3 decision); revision-mismatch, added/removed-Vuln,
   wrong-STIG, missing version/release, two Rules (or none) in a Group,
   a `V-n` Group carrying another number's Rule ID, release info that is
-  bare, has trailing text, or has another date for a known release, and
-  repeated or
-  malformed V-ID/Rule ID cases (the latter claiming an unknown release,
-  where only the profile check applies).
+  bare, has trailing text, or has another date for a known release,
+  version `02`, `Release: 09` or non-ASCII digits in a known release's
+  file, and repeated or malformed V-ID/Rule ID cases (the latter claiming
+  an unknown release, where only the profile check applies).
 - **CI:** a `smoke-rhel9` variant that fetches the DISA zip in CI, pinned
   by sha256 from `dl.dod.cyber.mil` (no login; older releases persist
   there, e.g. RHEL 9 V2R4–V2R10).
