@@ -12,9 +12,10 @@ profile; every run must name the same release.
 
 Exits 0 only when exactly one release contains every selected SV id, every
 selected rule without a DISA reference is in --allow-unmapped (the known
-helper rules, e.g. enable_authselect on RHEL 8/9), no selected rule has an
-unpaired or malformed V-ID/SV reference (the generator drops those, plan D3,
-so they would vanish from a checklist labeled verified), and every selected
+helper rules, e.g. enable_authselect on RHEL 8/9), no rule (deselected ones
+included) has an unpaired or malformed V-ID/SV reference (the generator drops
+those, plan D3, so they would vanish from a checklist labeled verified), and
+every selected
 rule-result has a Rule definition and every Rule a rule-result. Anything else is
 not a verified match.
 """
@@ -47,7 +48,10 @@ benches = list(root.iter(X + 'Benchmark'))
 if len(benches) != 1 or not any(t is tr for t in benches[0].iter(X + 'TestResult')):
     sys.exit(f'{a.results}: needs exactly one Benchmark containing its TestResult')
 bench = benches[0]
-pid = tr.find(X + 'profile').get('idref')
+profiles = tr.findall(X + 'profile')
+if len(profiles) != 1 or not profiles[0].get('idref'):
+    sys.exit(f'{a.results}: the TestResult names {len(profiles)} evaluated profiles; expected exactly one')
+pid = profiles[0].get('idref')
 prof = next(p for p in bench.iter(X + 'Profile') if p.get('id') == pid)
 if any(len(rr.findall(X + 'result')) != 1 for rr in tr.findall(X + 'rule-result')):
     sys.exit(f'{a.results}: a rule-result without exactly one result element; not a verifiable results.xml')
@@ -66,12 +70,15 @@ unmapped = sorted(rid.replace(RULE, '') for rid, s in svs_of.items() if not s)
 # The generator's pairing (D3): only a whole V-<digits> or
 # SV-<digits>r<digits>_rule counts, and with any V-ID reference on a rule, only
 # V-n/SV-n pairs of the same number become rows.
+# Every rule, deselected ones included: their references drive the
+# generator's "deselected" wording.
 unpaired = []
-for rid in svs_of:
-    refs = {x.text.strip() for x in rules[rid].findall(X + 'reference') if x.get('href') == HREF_VULN}
+for rid in rules:
+    refs = {(x.text or '').strip() for x in rules[rid].findall(X + 'reference') if x.get('href') == HREF_VULN}
+    rule_svs = {(x.text or '').strip() for x in rules[rid].findall(X + 'reference') if x.get('href') == HREF}
     vids = {v[2:] for v in refs if re.fullmatch(r'V-[0-9]+', v)}
-    malformed = sorted(v for v in refs if not re.fullmatch(r'V-[0-9]+', v)) + sorted(sv for sv in svs_of[rid] if not SV_RE.fullmatch(sv))
-    nums = {SV_RE.fullmatch(sv).group(1) for sv in svs_of[rid] if SV_RE.fullmatch(sv)}
+    malformed = sorted(v for v in refs if not re.fullmatch(r'V-[0-9]+', v)) + sorted(sv for sv in rule_svs if not SV_RE.fullmatch(sv))
+    nums = {SV_RE.fullmatch(sv).group(1) for sv in rule_svs if SV_RE.fullmatch(sv)}
     if malformed or (refs and vids != nums):
         unpaired.append(f"{rid.replace(RULE, '')}: V-{sorted(vids - nums)} SV-{sorted(nums - vids)} malformed {malformed}")
 allowed = {r.strip() for r in a.allow_unmapped.split(',') if r.strip()}

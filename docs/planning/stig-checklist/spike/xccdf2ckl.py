@@ -30,6 +30,7 @@ HREF_VULN = "https://www.cyber.mil/stigs/srg-stig-tools#vulnerability_id"
 SV_RE = re.compile(r"SV-([0-9]+)r[0-9]+_rule")  # ASCII digits only (\d matches any Unicode digit)
 # Caps on the untrusted XML read into memory (ElementTree holds several times
 # the file): real results.xml ~15-20 MB, DISA manual XCCDF ~1.4 MB.
+MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 MAX_RESULTS_BYTES = 128 << 20
 MAX_DISA_BYTES = 16 << 20
 
@@ -160,7 +161,10 @@ def parse_results(source):
         r = (res_els[0].text or "").strip()
         instances[rr.get("idref")].append(r if r in XCCDF_RESULTS else "unknown")
     results = {rid: combine_instances(rs) for rid, rs in instances.items()}
-    profile_id = tr.find(X12 + "profile").get("idref")
+    profiles = tr.findall(X12 + "profile")
+    if len(profiles) != 1 or not profiles[0].get("idref"):
+        raise ValueError(f"results.xml's TestResult names {len(profiles)} evaluated profiles; expected exactly one")
+    profile_id = profiles[0].get("idref")
     profile = next(p for p in bench.iter(X12 + "Profile") if p.get("id") == profile_id)
     return {
         "benchmark_id": bench.get("id"),
@@ -351,7 +355,7 @@ def parse_disa(source):
             "responsibility": tags.get("Responsibility", ""),
             "sec_override": tags.get("SeverityOverrideGuidance", ""),
             "check_content": (chk.findtext(ns + "check-content") or "").strip() if chk is not None else "",
-            "check_ref": (chk.find(ns + "check-content-ref").get("name") if chk is not None and chk.find(ns + "check-content-ref") is not None else "M"),
+            "check_ref": ((chk.find(ns + "check-content-ref").get("name") or "M") if chk is not None and chk.find(ns + "check-content-ref") is not None else "M"),
             "fix_text": (r.findtext(ns + "fixtext") or "").strip(),
             "ccis": [i.text.strip() for i in r.findall(ns + "ident") if "cci" in (i.get("system") or "").lower()],
             "legacy": [i.text.strip() for i in r.findall(ns + "ident") if "legacy" in (i.get("system") or "").lower()],
@@ -620,12 +624,8 @@ def build_model(res, disa, plan, runner_arch=None, release=None):
     unpaired = []
     for rid, result in res["results"].items():
         r = res["rules"][rid]  # main() fails a rule-result with no Rule
-        if result == "notselected":
-            deselected_vids = [v for v in r["vids"] if re.fullmatch(r"V-[0-9]+", v) and v[2:] in r["svs"]] if r["vids"] \
-                else [f"V-{n}" for n in r["svs"]]
-            for vid in deselected_vids:
-                deselected[vid].append(rid)
-            continue
+        # Pair every rule's references, deselected ones included (their V-IDs
+        # drive the "deselected" wording, so a bad reference is reported too).
         # A reference that isn't a whole SV-<digits>r<digits>_rule names no
         # DISA rule: report it, never write it as a Rule_ID.
         unpaired += [f"{rid}: {sv}" for sv in r["bad_svs"]]
@@ -641,7 +641,7 @@ def build_model(res, disa, plan, runner_arch=None, release=None):
             # SSG < 0.1.82 has no #vulnerability_id references: derive V-n from SV-n.
             vids = [f"V-{n}" for n in r["svs"]]
         for vid in vids:
-            by_vid[vid].append(rid)
+            (deselected if result == "notselected" else by_vid)[vid].append(rid)
 
     prov = []
     if plan:
@@ -947,7 +947,45 @@ def write_cklb(path, asset, stig, vulns, now):
 # ---------------------------------------------------------------- main
 
 
+def guard(argv):
+    """--guard --out-dir DIR [--stem S] [--results results.xml]: run as a
+    `when: always` step right before store_artifacts (D8). A SIGKILL between
+    the format renames and the meta rename (or any kill of the checklist
+    step, after which no later step but `when: always` ones runs) can leave
+    checklist files beside a meta that doesn't vouch for them. Keep them only
+    when the meta says generated, every format it lists is present with its
+    sha256, and it was built from this results.xml; otherwise delete them."""
+    ap = argparse.ArgumentParser(prog="xccdf2ckl.py --guard")
+    ap.add_argument("--out-dir", required=True)
+    ap.add_argument("--stem", default="checklist")
+    ap.add_argument("--results")
+    a = ap.parse_args(argv)
+    sha = lambda p: hashlib.sha256(open(p, "rb").read()).hexdigest()
+    files = {ext: f"{a.out_dir}/{a.stem}.{ext}" for ext in ("ckl", "cklb")}
+    try:
+        meta = json.load(open(f"{a.out_dir}/{a.stem}-meta.json", encoding="utf-8"))
+    except (OSError, ValueError):
+        meta = {}
+    listed = (meta.get("formats") or {}) if meta.get("outcome") == "generated" else {}
+    ok = bool(listed) and set(listed) <= set(files) \
+        and all(os.path.isfile(files[e]) and not os.path.islink(files[e]) and sha(files[e]) == h for e, h in listed.items()) \
+        and (not a.results or meta.get("results_sha256") == sha(a.results))
+    removed = []
+    for ext, path in files.items():
+        if (not ok or ext not in listed) and os.path.lexists(path):
+            os.remove(path)
+            removed.append(path)
+    for path in [p + ".partial" for p in files.values()] + [f"{a.out_dir}/{a.stem}-meta.json.partial"]:
+        if os.path.lexists(path):
+            os.remove(path)
+            removed.append(path)
+    print(json.dumps({"guard": "kept" if ok else "removed", "removed": removed}))
+    return 0
+
+
 def main():
+    if sys.argv[1:2] == ["--guard"]:
+        return guard(sys.argv[2:])
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", required=True)
     ap.add_argument("--disa")
@@ -1143,7 +1181,13 @@ def main():
             # Canonical ASCII numbers only: "02" or "Release: 09" (or other
             # Unicode digits) would miss the inventory key and pass a known
             # release off as unknown.
-            rel_m = re.fullmatch(r"Release: ([1-9][0-9]*) Benchmark Date: [0-9]{2} [A-Z][a-z]{2} [0-9]{4}", disa["releaseinfo"])
+            rel_m = re.fullmatch(r"Release: ([1-9][0-9]*) Benchmark Date: ([0-9]{2}) ([A-Z][a-z]{2}) ([0-9]{4})", disa["releaseinfo"])
+            if rel_m:
+                # A real calendar date (no locale: month names spelled out).
+                try:
+                    dt.date(int(rel_m.group(4)), MONTHS.index(rel_m.group(3)) + 1, int(rel_m.group(2)))
+                except ValueError:
+                    rel_m = None
             if not re.fullmatch(r"[1-9][0-9]*", disa["version"]) or not rel_m:
                 # Without both, the checklist can't name its release (CKL
                 # version empty, CKLB version null) and no inventory applies.
