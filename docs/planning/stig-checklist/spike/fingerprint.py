@@ -19,6 +19,7 @@ rule-result has a Rule definition. Anything else is not a verified match.
 """
 import argparse
 import glob
+import hashlib
 import os
 import re
 import sys
@@ -65,6 +66,9 @@ allowed = {r.strip() for r in a.allow_unmapped.split(',') if r.strip()}
 label = re.search(r'V\d+R\d+', ''.join(prof.find(X + 'title').itertext()) + ' ' + ''.join(prof.find(X + 'description').itertext()))
 print(os.path.basename(a.results), pid.split('_profile_')[-1], 'profile label', label.group(0) if label else '?',
       'selected rules', len(sel), 'SV ids', len(svs), 'unmapped', unmapped)
+# What the release table records for this profile (the generator rejects a
+# results.xml whose selection differs).
+print('  selection', len(sel), 'sha256', hashlib.sha256('\n'.join(sorted(sel)).encode()).hexdigest())
 full = []
 for f in sorted(glob.glob(a.pattern)):
     ids = {r.get('id') for r in ET.parse(f).getroot().iter(X11 + 'Rule')}

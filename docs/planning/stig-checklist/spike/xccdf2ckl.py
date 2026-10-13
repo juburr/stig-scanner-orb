@@ -345,17 +345,27 @@ STIG_INVENTORY = {
 # (scan-plan.env datastream_sha256) -> its benchmark id and version, accepted
 # STIG profiles and DISA release (version, release), as fingerprint.py
 # verified it. The profile label is never used: it says V2R7 for the pinned
-# Ubuntu content, whose Rule IDs are V2R8's.
+# Ubuntu content, whose Rule IDs are V2R8's. Each profile records OpenSCAP's
+# selection for it (count, sha256 of the sorted selected rule ids, as
+# fingerprint.py prints them): it depends only on the datastream and profile,
+# so a results.xml selecting anything else is incomplete or edited.
 _P = "xccdf_org.ssgproject.content_profile_"
 RELEASE_TABLE = {
     "27fc84bb2ea29619a944d5a75b361961e1ac7a8dadd48f4165f00d106b0ef944":
-        ("xccdf_org.ssgproject.content_benchmark_RHEL-9", "0.1.82", (_P + "stig", _P + "stig_gui"), ("2", "9")),
+        ("xccdf_org.ssgproject.content_benchmark_RHEL-9", "0.1.82", {
+            _P + "stig": (477, "9392f44a3205c7b707424d07a67d02d03939c58129105e0c1f6c8221a8f216cc"),
+            _P + "stig_gui": (473, "aa643ac6026919c1d49bbe301a4e594cc208f986c0c764cdce7d350b2cafe0b9")}, ("2", "9")),
     "b0c25f6ef5cdbb5cf72d88c8e17a300aa24e4536ca5d1037c92f67474435217a":
-        ("xccdf_org.ssgproject.content_benchmark_RHEL-8", "0.1.82", (_P + "stig", _P + "stig_gui"), ("2", "8")),
+        ("xccdf_org.ssgproject.content_benchmark_RHEL-8", "0.1.82", {
+            _P + "stig": (393, "4f1d0729ae4b04b57922e87f73fe5389edc91d932138f4c537a3bc839c83ee50"),
+            _P + "stig_gui": (389, "9246ef094fb2c140bbac87157cb479e99c31d5ee0fc301318409aface63815ab")}, ("2", "8")),
     "58b6e4cb1032a29b21aede508817dc83335e1a3e34304f3093538e8b64c3988d":
-        ("xccdf_org.ssgproject.content_benchmark_RHEL-10", "0.1.82", (_P + "stig", _P + "stig_gui"), ("1", "2")),
+        ("xccdf_org.ssgproject.content_benchmark_RHEL-10", "0.1.82", {
+            _P + "stig": (473, "98d3c965d076190f5fec2e1e0c80b9247ed117c42600678ccdbad7aa1d9a4acd"),
+            _P + "stig_gui": (470, "6b8e990ff582867c261a9c20d8796e784d27a5eba3475e75388bac22a55062b2")}, ("1", "2")),
     "5ee6c1d4dcf8ca1245e1f532771e9c56a615a415ac076092229209d680f90989":
-        ("xccdf_org.ssgproject.content_benchmark_UBUNTU_22-04", "0.1.82", (_P + "stig",), ("2", "8")),
+        ("xccdf_org.ssgproject.content_benchmark_UBUNTU_22-04", "0.1.82", {
+            _P + "stig": (230, "74e56900e44245724f258614c48132bd7a152bbc8ed790bbf0a8801e1a320c5f")}, ("2", "8")),
 }
 
 TARGET_STIG = {"rhel8": "RHEL_8_STIG", "rhel9": "RHEL_9_STIG", "rhel10": "RHEL_10_STIG", "ubuntu2204": "CAN_Ubuntu_22-04_LTS_STIG"}
@@ -518,11 +528,19 @@ def build_model(res, disa, plan, runner_arch=None, release=None):
         return ("uncertain", None) if uncertain else (None, None)
 
     by_vid = collections.defaultdict(list)
+    # V-IDs whose scanner checks the profile didn't select (notselected:
+    # a profile conflict, a selection default, tailoring). They don't count
+    # toward any status, but a skeleton row must not claim "no check".
+    deselected = collections.defaultdict(list)
     unpaired = []
     for rid, result in res["results"].items():
-        if result == "notselected":
-            continue
         r = res["rules"][rid]  # main() fails a rule-result with no Rule
+        if result == "notselected":
+            deselected_vids = [v for v in r["vids"] if re.fullmatch(r"V-\d+", v) and v[2:] in r["svs"]] if r["vids"] \
+                else [f"V-{n}" for n in r["svs"]]
+            for vid in deselected_vids:
+                deselected[vid].append(rid)
+            continue
         # A reference that isn't a whole SV-<digits>r<digits>_rule names no
         # DISA rule: report it, never write it as a Rule_ID.
         unpaired += [f"{rid}: {sv}" for sv in r["bad_svs"]]
@@ -653,6 +671,16 @@ def build_model(res, disa, plan, runner_arch=None, release=None):
                     status, na_category = "Not_Reviewed", None
                     comment = (f"Not reviewed: this checklist's STIG release has {g['rule_id']}, and the automated result "
                                f"comes from content aligned to a different revision of this requirement. Re-verify.")
+            elif deselected.get(g["vid"]):
+                # The content checks it, but the profile didn't select the
+                # check: say so, not "no automated check".
+                names = ", ".join(sorted(x.replace("xccdf_org.ssgproject.content_rule_", "") for x in deselected[g["vid"]]))
+                status = "Not_Reviewed"
+                detail = (f"The scanner content checks this requirement with {names}, but OpenSCAP did not select it "
+                          f"for the evaluated profile (notselected: a profile conflict, a selection default or "
+                          f"tailoring), so nothing was evaluated.\n\n" + prov_txt)
+                comment = ("Not reviewed: the scanner content has an automated check for this requirement, but the "
+                           "evaluated profile did not select it; manual review required.")
             else:
                 # Still name the scan and the skeleton file this row came from.
                 status, detail = "Not_Reviewed", "No scanner rule maps to this requirement.\n\n" + prov_txt
@@ -925,10 +953,17 @@ def main():
         # Every rule-result must resolve to a Rule in the file's benchmark. One
         # that doesn't (a truncated or edited file) would be dropped silently,
         # a fail included, while the rest still map and generate.
-        undefined = sorted(rid for rid, r in res["results"].items() if r != "notselected" and rid not in res["rules"])
+        undefined = sorted(rid for rid in res["results"] if rid not in res["rules"])
         if undefined:
             return emit({"outcome": "failed", "reason": f"results.xml has {len(undefined)} rule-result(s) with no Rule "
                          f"definition (e.g. {', '.join(undefined[:5])}): incomplete or edited file"}, 1)
+        # And the other way: OpenSCAP writes a rule-result for every Rule,
+        # notselected included, so a Rule without one was dropped (and with
+        # it maybe a fail), in any mode.
+        unresulted = sorted(set(res["rules"]) - set(res["results"]))
+        if unresulted:
+            return emit({"outcome": "failed", "reason": f"results.xml has no rule-result for {len(unresulted)} Rule(s) "
+                         f"(e.g. {', '.join(unresulted[:5])}): incomplete or edited file"}, 1)
         plan = {}
         if a.plan:
             for line in open(a.plan, encoding="utf-8"):
@@ -987,14 +1022,25 @@ def main():
             # and consumers merge rows on the exact id: never invent one.
             return emit({"outcome": "skipped", "reason": f"no known DISA STIG id for {res['benchmark_id']}; "
                          f"supply the DISA STIG file to name it"}, 0)
+        # The release table (D4) identifies the exact datastream bytes the scan
+        # evaluated, for that entry's benchmark, version and STIG profiles.
+        ent = RELEASE_TABLE.get(plan.get("datastream_sha256", ""))
+        if ent and ((res["benchmark_id"], res["benchmark_version"]) != ent[:2] or res["profile_id"] not in ent[2]):
+            ent = None
+        if ent:
+            # Known datastream and profile, so OpenSCAP's selection is known:
+            # a results.xml selecting anything else is incomplete or edited,
+            # whatever names the release.
+            sel = sorted(rid for rid, r in res["results"].items() if r != "notselected")
+            if (len(sel), hashlib.sha256("\n".join(sel).encode()).hexdigest()) != ent[2][res["profile_id"]]:
+                return emit({"outcome": "failed", "reason": f"results.xml selects {len(sel)} rules, but this datastream's "
+                             f"{res['profile_id']} selects {ent[2][res['profile_id']][0]} (a different set): incomplete or edited file"}, 1)
         release = None
         if not disa:
-            # Same rule for the release (D4): only the release table names it,
-            # by the exact datastream bytes the scan evaluated, and only for
-            # that entry's benchmark, version and STIG profiles. Never the
-            # profile label (wrong for pinned Ubuntu), never a made-up V0R0.
-            ent = RELEASE_TABLE.get(plan.get("datastream_sha256", ""))
-            if not ent or (res["benchmark_id"], res["benchmark_version"]) != ent[:2] or res["profile_id"] not in ent[2]:
+            # Same rule for the release: only the table names it without a
+            # skeleton. Never the profile label (wrong for pinned Ubuntu),
+            # never a made-up V0R0.
+            if not ent:
                 return emit({"outcome": "skipped", "reason": f"the DISA release of {res['benchmark_id']} "
                              f"{res['benchmark_version']} {res['profile_id']} (datastream sha256 "
                              f"{plan.get('datastream_sha256') or 'not recorded'}) isn't in the verified release table; "
