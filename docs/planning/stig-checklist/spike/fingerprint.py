@@ -15,7 +15,8 @@ selected rule without a DISA reference is in --allow-unmapped (the known
 helper rules, e.g. enable_authselect on RHEL 8/9), no selected rule has an
 unpaired or malformed V-ID/SV reference (the generator drops those, plan D3,
 so they would vanish from a checklist labeled verified), and every selected
-rule-result has a Rule definition. Anything else is not a verified match.
+rule-result has a Rule definition and every Rule a rule-result. Anything else is
+not a verified match.
 """
 import argparse
 import glob
@@ -48,6 +49,9 @@ prof = next(p for p in bench.iter(X + 'Profile') if p.get('id') == pid)
 sel = {rr.get('idref') for rr in tr.findall(X + 'rule-result') if (rr.findtext(X + 'result') or '').strip() != 'notselected'}
 rules = {r.get('id'): r for r in bench.iter(X + 'Rule')}
 undefined = sorted(rid for rid in sel if rid not in rules)
+# And the other way: OpenSCAP writes a rule-result for every Rule, notselected
+# included, so a Rule without one means a truncated selection.
+unresulted = sorted(set(rules) - {rr.get('idref') for rr in tr.findall(X + 'rule-result')})
 svs_of = {rid: {x.text.strip() for x in rules[rid].findall(X + 'reference') if x.get('href') == HREF} for rid in sel if rid in rules}
 svs = set().union(*svs_of.values())
 unmapped = sorted(rid.replace(RULE, '') for rid, s in svs_of.items() if not s)
@@ -78,6 +82,8 @@ for f in sorted(glob.glob(a.pattern)):
 problems = [f'unpaired V-ID/SV references: {unpaired}'] if unpaired else []
 if undefined:
     problems.append(f'{len(undefined)} selected rule-results with no Rule definition: {undefined[:5]}')
+if unresulted:
+    problems.append(f'{len(unresulted)} Rules with no rule-result: {unresulted[:5]}')
 if set(unmapped) - allowed:
     problems.append(f'selected rules without a DISA reference: {sorted(set(unmapped) - allowed)}')
 if len(full) != 1:

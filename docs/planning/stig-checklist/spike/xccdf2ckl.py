@@ -3,7 +3,7 @@
 XCCDF results.xml, optionally overlaid on DISA's manual STIG XCCDF.
 
     xccdf2ckl.py --results results.xml [--disa U_..._Manual-xccdf.xml]
-                 [--plan scan-plan.env] --host-name NAME --out-dir DIR
+                 --plan scan-plan.env --host-name NAME --out-dir DIR
 
 Stdlib only. Prototype quality: the point is to learn the data, not ship.
 """
@@ -862,7 +862,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", required=True)
     ap.add_argument("--disa")
-    ap.add_argument("--plan")
+    ap.add_argument("--plan", required=True, help="the scan's scan-plan.env (scanner, target, datastream hash)")
     ap.add_argument("--host-name", required=True)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--stem", default="checklist")
@@ -970,11 +970,17 @@ def main():
             return emit({"outcome": "failed", "reason": f"results.xml has no rule-result for {len(unresulted)} Rule(s) "
                          f"(e.g. {', '.join(unresulted[:5])}): incomplete or edited file"}, 1)
         plan = {}
-        if a.plan:
-            for line in open(a.plan, encoding="utf-8"):
-                k, sep, v = line.rstrip("\n").partition("=")
-                if sep:
-                    plan[k] = v
+        for line in open(a.plan, encoding="utf-8"):
+            k, sep, v = line.rstrip("\n").partition("=")
+            if sep:
+                plan[k] = v
+        # Every row's provenance and TARGET_COMMENT name the scanner and the
+        # target by digest or id (a rootfs_path scan by its path): without
+        # them a checklist can't be tied back to what was assessed.
+        if not (plan.get("scanner_repo_digests") or plan.get("scanner_image_id")) or \
+                not (plan.get("image_repo_digests") or plan.get("image_id") or plan.get("rootfs_path")):
+            return emit({"outcome": "failed", "reason": "the scan plan doesn't identify the scanner and the target "
+                         "(scanner_repo_digests/scanner_image_id, image_repo_digests/image_id/rootfs_path)"}, 1)
         disa = None
         if a.disa:
             with open(a.disa, "rb") as f:
@@ -1092,7 +1098,8 @@ def main():
                          f"with a DISA reference ({HREF_RULE} SV-..._rule)"}, 0)
         asset = {
             "ROLE": "None", "ASSET_TYPE": "Computing", "MARKING": "CUI", "HOST_NAME": host_name,
-            "TARGET_COMMENT": "Container image " + target_ref(plan)
+            "TARGET_COMMENT": ("Container image " if plan.get("image_repo_digests") or plan.get("image_id") else "Root filesystem ")
+                              + target_ref(plan)
                               + (f" [{plan['image_platform']}]" if plan.get("image_platform") else ""),
             "TECH_AREA": "", "TARGET_KEY": "", "WEB_OR_DATABASE": "false",
         }
