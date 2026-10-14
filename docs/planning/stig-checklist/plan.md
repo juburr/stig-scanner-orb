@@ -739,3 +739,4 @@ release.
    Confirm before targeting it in PR 2/3.
 
 Review follow-up: scanner inventory checks now record every absent or unusable dpkg status file in both input modes, including targets with no status.d directory. Missing inventory skips checklist generation; provenance does not claim a fragment source when none exists.
+Rootfs inventory availability uses a root helper with the scanner's read-only bind, so runner permissions do not reject valid mounted VM databases.

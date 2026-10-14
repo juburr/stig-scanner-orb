@@ -632,7 +632,9 @@ workflows:
                   set -e
                   test ! -e /tmp/distroless-rootfs/var/lib/dpkg/status
                   grep -q "dpkg_status=missing" build/stig/scan-plan.env
-                  grep -q "^WARNING: the target has /var/lib/dpkg/status.d/" build/stig/summary.txt
+                  grep -q "^WARNING: the target has no usable /var/lib/dpkg/status" build/stig/summary.txt
+                  grep -q "the orb does not modify a rootfs_path tree" build/stig/summary.txt
+                  grep -q "package absence cannot be verified" build/stig/summary.txt
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-fedora

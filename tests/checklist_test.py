@@ -598,22 +598,26 @@ printf '%s\\n' "$1"
 
     def test_scanner_records_plain_absence_and_unusable_dpkg_inventory(self):
         scan = (ROOT / "src/scripts/scan.sh").read_text()
-        helpers = scan.split("rootfs_has() {", 1)[1].split("\ndetect_target_base()", 1)[0]
         section = scan.split('DPKG_STATUS=""', 1)[1].split("# --- 4.", 1)[0]
         tree = self.out / "rootfs"
         database = tree / "var/lib/dpkg"
         database.mkdir(parents=True)
         script = (
-            """set -euo pipefail
-rootfs_has() {"""
-            + helpers
-            + r"""
+            r"""set -euo pipefail
+# Simulate a runner that cannot inspect root-owned package paths. The
+# container stub evaluates the actual helper payload with readable data.
+rootfs_has() { return 1; }
+ROOTFS_MOUNT=( -v "$ROOTFS_DIR:/target:ro" )
 resolve_donor() { DONOR_ID=test-donor; }
 docker() {
     local payload="${!#}"
     payload="${payload//d=\/target\/var\/lib\/dpkg/d=$ROOTFS_DIR/var/lib/dpkg}"
     payload="${payload//\/target\//$ROOTFS_DIR/}"
-    STANZA_AWK="$stanza_awk" sh -c "$payload"
+    case " $* " in *" --network none -u 0:0 "*) ;; *) exit 2 ;; esac
+    if [ "$CLEANUP_ROOTFS" = "0" ]; then
+        case " $* " in *":/target:ro "*) ;; *) exit 2 ;; esac
+    fi
+    STANZA_AWK="${stanza_awk:-}" sh -c "$payload"
 }
 DPKG_STATUS="""
             + section

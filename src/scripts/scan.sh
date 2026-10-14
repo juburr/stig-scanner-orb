@@ -728,11 +728,37 @@ if [ "${FAMILY}" = "dpkg" ] && [ "${CLEANUP_ROOTFS}" = "1" ]; then
             ;;
     esac
 elif [ "${FAMILY}" = "dpkg" ]; then
-    if ! rootfs_has -f "${ROOTFS_REAL}" "${ROOTFS_DIR}/var/lib/dpkg/status" \
-            || ! rootfs_has -r "${ROOTFS_REAL}" "${ROOTFS_DIR}/var/lib/dpkg/status"; then
-        DPKG_STATUS="missing"
-        DPKG_STATUS_REASON="/var/lib/dpkg/status is absent or unusable; the orb does not modify a rootfs_path tree"
-    fi
+    # The runner may not be able to read a mounted VM disk's root-owned
+    # database. Inspect as root, like OpenSCAP, using the same recursively
+    # read-only bind as the scanner. Never write to the caller's tree.
+    resolve_donor dpkg-status
+    # shellcheck disable=SC2016  # $d belongs to the helper container
+    dpkg_result="$(docker run --rm --network none -u 0:0 "${ROOTFS_MOUNT[@]}" \
+        --entrypoint sh "${DONOR_ID}" -c '
+            set -eu
+            d=/target/var/lib/dpkg
+            case "$(readlink -f "$d/status" || true)" in
+                /target/*)
+                    if [ -f "$d/status" ] && [ -r "$d/status" ]; then echo present; exit 0; fi
+                    ;;
+            esac
+            case "$(readlink -f "$d/status.d" || true)" in
+                /target/*)
+                    if [ -d "$d/status.d" ]; then echo missing-fragments; exit 0; fi
+                    ;;
+            esac
+            echo missing
+        ')"
+    DPKG_STATUS_SOURCE=""
+    case "${dpkg_result}" in
+        present) ;;
+        missing|missing-fragments)
+            DPKG_STATUS="missing"
+            DPKG_STATUS_REASON="/var/lib/dpkg/status is absent or unusable; the orb does not modify a rootfs_path tree"
+            if [ "${dpkg_result}" = "missing-fragments" ]; then DPKG_STATUS_SOURCE="/var/lib/dpkg/status.d"; fi
+            ;;
+        *) echo "ERROR: unrecognized dpkg availability result: ${dpkg_result}" >&2; exit 2 ;;
+    esac
 fi
 if [ "${DPKG_STATUS}" = "missing" ]; then
     echo "WARNING: the target has no usable /var/lib/dpkg/status (${DPKG_STATUS_REASON})." >&2
