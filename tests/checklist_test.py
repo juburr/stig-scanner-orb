@@ -545,6 +545,57 @@ main()
         self.assertFalse((self.out / "checklist.ckl").exists())
         self.assertEqual(self.summary().returncode, 1)
 
+    def test_circleci_substitution_cli_also_preserves_option_like_values(self):
+        cli_dir = self.out / "bin"
+        cli_dir.mkdir()
+        cli = cli_dir / "circleci"
+        cli.write_text("""#!/bin/sh
+[ "$1 $2" = "env subst" ] || exit 2
+shift 2
+if [ "$1" = "--" ]; then
+    shift
+else
+    case "$1" in -*) echo "unescaped CLI option" >&2; exit 2 ;; esac
+fi
+[ "$#" -eq 1 ] || exit 2
+printf '%s\\n' "$1"
+""")
+        cli.chmod(0o755)
+        result = self.wrapper(PATH=str(cli_dir) + os.pathsep + os.environ["PATH"], PARAM_CHECKLIST_ASSET_NAME="--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads((self.out / "checklist-meta.json").read_text())["host_name"], "--help")
+
+    def test_rootfs_na_wording_does_not_assume_a_container_or_separate_host(self):
+        self.prepare(
+            fixture(
+                [
+                    ("firmware", 1, "notapplicable", ("#uefi",)),
+                    ("kernel", 2, "notapplicable", ("#system_with_kernel",)),
+                    ("gui", 3, "notapplicable", ("#package_gdm",)),
+                    ("check", 4, "notapplicable", ()),
+                    ("package", 5, "notapplicable", ("#package_imagemagick",)),
+                ]
+            )
+        )
+        self.generate()
+        self.assertIn("container image", self.rows()[0]["comments"])
+        for key in ("image", "image_id", "image_platform"):
+            self.plan.pop(key)
+        self.plan["rootfs_path"] = "/mnt/vm-disk"
+        self.save_plan()
+        self.assertEqual(self.generate("--host-name=vm-disk")[1]["outcome"], "generated")
+        rows = self.rows()
+        for row in rows:
+            self.assertEqual(row["status"], "not_applicable")
+            self.assertIn("root filesystem", row["comments"])
+            self.assertNotIn("container", row["comments"])
+            self.assertNotIn("receives from", row["comments"])
+            self.assertNotIn("host's / platform's STIG checklist", row["comments"])
+        self.assertIn("platform check uefi was false", rows[0]["comments"])
+        self.assertIn("intended deployment", rows[0]["comments"])
+        self.assertIn("imagemagick package", rows[4]["comments"])
+        self.assertIn("package_imagemagick", rows[4]["comments"])
+
     def test_missing_dpkg_database_skips_supported_stig_without_absence_claims(self):
         benchmark = "xccdf_org.ssgproject.content_benchmark_UBUNTU_22-04"
         self.prepare(

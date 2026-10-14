@@ -19,8 +19,13 @@ fail() {
 stub="$(mktemp -d)"
 printf '#!/bin/sh\nexit 1\n' > "${stub}/docker"
 printf '#!/bin/sh\nexit 0\n' > "${stub}/sleep"
-# shellcheck disable=SC2016  # $1..$3 belong to the generated stub
-printf '#!/bin/sh\n[ "$1 $2" = "env subst" ] && printf "%%s\\n" "$3"\n' > "${stub}/circleci"
+cat > "${stub}/circleci" <<'EOF'
+#!/bin/sh
+[ "$1 $2" = "env subst" ] || exit 1
+shift 2
+if [ "$1" = "--" ]; then shift; fi
+printf '%s\n' "$1"
+EOF
 chmod +x "${stub}/docker" "${stub}/circleci" "${stub}/sleep"
 
 # expect NAME WANT ROOTFS — WANT is "<base> (from <source>)" or "ERROR".

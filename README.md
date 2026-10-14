@@ -291,7 +291,9 @@ Use a stable unique asset name across builds. `rootfs_path` checklists skip
 without `checklist_asset_name` under `auto`, and fail under `require`. Extracted
 trees may lack `/.dockerenv`, causing container-marker gates to evaluate host
 requirements and report additional findings. The generator preserves those
-results and never modifies the tree. Asset marking and technology area are
+results and never modifies the tree. Host/firmware N/A comments for rootfs
+scans describe the platform condition neutrally, since the tree may belong to
+a VM or host rather than a container. Asset marking and technology area are
 left blank for your organization's workflow.
 
 Conversion errors do not prevent summary generation. `summarize` enforces

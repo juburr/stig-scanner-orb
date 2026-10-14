@@ -3,7 +3,7 @@
 set -euo pipefail
 subst() {
     if command -v circleci >/dev/null 2>&1; then
-        circleci env subst "$1"
+        circleci env subst -- "$1"
     else
         printf '%s\n' "$1"
     fi

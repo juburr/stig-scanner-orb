@@ -19,7 +19,8 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   pre-scan cleanup, and an always-run artifact guard.
   Ordinary evidence uploads even on failure; checklist uploads require a
   successful guard, with policy exits enforced afterwards. Missing dpkg
-  databases skip checklists, and dash-prefixed asset names remain literal.
+  databases skip checklists, dash-prefixed asset names remain literal through
+  CircleCI substitution, and rootfs N/A wording supports VM and host assets.
 - Fault-injection tests and CI validation with pinned STIG Manager parsers and
   DISA's CKLB schema.
 

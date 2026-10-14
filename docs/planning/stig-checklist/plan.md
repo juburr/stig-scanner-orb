@@ -177,7 +177,9 @@ guard failures still immediately prevent checklist uploads. Standalone summary
 policy remains immediate by default. Both guard and final gate preserve a
 refused overlapping rootfs tree. Recorded missing dpkg databases skip checklist
 generation (unavailable probes do not establish absence); all wrapper string
-arguments use equals syntax so option-like values cannot bypass invalidation.
+arguments use equals syntax, and `circleci env subst` receives an option
+terminator, so option-like values cannot bypass invalidation. Rootfs host/firmware
+justifications are neutral about asset type and control inheritance.
 
 - **New** `src/scripts/checklist.sh`: bash wrapper with `subst()` and an
   embedded stdlib Python heredoc, like `summarize.sh`. Port from

@@ -3,7 +3,7 @@
 set -euo pipefail
 subst() {
     if command -v circleci >/dev/null 2>&1; then
-        circleci env subst "$1"
+        circleci env subst -- "$1"
     else
         printf '%s\n' "$1"
     fi
@@ -319,13 +319,21 @@ JUSTIFICATION = {
 }
 
 
-def justification(cat, gates):
+def justification(cat, gates, rootfs=False):
     kind, _, arg = cat.partition(":")
     if arg == "target":
         kind += "@target"
-    return JUSTIFICATION[kind].format(
-        gates=", ".join(g.lstrip("#") for g in gates) or "n/a", pkgs=arg.replace(",", " / ")
-    )
+    gate_text = ", ".join(g.lstrip("#") for g in gates) or "n/a"
+    if rootfs and kind == "host":
+        return (
+            f"Not Applicable per OpenSCAP: platform check {gate_text} was false for the scanned root filesystem. "
+            "Assess this host or firmware condition against the intended deployment; "
+            "the checklist reflects the offline filesystem evaluation."
+        )
+    template = JUSTIFICATION[kind]
+    if rootfs:
+        template = template.replace("image", "root filesystem")
+    return template.format(gates=gate_text, pkgs=arg.replace(",", " / "))
 
 
 # ------------------------------------------------------ aggregation
@@ -700,7 +708,7 @@ def build_model(res, plan, runner_arch=None, release=None):
             details.append(line)
         status = aggregate(effective)
         if status == "Not_Applicable":
-            comments = [justification(c, list(g)) for c, g in sorted(na_cats)]
+            comments = [justification(c, list(g), rootfs=bool(plan.get("rootfs_path"))) for c, g in sorted(na_cats)]
         elif status == "Not_Reviewed" and uncertain:
             if "na" in uncertain:
                 comments.append(

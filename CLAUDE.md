@@ -77,7 +77,7 @@ Every command is a thin YAML wrapper around a script in `src/scripts/`. Pattern:
     command: <<include(scripts/foo.sh)>>
 ```
 
-Inside the script, every `PARAM_*` env var goes through a `subst()` shim that calls `circleci env subst` if present, else passes through. This is what lets the scripts run locally as plain bash — no CircleCI runtime dependency for development.
+Inside the script, every `PARAM_*` env var goes through a `subst()` shim that calls `circleci env subst -- "$1"` if present, else passes through. The `--` is required: values starting with a dash must not become CLI flags or help text. This is what lets the scripts run locally as plain bash — no CircleCI runtime dependency for development.
 
 When adding a parameter, edit four places: the command's `parameters:` block, the command's `environment:` block, the corresponding pass-through in `jobs/scan.yml`, and the script's variable read at the top.
 
@@ -121,6 +121,8 @@ Parsing and guard failures are never deferred. Keep standalone summarize at
 `defer_gate: false`. Never restore a whole-output-dir upload after the guard.
 A recorded `dpkg_status=missing` skips checklist generation, since package and
 kernel platform conditions cannot establish absence without that database.
+Rootfs N/A wording stays neutral: mounted VM disks and host trees are supported,
+so a false host/firmware gate cannot imply a container-host relationship.
 Shell string arguments use `--option=value` to prevent argparse treating
 dash-prefixed values as options before stale-output invalidation.
 `tests/checklist_test.py` loads production code, adding isolated release entries
