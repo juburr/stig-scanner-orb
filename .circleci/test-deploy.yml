@@ -24,7 +24,6 @@ commands:
         type: string
         default: ""
     steps:
-      - checkout
       - run:
           name: Assert checklist artifacts and release provenance
           command: python3 tools/checklist-smoke.py build/stig <<parameters.outcome>>
@@ -344,7 +343,7 @@ workflows:
           # Level 1 Server profile.
           image: debian:12-slim
           target_base: auto
-          checkout: false
+          checkout: true
           post-steps:
             - run:
                 name: Assert auto-detect resolves debian12 + dpkg signal
@@ -377,7 +376,7 @@ workflows:
           # baseline; never a pass-count threshold, which drifts with SSG.
           image: registry.access.redhat.com/ubi9/ubi:latest
           target_base: rhel9
-          checkout: false
+          checkout: true
           post-steps:
             - run:
                 name: Assert RPM dispatch + evaluated host-STIG subset
@@ -422,7 +421,7 @@ workflows:
           image: registry.access.redhat.com/ubi9/ubi:latest
           target_base: rhel9
           profile_id: xccdf_org.ssgproject.content_profile_cis_server_l1
-          checkout: false
+          checkout: true
           post-steps:
             - run:
                 name: Assert profile_id override + actionable CIS signal
@@ -461,7 +460,7 @@ workflows:
           # mostly notapplicable, ~50 evaluated rules, default gate on.
           image: registry.access.redhat.com/ubi8/ubi:latest
           target_base: auto
-          checkout: false
+          checkout: true
           post-steps:
             - run:
                 name: Assert auto-detect resolves rhel8 + RPM dispatch
@@ -499,7 +498,7 @@ workflows:
           # the old scanner can't evaluate the newer content.
           image: registry.access.redhat.com/ubi10/ubi:latest
           target_base: auto
-          checkout: false
+          checkout: true
           post-steps:
             - run:
                 name: Assert auto-detect resolves rhel10 + RPM dispatch + DISA STIG profile
@@ -649,7 +648,7 @@ workflows:
           # scan evaluates nothing (~12 rules evaluate today).
           image: quay.io/fedora/fedora:latest
           target_base: fedora
-          checkout: false
+          checkout: true
           post-steps:
             - run:
                 name: Assert fedora RPM dispatch + complete scan output
@@ -712,7 +711,7 @@ workflows:
           # docker-export step entirely.
           rootfs_path: /tmp/stig-rootfs
           target_base: rhel9
-          checkout: false
+          checkout: true
           pre-steps:
             - run:
                 name: Stage an extracted rootfs
@@ -773,7 +772,7 @@ workflows:
           checklist_asset_name: rootfs-smoke-app
           rootfs_path: /tmp/stig-rootfs
           target_base: rhel9
-          checkout: false
+          checkout: true
           pre-steps:
             - run:
                 name: Stage an extracted rootfs

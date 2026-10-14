@@ -31,7 +31,7 @@ else:
             continue
         r = res["rules"][rid]
         vids.update(v for v in r["vids"] if v.startswith("V-") and v[2:] in r["svs"])
-    assert meta["vulns"] == len(vids) == entry[4]["profiles"][res["profile_id"].removeprefix(generator["_P"])]["vids"]
+    assert meta["vulns"] == len(vids) == entry[4]["profiles"][res["profile_id"].replace(generator["_P"], "", 1)]["vids"]
     ckl = ET.parse(out / "checklist.ckl")
     assert len(ckl.findall(".//VULN")) == meta["vulns"]
     for row in ckl.findall(".//VULN"):

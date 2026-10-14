@@ -856,6 +856,20 @@ def stigref(stig):
     return f"{stig['title']} :: Version {stig['version']}, {stig['releaseinfo']}"
 
 
+def indent_xml(element, level=0):
+    """Indent generated CKL with the same layout on Python 3.8 and newer."""
+    prefix = "\n" + "\t" * level
+    if len(element):
+        if not element.text or not element.text.strip():
+            element.text = prefix + "\t"
+        for child in element:
+            indent_xml(child, level + 1)
+        if not child.tail or not child.tail.strip():
+            child.tail = prefix
+    if level and (not element.tail or not element.tail.strip()):
+        element.tail = prefix
+
+
 def write_ckl(path, asset, stig, vulns):
     ck = ET.Element("CHECKLIST")
     a = ET.SubElement(ck, "ASSET")
@@ -914,7 +928,7 @@ def write_ckl(path, asset, stig, vulns):
         ET.SubElement(ve, "COMMENTS").text = v["comments"]
         ET.SubElement(ve, "SEVERITY_OVERRIDE").text = ""
         ET.SubElement(ve, "SEVERITY_JUSTIFICATION").text = ""
-    ET.indent(ck, "\t")
+    indent_xml(ck)
     with open_fresh(path) as f:
         # Neutral tool provenance (D9): this file isn't STIG Viewer's output.
         # Neither STIG Viewer 3's import nor STIG Manager's parser reads it.
@@ -1423,9 +1437,9 @@ def main():
         # them) would yield an empty "checklist" that row-count checks can't
         # catch. Require at least one selected rule mapped to a DISA V-ID.
         if len(ent) > 4:
-            expected = ent[4]["profiles"][res["profile_id"].removeprefix(_P)]
+            expected = ent[4]["profiles"][res["profile_id"].replace(_P, "", 1)]
             unmapped = sorted(
-                rid.removeprefix("xccdf_org.ssgproject.content_rule_")
+                rid.replace("xccdf_org.ssgproject.content_rule_", "", 1)
                 for rid, result in res["results"].items()
                 if result != "notselected" and not res["rules"][rid]["svs"]
             )
