@@ -6,6 +6,14 @@ description: >
   mis-dispatched, all-notapplicable scan cannot pass as a clean one.
 
 parameters:
+  checklist:
+    type: enum
+    enum: ["auto", "require", "none"]
+    default: none
+    description: >
+      Checklist gate: auto fails conversion errors; require also fails skips;
+      none preserves standalone scan/summarize callers. Valid meta is reported
+      in every mode. Pass the same value used by the checklist command.
   output_dir:
     type: string
     default: "build/stig"
@@ -44,6 +52,7 @@ steps:
       name: Summarize STIG results and apply gate
       environment:
         PARAM_OUTPUT_DIR: <<parameters.output_dir>>
+        PARAM_CHECKLIST: <<parameters.checklist>>
         PARAM_FAIL_ON_FINDING: <<parameters.fail_on_finding>>
         PARAM_REQUIRE_EVALUATED_RULES: <<parameters.require_evaluated_rules>>
         PARAM_IGNORE_FINDINGS: <<parameters.ignore_findings>>

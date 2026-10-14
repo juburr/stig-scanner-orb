@@ -7,6 +7,19 @@ All notable changes to the STIG Scanner Orb are documented here. Releases use
 
 This is a major release: scans that passed under 1.x can fail under 2.0.0.
 
+### Added
+
+- Offline STIG Viewer `.ckl` and `.cklb` artifacts for verified pinned RHEL
+  8/9/10 and Ubuntu 22.04 STIG profiles, with V-ID aggregation, derived N/A
+  reasons, architecture-aware applicability, and per-row provenance.
+- `checklist` (`auto` / `require` / `none`), `checklist_formats`, and
+  `checklist_asset_name`. The scan job defaults to `auto`; standalone summarize
+  defaults to `none`. SSG-only checklists omit CCIs and manual-only rows.
+- Checklist metadata, summary/provenance reporting, result/file hash validation,
+  pre-scan cleanup, and an always-run artifact guard.
+- Fault-injection tests and CI validation with pinned STIG Manager parsers and
+  DISA's CKLB schema.
+
 ### Breaking
 
 - **`require_evaluated_rules` (new, default `true`).** `summarize` fails the

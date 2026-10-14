@@ -1,0 +1,37 @@
+description: >
+  Generate offline STIG Viewer CKL and CKLB checklists from results.xml.
+  Only verified pinned DISA STIG profiles are supported. Conversion failures
+  are recorded in checklist-meta.json; summarize enforces the policy.
+
+parameters:
+  output_dir:
+    type: string
+    default: "build/stig"
+    description: Same value as passed to scan.
+  checklist:
+    type: enum
+    enum: ["auto", "require", "none"]
+    default: auto
+    description: >
+      auto generates supported STIG checklists and allows documented skips;
+      require also fails skips at summarize; none disables generation.
+  checklist_formats:
+    type: string
+    default: "ckl,cklb"
+    description: Comma-separated ckl and/or cklb, case-insensitive.
+  checklist_asset_name:
+    type: string
+    default: ""
+    description: >
+      Stable asset name. Defaults to the image reference in image mode;
+      required for rootfs_path scans. Sanitized and capped at 255 characters.
+
+steps:
+  - run:
+      name: Generate STIG Viewer checklists
+      environment:
+        PARAM_OUTPUT_DIR: <<parameters.output_dir>>
+        PARAM_CHECKLIST: <<parameters.checklist>>
+        PARAM_CHECKLIST_FORMATS: <<parameters.checklist_formats>>
+        PARAM_CHECKLIST_ASSET_NAME: <<parameters.checklist_asset_name>>
+      command: <<include(scripts/checklist.sh)>>

@@ -1,6 +1,6 @@
 # Plan: STIG Viewer checklists with container N/A justifications
 
-Status: **proposed**, 2026-10-12. Owner: TBD. Done: the independent
+Status: **PR 1 implemented, pending review/merge**, 2026-10-14. Owner: TBD. Done: the independent
 `smoke-rhel10` item (as `smoke-rhel10-auto`).
 
 Inputs:
@@ -162,6 +162,11 @@ Each PR can be released on its own. PR 1 is a minor release: it adds output
 files and parameters and changes no existing behaviour.
 
 ### PR 1: checklist core, SSG-only (M)
+
+Prepared on `feat/stig-checklist-core`; manual STIG Viewer 3 import and customer
+ISSM wording acceptance remain pending. MARKING stays blank instead of guessing
+CUI. The always-run guard receives rootfs_path so it cannot modify a caller's
+tree after scan refused overlapping output. Later PRs remain proposed.
 
 - **New** `src/scripts/checklist.sh`: bash wrapper with `subst()` and an
   embedded stdlib Python heredoc, like `summarize.sh`. Port from

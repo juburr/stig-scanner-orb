@@ -80,6 +80,7 @@ image_repo_digests=registry.access.redhat.com/ubi9/ubi-minimal@sha256:5ed244b62b
 image_platform=linux/arm64
 EOF
 summarize "${dir}" || fail "donated: summarize exited $?"
+check_json donated "${dir}" 'p["checklist"] is None and len(p["scan"]["results_sha256"]) == 64'
 check_json donated "${dir}" 'p["schema"] == "stig-scanner-orb/provenance/v1"'
 check_json donated "${dir}" 'p["target"]["repo_digests"] == ["registry.access.redhat.com/ubi9/ubi-minimal@sha256:5ed244b62bbf4095080144d9d35eb8fcd3d39a9801f94aadd63b9d10978a01ae"]'
 check_json donated "${dir}" 'p["target"]["rootfs_path"] is None'

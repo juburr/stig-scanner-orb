@@ -124,6 +124,11 @@ if [ -n "${ROOTFS_PATH}" ] && [ -d "${ROOTFS_PATH}" ] \
     exit 2
 fi
 
+# This must follow the physical overlap check: never clean the caller's tree.
+rm -f -- "${OUTPUT_DIR}/checklist-meta.json"
+rm -f -- "${OUTPUT_DIR}/checklist.ckl" "${OUTPUT_DIR}/checklist.cklb" \
+    "${OUTPUT_DIR}/checklist.ckl.partial" "${OUTPUT_DIR}/checklist.cklb.partial" \
+    "${OUTPUT_DIR}/checklist-meta.json.partial"
 mkdir -p "${OUTPUT_DIR}"
 OUTPUT_DIR_ABS="$(cd "${OUTPUT_DIR}" && pwd)"
 HOST_UID="$(id -u)"
@@ -899,6 +904,7 @@ fi
     echo "datastream=${DATASTREAM}"
     echo "datastream_source=${DATASTREAM_SOURCE}"
     echo "datastream_sha256=${DATASTREAM_SHA256}"
+    echo "results_sha256=$(sha256sum "${OUTPUT_DIR_ABS}/results.xml" | awk '{print $1}')"
     if [ -n "${DONOR_USED_FOR}" ]; then
         echo "donor_image=${DONOR_IMAGE}"
         echo "donor_image_id=${DONOR_ID}"

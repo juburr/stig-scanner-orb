@@ -15,7 +15,58 @@ release-filters: &release-filters
   tags:
     only: /^v[0-9]+\.[0-9]+\.[0-9]+$/
 
+commands:
+  assert-checklist:
+    parameters:
+      outcome:
+        type: string
+      artifact_name:
+        type: string
+        default: ""
+    steps:
+      - checkout
+      - run:
+          name: Assert checklist artifacts and release provenance
+          command: python3 tools/checklist-smoke.py build/stig <<parameters.outcome>>
+      - when:
+          condition: <<parameters.artifact_name>>
+          steps:
+            - run:
+                name: Stage checklists for consumer validation
+                environment:
+                  CHECKLIST_ARTIFACT: <<parameters.artifact_name>>
+                command: |
+                  mkdir -p "build/checklist-validation/${CHECKLIST_ARTIFACT}"
+                  cp build/stig/checklist.* build/stig/checklist-meta.json "build/checklist-validation/${CHECKLIST_ARTIFACT}/"
+            - persist_to_workspace:
+                root: build/checklist-validation
+                paths: [<<parameters.artifact_name>>]
+
 jobs:
+  checklist-validator:
+    docker:
+      - image: cimg/node:22.16
+    resource_class: small
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /tmp/checklist-validation
+      - run:
+          name: Install pinned CI-only validators
+          command: |
+            npm ci --prefix tools/checklist-validator
+            sudo apt-get update
+            sudo apt-get install -y python3-venv
+            python3 -m venv /tmp/checklist-validators
+            /tmp/checklist-validators/bin/pip install -r tools/checklist-validator/requirements.txt
+      - run:
+          name: Validate identity and review outcomes with STIG Manager
+          command: node tools/checklist-validator/validate.mjs /tmp/checklist-validation/*
+      - run:
+          name: Validate CKLB against pinned DISA schema
+          command: |
+            python3 tools/checklist-validator/fetch_schema.py /tmp/cklb-schema.json
+            /tmp/checklist-validators/bin/python tools/checklist-validator/schema_check.py /tmp/cklb-schema.json /tmp/checklist-validation/*/checklist.cklb
   smoke-wolfi:
     description: >
       Scan a tiny known Wolfi-based image and assert the orb's summary
@@ -34,7 +85,10 @@ jobs:
           image: cgr.dev/chainguard/static:latest
           target_base: wolfi
           output_dir: build/stig
+      - stig-scanner-orb/checklist:
+          output_dir: build/stig
       - stig-scanner-orb/summarize:
+          checklist: auto
           output_dir: build/stig
           fail_on_finding: false
       - run:
@@ -77,6 +131,8 @@ jobs:
             assert p["scanner"]["platform"].startswith("linux/"), "scanner platform not recorded"
             assert p["target"]["platform"] == p["scanner"]["platform"], "target/scanner platform mismatch on one runner"
             ' "$pinned"
+      - assert-checklist:
+          outcome: skipped
       - store_artifacts:
           path: build/stig
           destination: smoke-wolfi
@@ -277,6 +333,9 @@ workflows:
                   echo "pass=${pass:-0} notapplicable=${na:-0}"
                   test "${pass:-0}" -gt 5
                   test "${na:-0}" -gt 50
+            - assert-checklist:
+                outcome: generated
+                artifact_name: smoke-ubuntu2204
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-debian12-auto
@@ -298,6 +357,8 @@ workflows:
                   echo "pass=${pass:-0} notapplicable=${na:-0}"
                   test "${pass:-0}" -gt 3
                   test "${na:-0}" -gt 10
+            - assert-checklist:
+                outcome: skipped
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-rhel9
@@ -348,6 +409,9 @@ workflows:
                     echo "host-STIG scan was hollow; expected evaluated rules"
                     exit 1
                   fi
+            - assert-checklist:
+                outcome: generated
+                artifact_name: smoke-rhel9
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-rhel9-cis
@@ -375,6 +439,17 @@ workflows:
                     echo "CIS scan was hollow; expected evaluated rules"
                     exit 1
                   fi
+            - assert-checklist:
+                outcome: skipped
+            - run:
+                name: Require on a real CIS profile must fail the checklist gate
+                command: |
+                  set +e
+                  PARAM_OUTPUT_DIR=build/stig PARAM_CHECKLIST=require bash src/scripts/summarize.sh
+                  rc=$?
+                  set -e
+                  test "$rc" -eq 1
+                  PARAM_OUTPUT_DIR=build/stig PARAM_CHECKLIST=auto bash src/scripts/summarize.sh
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-rhel8-auto
@@ -404,6 +479,9 @@ workflows:
                     echo "host-STIG scan was hollow; expected evaluated rules"
                     exit 1
                   fi
+            - assert-checklist:
+                outcome: generated
+                artifact_name: smoke-rhel8-auto
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-rhel10-auto
@@ -454,6 +532,9 @@ workflows:
                   test "${na:-0}" -gt 50
                   test "${err:-0}" -eq 0
                   test "${unk:-0}" -eq 0
+            - assert-checklist:
+                outcome: generated
+                artifact_name: smoke-rhel10-auto
           filters: *filters
       # The minimal and distroless bases downstream consumers actually ship.
       - stig-scanner-orb/scan:
@@ -579,6 +660,8 @@ workflows:
                   grep -q "datastream=ssg-fedora-ds.xml" build/stig/scan-plan.env
                   grep -q "family=rpm" build/stig/scan-plan.env
                   grep -q "^Rule results:" build/stig/summary.txt
+            - assert-checklist:
+                outcome: skipped
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-datastream-path
@@ -628,14 +711,15 @@ workflows:
           # rootfs_path mode: scan an already-extracted tree, skipping the
           # docker-export step entirely.
           rootfs_path: /tmp/stig-rootfs
-          target_base: wolfi
+          target_base: rhel9
           checkout: false
           pre-steps:
             - run:
                 name: Stage an extracted rootfs
                 command: |
                   set -e
-                  cid=$(docker create --entrypoint /placeholder cgr.dev/chainguard/static:latest)
+                  docker pull registry.access.redhat.com/ubi9/ubi:latest
+                  cid=$(docker create --entrypoint /placeholder registry.access.redhat.com/ubi9/ubi:latest)
                   mkdir -p /tmp/stig-rootfs
                   docker export "$cid" | tar -C /tmp/stig-rootfs -xf - --numeric-owner --exclude='dev/*'
                   docker rm "$cid"
@@ -650,6 +734,9 @@ workflows:
                   na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
                   echo "notapplicable=${na:-0}"
                   test "${na:-0}" -gt 50
+                  grep -q "rootfs_path scans require checklist_asset_name" build/stig/summary.txt
+            - assert-checklist:
+                outcome: skipped
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-tarball
@@ -679,6 +766,42 @@ workflows:
                   echo "notapplicable=${na:-0}"
                   test "${na:-0}" -gt 50
           filters: *filters
+      - stig-scanner-orb/scan:
+          name: smoke-rootfs-checklist
+          # rootfs_path mode: scan an already-extracted tree, skipping the
+          # docker-export step entirely.
+          checklist_asset_name: rootfs-smoke-app
+          rootfs_path: /tmp/stig-rootfs
+          target_base: rhel9
+          checkout: false
+          pre-steps:
+            - run:
+                name: Stage an extracted rootfs
+                command: |
+                  set -e
+                  docker pull registry.access.redhat.com/ubi9/ubi:latest
+                  cid=$(docker create --entrypoint /placeholder registry.access.redhat.com/ubi9/ubi:latest)
+                  mkdir -p /tmp/stig-rootfs
+                  docker export "$cid" | tar -C /tmp/stig-rootfs -xf - --numeric-owner --exclude='dev/*'
+                  docker rm "$cid"
+          post-steps:
+            - run:
+                name: Assert rootfs-mode outputs
+                command: |
+                  set -e
+                  test -f build/stig/results.xml
+                  test -f build/stig/report.html
+                  grep -q "target-rootfs:" build/stig/summary.txt
+                  na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
+                  echo "notapplicable=${na:-0}"
+                  test "${na:-0}" -gt 50
+            - assert-checklist:
+                outcome: generated
+                artifact_name: smoke-rootfs-checklist
+          filters: *filters
+      - checklist-validator:
+          requires: [smoke-ubuntu2204, smoke-rhel9, smoke-rhel8-auto, smoke-rhel10-auto, smoke-rootfs-checklist]
+          filters: *filters
       - orb-tools/pack:
           filters: *release-filters
       - orb-tools/publish:
@@ -705,6 +828,8 @@ workflows:
             - smoke-distroless-rootfs
             - smoke-datastream-path
             - smoke-rootfs
+            - smoke-rootfs-checklist
+            - checklist-validator
             - smoke-tarball
           context: orb-publishing
           filters: *release-filters

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A CircleCI orb that runs OpenSCAP DISA STIG scans against container images and extracted filesystems. The user-facing surface is `juburr/stig-scanner-orb/scan` (a job) plus `scan` / `summarize` / `load_image` (commands).
+A CircleCI orb that runs OpenSCAP DISA STIG scans against container images and extracted filesystems. The user-facing surface is `juburr/stig-scanner-orb/scan` (a job) plus `scan` / `checklist` / `summarize` / `load_image` (commands).
 
 ## Local working notes
 
@@ -85,7 +85,7 @@ When adding a parameter, edit four places: the command's `parameters:` block, th
 
 - **`orb-tools/review` RC009 fails any inline `run` command in `src/jobs` / `src/commands` longer than 64 characters.** Put it in `src/scripts/` and use `<<include(...)>>`. A failing review stops the setup workflow, so none of the test-deploy jobs run.
 - **`pre-steps` and `post-steps` are reserved orb job parameters.** Don't declare them — CircleCI auto-provides them on every orb job.
-- **The RHEL host STIG against a container is mostly — not entirely — notapplicable.** With SSG 0.1.82 it evaluates the container-applicable subset (file permissions/ownership, package-removal, crypto policy, umask): ~70 of ~480 selected rules on `ubi9/ubi` and `ubi10/ubi`, ~50 on `ubi8/ubi`, with real `fail` results. An older note here claimed "0 pass / 0 fail / ~485 N/A"; that is stale, and tests built on it failed (`smoke-rhel9` / `smoke-rhel8-auto` asserted a hollow scan and got 70 / 51 evaluated rules). The ~400 N/A rules are correct OpenSCAP behavior for host controls, not a scanner defect; don't add scanner-side workarounds — the right fix is a container tailoring file. A scan with **zero** evaluated rules is a different thing: it means mis-dispatch (wrong `target_base`, scanner missing a probe family, unreadable package DB), and `summarize.sh` fails it by default (`require_evaluated_rules: true`). Smoke jobs therefore run at the default gate (it is the non-hollow assertion) and assert `Evaluated rules > 0` plus the N/A baseline — never a `pass > N` threshold, which drifts with SSG content. `smoke-hollow` is the negative test: it forces `target_base: rhel9` onto a Wolfi image and asserts the gate fails closed.
+- **The RHEL host STIG against a container is mostly — not entirely — notapplicable.** With SSG 0.1.82 it evaluates the container-applicable subset (file permissions/ownership, package-removal, crypto policy, umask): ~70 of ~480 selected rules on `ubi9/ubi` and `ubi10/ubi`, ~50 on `ubi8/ubi`, with real `fail` results. An older note here claimed "0 pass / 0 fail / ~485 N/A"; that is stale, and tests built on it failed (`smoke-rhel9` / `smoke-rhel8-auto` asserted a hollow scan and got 70 / 51 evaluated rules). The ~400 N/A rules are correct OpenSCAP behavior for host controls, not a scanner defect; don't add scanner-side workarounds — the checklist generator derives N/A reasons without deselecting host rules. A scan with **zero** evaluated rules is a different thing: it means mis-dispatch (wrong `target_base`, scanner missing a probe family, unreadable package DB), and `summarize.sh` fails it by default (`require_evaluated_rules: true`). Smoke jobs therefore run at the default gate (it is the non-hollow assertion) and assert `Evaluated rules > 0` plus the N/A baseline — never a `pass > N` threshold, which drifts with SSG content. `smoke-hollow` is the negative test: it forces `target_base: rhel9` onto a Wolfi image and asserts the gate fails closed.
 - **`debian12` defaults to CIS Level 1 Server, not ANSSI.** No DISA STIG exists for Debian; 2.0.0 moved the default off the legacy `anssi_np_nt28_high` (19 evaluated rules on `debian:12-slim`) to `cis_level1_server` (136). The README's Debian 12 profile table has measured counts for all 13 profiles — refresh it when the pin moves, and re-check the README's known-defect note (ComplianceAsCode#15150: SSG 0.1.82's CIS banner rules false-pass stock Debian banners on host trees; `notapplicable` in containers). Don't describe CIS as a DISA-accepted STIG substitute: the Cloud Computing SRG allowance is for CSPs at IL2 only.
 - **Every `docker run` uses `--network none`.** The README's security-teams section promises that a scan's only network traffic is the daemon's image pulls; `tests/container_isolation_test.sh` fails on any `docker run` without it. Nothing in the scan path needs the network (no `--fetch-remote-resources`; datastreams come from the pinned image). If you add a container, keep the flag — and if you add any network dependency, update the README egress table first. `scan.sh` also refuses a `rootfs_path` containing a socket, FIFO or device node (a read-only bind mount doesn't stop `connect()`, so a live tree with `/run/docker.sock` would hand the scanner the daemon). The host-side `find` is incomplete when the runner can't read part of the tree, so a non-zero exit with no hit reruns the check as root in the donor/helper image (never the scanner image), failing closed; `tests/container_isolation_test.sh` and `smoke-rootfs-socket` cover it. The scanner's only writable mount is a fresh `mktemp -d` staging dir (`/out`); never mount `output_dir` into it. A `rootfs_path` with nested mounts (per `/proc/self/mountinfo`), or where that can't be read, is bound with `--mount …,bind-recursive=readonly`, because `-v …:ro` leaves submounts writable on kernels < 5.12.
 - **Don't add backward-compat shims for the deleted `greet`/`hello` scaffolding.** It's gone; references to it should be deleted, not preserved.
@@ -99,3 +99,24 @@ When adding a parameter, edit four places: the command's `parameters:` block, th
 `smoke-rhel10-auto` is the only CI coverage for `rhel10`, and the compliance-operator scanner predates RHEL 10 (OpenSCAP 1.3.6 and rpm 4.14 on RHEL 8.7). It finds the target's rpmdb (`/usr/lib/sysimage/rpm`) only through RHEL 10's `/var/lib/rpm` compatibility symlink. An unreadable rpmdb doesn't show up as `error`s: SSG's RHEL Benchmark platform is an `rpminfo` test on `redhat-release`, so every rule goes `notapplicable` and the default `require_evaluated_rules` gate fails the job (measured by deleting the symlink from a ubi10 tree). The job also asserts that `ssg-rhel10-ds.xml` still ships `content_profile_stig` as the DISA STIG for RHEL 10; if a pin bump breaks that, the `rhel10` default in `scan.sh` is what's wrong, not the assertion.
 
 When debugging a scan-script change, the local end-to-end smoke against `cgr.dev/chainguard/static` is the fastest signal — finishes in ~20 s and exercises the full pipeline.
+
+## Checklist core
+
+`src/scripts/checklist.sh` embeds the stdlib generator and artifact guard.
+`RELEASE_TABLE` binds exact datastream hashes to benchmark/version, profiles,
+selection/reference fingerprints, V-ID counts, unmapped allowlists and DISA
+release identity. Never infer release identity from a profile title.
+`tools/fingerprint-stig.py` verifies new pins against candidate DISA releases.
+The scan job runs checklist between scan and summarize; summarize is the only
+gatekeeper. Job/checklist defaults are `auto`, standalone summarize is `none`.
+
+Cleanup invalidates meta first, following the physical overlap check in rootfs
+mode. The always-run guard also receives rootfs_path to avoid modifying a tree
+when scan refused overlapping output. Publication stages all formats, checks
+parse-back, and commits meta last. Meta binds results and files by SHA-256.
+`tests/checklist_test.py` loads production code, adding isolated release entries
+only in tests. Consumer validators in `tools/checklist-validator/` are CI-only.
+
+SSG-only scope is deliberate: no CCIs, manual-only rows, user DISA files,
+tailoring or answer-file overrides yet. Manual STIG Viewer 3 import and ISSM
+wording review remain release acceptance tasks.
