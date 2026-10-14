@@ -14,7 +14,12 @@ FORMATS="$(subst "${PARAM_CHECKLIST_FORMATS-ckl,cklb}")"
 ASSET_NAME="$(subst "${PARAM_CHECKLIST_ASSET_NAME:-}")"
 GUARD="$(subst "${PARAM_CHECKLIST_GUARD:-false}")"
 STIG_XCCDF_PATH="$(subst "${PARAM_STIG_XCCDF_PATH:-}")"
-BUNDLE_DIR="$(dirname "${BASH_SOURCE[0]}")/stig-data"
+# Included CircleCI commands can run from stdin, without BASH_SOURCE.
+# Packaged commands use staged payloads; sibling scripts are a local fallback.
+BUNDLE_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ]; then
+    BUNDLE_DIR="$(dirname "${BASH_SOURCE[0]}")/stig-data"
+fi
 ROOTFS_PATH="$(subst "${PARAM_ROOTFS_PATH:-}")"
 args=("--results=${OUTPUT_DIR}/results.xml" "--out-dir=${OUTPUT_DIR}")
 if [ "${GUARD}" = "true" ]; then

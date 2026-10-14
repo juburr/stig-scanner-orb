@@ -235,6 +235,27 @@ class BundleTests(unittest.TestCase):
         with patch.dict(os.environ, {"STIG_DATA_TEST": "/missing"}):
             self.assertEqual(self.run_bundle(("--mode=none",))[1]["outcome"], "skipped")
 
+    def test_generation_and_guard_from_stdin_with_staged_data(self):
+        self.bundle()
+        payload = self.out / "staged-payload"
+        payload.write_text(self.encoded)
+        script = common.SCRIPT.read_text().replace(
+            'if __name__ == "__main__":',
+            f'RELEASE_TABLE[{H!r}] = {self.entry!r}\n'
+            f'BUNDLE_TABLE[{H!r}] = {self.descriptor!r}\n'
+            f'STIG_INVENTORY[{self.inventory_key!r}] = {self.inventory!r}\n'
+            'if __name__ == "__main__":', 1)
+        env = {**os.environ, "PARAM_OUTPUT_DIR": str(self.out), "STIG_DATA_TEST": str(payload)}
+        result = subprocess.run(["bash", "-s"], input=script, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        meta = json.loads((self.out / "checklist-meta.json").read_text())
+        self.assertEqual(meta["outcome"], "generated", meta)
+        self.assertEqual(meta["release_source"], "bundle")
+        env["PARAM_CHECKLIST_GUARD"] = "true"
+        result = subprocess.run(["bash", "-s"], input=script, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["guard"], "kept")
+
     def test_real_bundles_match_release_source_pins_and_pack_wiring(self):
         sources = json.loads((ROOT / "tools/stig-sources.json").read_text())
         self.assertEqual(set(MOD["BUNDLE_TABLE"]), set(MOD["RELEASE_TABLE"]))

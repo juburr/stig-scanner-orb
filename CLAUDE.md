@@ -162,8 +162,9 @@ conservative revision policy. Record source hashes and drift reasons per row.
 CircleCI's compiled-config limit is lower than the packed-orb limit. The large
 CI matrix uses `.circleci/prepare-test-config.sh`: it packs the actual orb, keeps
 `smoke-rhel9` on the complete packed includes, and creates a second inline orb
-that changes only the four bundle staging bodies to run their identical scripts
+that prepares checkout for staging and changes only the four bundle staging bodies to run their identical scripts
 from checkout. It asserts that every other command, parameter, job and guard
-is equal. All scan paths and both skeleton jobs still feed consumer validation.
+is equal after removing the checkout preparation. The full packed smoke scans
+without checkout, then checks out only for post-step assertions. All scan paths and both skeleton jobs still feed consumer validation.
 Do not duplicate product implementation in the CI adapter or omit the full-orb
 smoke. Every matrix job must checkout before bundle staging.
