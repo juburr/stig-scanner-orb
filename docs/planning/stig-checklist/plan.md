@@ -1,6 +1,6 @@
 # Plan: STIG Viewer checklists with container N/A justifications
 
-Status: **proposed**, 2026-10-12. Owner: TBD. Done: the independent
+Status: **PR 1 implemented, pending review/merge**, 2026-10-14. Owner: TBD. Done: the independent
 `smoke-rhel10` item (as `smoke-rhel10-auto`).
 
 Inputs:
@@ -162,6 +162,24 @@ Each PR can be released on its own. PR 1 is a minor release: it adds output
 files and parameters and changes no existing behaviour.
 
 ### PR 1: checklist core, SSG-only (M)
+
+Prepared on `feat/stig-checklist-core`; manual STIG Viewer 3 import and customer
+ISSM wording acceptance remain pending. MARKING stays blank instead of guessing
+CUI. The always-run guard receives rootfs_path so it cannot modify a caller's
+tree after scan refused overlapping output. Later PRs remain proposed.
+
+Review follow-up: an unremovable invalid checklist cannot be archived. The job
+uploads the six ordinary evidence files with `when: always`, runs the guard,
+then uploads each checklist format only with `when: on_success`. Summarize
+records expected policy exit status; a final always-run step enforces it after
+uploads, preserving valid checklists when the finding gate fails. Parse and
+guard failures still immediately prevent checklist uploads. Standalone summary
+policy remains immediate by default. Both guard and final gate preserve a
+refused overlapping rootfs tree. Recorded missing dpkg databases skip checklist
+generation (unavailable probes do not establish absence); all wrapper string
+arguments use equals syntax, and `circleci env subst` receives an option
+terminator, so option-like values cannot bypass invalidation. Rootfs host/firmware
+justifications are neutral about asset type and control inheritance.
 
 - **New** `src/scripts/checklist.sh`: bash wrapper with `subst()` and an
   embedded stdlib Python heredoc, like `summarize.sh`. Port from
@@ -719,3 +737,7 @@ release.
 6. **DISA oddity.** RHEL 8 V2R9 downloads on its own but is missing from the
    October 2026 library compilation, which lists it as "sunset/removed".
    Confirm before targeting it in PR 2/3.
+
+Review follow-up: scanner inventory checks now record every absent or unusable dpkg status file in both input modes, including targets with no status.d directory. Missing inventory skips checklist generation; provenance does not claim a fragment source when none exists.
+Rootfs inventory availability uses a root helper with the scanner's read-only bind, so runner permissions do not reject valid mounted VM databases.
+RPM inventory availability is queried through the exact scanner image and read-only rootfs mount. Failed or empty inventories are recorded in scan-plan/provenance/summary and skip checklist generation under the same policy as unavailable dpkg inventory.

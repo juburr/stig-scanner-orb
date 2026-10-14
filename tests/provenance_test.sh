@@ -80,6 +80,7 @@ image_repo_digests=registry.access.redhat.com/ubi9/ubi-minimal@sha256:5ed244b62b
 image_platform=linux/arm64
 EOF
 summarize "${dir}" || fail "donated: summarize exited $?"
+check_json donated "${dir}" 'p["checklist"] is None and len(p["scan"]["results_sha256"]) == 64'
 check_json donated "${dir}" 'p["schema"] == "stig-scanner-orb/provenance/v1"'
 check_json donated "${dir}" 'p["target"]["repo_digests"] == ["registry.access.redhat.com/ubi9/ubi-minimal@sha256:5ed244b62bbf4095080144d9d35eb8fcd3d39a9801f94aadd63b9d10978a01ae"]'
 check_json donated "${dir}" 'p["target"]["rootfs_path"] is None'
@@ -154,7 +155,7 @@ check_json dpkg-synth "${dir}" 'p["donor"]["used_for"] == ["extraction", "dpkg-s
 check_summary dpkg-synth "${dir}" "(used for extraction, dpkg-status)"
 check_json dpkg-synth "${dir}" 'p["target"]["dpkg_status"] == {"state": "synthesized", "packages": 11, "source": "/var/lib/dpkg/status.d", "reason": None}'
 check_summary dpkg-synth "${dir}" "  dpkg-status:       synthesized from /var/lib/dpkg/status.d (11 packages)"
-if grep -q "^WARNING: the target has /var/lib/dpkg/status.d/" "${dir}/summary.txt"; then
+if grep -q "^WARNING: the target has no usable /var/lib/dpkg/status" "${dir}/summary.txt"; then
     fail "dpkg-synth: must not warn when the status file was synthesized"
 fi
 
@@ -168,8 +169,8 @@ printf '%s\n' "target_base=debian12" "scanner=s" "datastream=ssg-debian12-ds.xml
 summarize "${dir}" || fail "dpkg-missing: summarize exited $?"
 check_json dpkg-missing "${dir}" 'p["target"]["dpkg_status"]["state"] == "missing" and p["target"]["dpkg_status"]["packages"] is None'
 check_json dpkg-missing "${dir}" 'p["target"]["dpkg_status"]["reason"] == "the orb does not modify a rootfs_path tree"'
-check_summary dpkg-missing "${dir}" "WARNING: the target has /var/lib/dpkg/status.d/ but no /var/lib/dpkg/status"
-check_summary dpkg-missing "${dir}" "none was built (the orb does not modify a rootfs_path tree)"
+check_summary dpkg-missing "${dir}" "WARNING: the target has no usable /var/lib/dpkg/status"
+check_summary dpkg-missing "${dir}" "no usable /var/lib/dpkg/status (the orb does not modify a rootfs_path tree)"
 
 # Image mode whose status.d/ had nothing to build from: same warning.
 dir="$(mktemp -d)"
@@ -181,7 +182,23 @@ printf '%s\n' "target_base=debian12" "scanner=s" "datastream=ssg-debian12-ds.xml
     > "${dir}/scan-plan.env"
 summarize "${dir}" || fail "dpkg-empty: summarize exited $?"
 check_json dpkg-empty "${dir}" 'p["target"]["dpkg_status"] == {"state": "missing", "packages": None, "source": "/var/lib/dpkg/status.d", "reason": "status.d/ holds no package stanzas"}'
-check_summary dpkg-empty "${dir}" "none was built (status.d/ holds no package stanzas)"
+check_summary dpkg-empty "${dir}" "no usable /var/lib/dpkg/status (status.d/ holds no package stanzas)"
+
+# Plain absence is not evidence that the distroless fragment layout exists.
+printf '%s\n' "dpkg_status_source=" "dpkg_status_reason=package database absent" >> "${dir}/scan-plan.env"
+summarize "${dir}" || fail "dpkg-absent: summarize exited $?"
+check_json dpkg-absent "${dir}" 'p["target"]["dpkg_status"]["source"] is None'
+check_summary dpkg-absent "${dir}" "package absence cannot be verified"
+
+# RPM inventory uses the actual scanner query, not filesystem layout hints.
+printf '%s\n' "rpm_status=missing" "rpm_status_packages=" "rpm_status_reason=RPM query failed" >> "${dir}/scan-plan.env"
+summarize "${dir}" || fail "rpm-missing: summarize exited $?"
+check_json rpm-missing "${dir}" 'p["target"]["rpm_status"] == {"state": "missing", "packages": None, "reason": "RPM query failed"}'
+check_summary rpm-missing "${dir}" "WARNING: RPM inventory is unavailable (RPM query failed)"
+printf '%s\n' "rpm_status=available" "rpm_status_packages=185" "rpm_status_reason=" >> "${dir}/scan-plan.env"
+summarize "${dir}" || fail "rpm-available: summarize exited $?"
+check_json rpm-available "${dir}" 'p["target"]["rpm_status"] == {"state": "available", "packages": 185, "reason": None}'
+check_summary rpm-available "${dir}" "RPM inventory: available (185 packages)"
 
 # --- no scan-plan.env: provenance.json still written from results.xml ----
 dir="$(mktemp -d)"

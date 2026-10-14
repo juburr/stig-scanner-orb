@@ -14,7 +14,7 @@ set -euo pipefail
 
 subst() {
     if command -v circleci >/dev/null 2>&1; then
-        circleci env subst "$1"
+        circleci env subst -- "$1"
     else
         echo "$1"
     fi
@@ -37,6 +37,11 @@ normalize_bool() {
 }
 
 OUTPUT_DIR="$(subst "${PARAM_OUTPUT_DIR:-build/stig}")"
+CHECKLIST="$(subst "${PARAM_CHECKLIST:-none}")"
+case "${CHECKLIST}" in
+    auto|require|none) ;;
+    *) echo "ERROR: checklist must be auto, require, or none." >&2; exit 2 ;;
+esac
 IGNORE_FINDINGS="$(subst "${PARAM_IGNORE_FINDINGS:-}")"
 if ! FAIL_ON_FINDING="$(normalize_bool "fail-on-finding" "${PARAM_FAIL_ON_FINDING:-false}")"; then
     exit 2
@@ -44,11 +49,18 @@ fi
 if ! REQUIRE_EVALUATED_RULES="$(normalize_bool "require-evaluated-rules" "${PARAM_REQUIRE_EVALUATED_RULES:-true}")"; then
     exit 2
 fi
+if ! DEFER_GATE="$(normalize_bool "defer-gate" "${PARAM_DEFER_GATE:-false}")"; then
+    exit 2
+fi
 
 RESULTS="${OUTPUT_DIR}/results.xml"
 SUMMARY="${OUTPUT_DIR}/summary.txt"
 PLAN="${OUTPUT_DIR}/scan-plan.env"
 PROVENANCE="${OUTPUT_DIR}/provenance.json"
+if [ "${DEFER_GATE}" = "true" ]; then
+    # A retry that fails before deciding policy cannot reuse an old verdict.
+    rm -f -- "${SUMMARY}.exit-code"
+fi
 
 if [ ! -f "${RESULTS}" ]; then
     echo "ERROR: ${RESULTS} not found — did the scan step run?" >&2
@@ -56,7 +68,8 @@ if [ ! -f "${RESULTS}" ]; then
 fi
 
 python3 - "$RESULTS" "$SUMMARY" "${IGNORE_FINDINGS}" "${PLAN}" \
-    "${FAIL_ON_FINDING}" "${REQUIRE_EVALUATED_RULES}" "${PROVENANCE}" <<'PY'
+    "${FAIL_ON_FINDING}" "${REQUIRE_EVALUATED_RULES}" "${PROVENANCE}" "${CHECKLIST}" <<'PY'
+import hashlib
 import json
 import os
 import re
@@ -65,6 +78,7 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 
 results_path, summary_path, ignore_csv, plan_path, fail_on_finding, require_evaluated, provenance_path = sys.argv[1:8]
+checklist_mode = sys.argv[8]
 
 def local(tag):
     return tag.rsplit("}", 1)[-1]
@@ -93,7 +107,10 @@ GATED_RESULTS = ("fail", "error", "unknown")
 
 ignores = {normalize(t) for t in ignore_csv.split(",") if t.strip()}
 
-root = ET.parse(results_path).getroot()
+with open(results_path, "rb") as fh:
+    results_bytes = fh.read()
+results_sha = hashlib.sha256(results_bytes).hexdigest()
+root = ET.fromstring(results_bytes)
 
 titles = {}
 severities = {}
@@ -262,9 +279,14 @@ provenance = {
         "dpkg_status": {
             "state": plan["dpkg_status"],
             "packages": int(plan["dpkg_status_packages"]) if plan.get("dpkg_status_packages", "").isdigit() else None,
-            "source": "/var/lib/dpkg/status.d",
+            "source": plan.get("dpkg_status_source", "/var/lib/dpkg/status.d") or None,
             "reason": plan.get("dpkg_status_reason") or None,
         } if plan.get("dpkg_status") else None,
+        "rpm_status": {
+            "state": plan["rpm_status"],
+            "packages": int(plan["rpm_status_packages"]) if plan.get("rpm_status_packages", "").isdigit() else None,
+            "reason": plan.get("rpm_status_reason") or None,
+        } if plan.get("rpm_status") else None,
     },
     "target_base": {
         "requested": opt(plan.get("target_base_requested")),
@@ -291,7 +313,53 @@ provenance = {
     "scan": {"start_time": start_time, "end_time": end_time},
 }
 
+# A generated meta vouches for exactly this results.xml and every listed file.
+# A stale or malformed meta never suppresses the ordinary scan summary.
+checklist = None
+checklist_failed = False
+try:
+    with open(os.path.join(os.path.dirname(results_path), "checklist-meta.json"), encoding="utf-8") as fh:
+        meta = json.loads(fh.read((1 << 20) + 1))
+    if not isinstance(meta, dict) or meta.get("results_sha256") != results_sha:
+        raise ValueError("checklist meta is invalid or belongs to another results.xml")
+    if meta.get("outcome") not in ("generated", "skipped", "failed"):
+        raise ValueError("checklist meta has no valid outcome")
+    checklist = meta
+    if meta["outcome"] == "generated":
+        formats = meta.get("formats")
+        if not isinstance(formats, dict) or not formats or set(formats) - {"ckl", "cklb"}:
+            raise ValueError("generated checklist meta has no valid formats")
+        for ext, expected in formats.items():
+            path = os.path.join(os.path.dirname(results_path), "checklist." + ext)
+            if os.path.islink(path) or not os.path.isfile(path):
+                raise ValueError(f"checklist.{ext} is missing or is not a regular file")
+            with open(path, "rb") as fh:
+                digest = hashlib.file_digest(fh, "sha256").hexdigest() if hasattr(hashlib, "file_digest") else hashlib.sha256(fh.read()).hexdigest()
+            if digest != expected:
+                raise ValueError(f"checklist.{ext} does not match its recorded sha256")
+except (OSError, ValueError, TypeError) as exc:
+    # none reports matching meta only, preserving command-only callers.
+    if checklist_mode != "none" or checklist is not None:
+        checklist = {"outcome": "failed", "reason": str(exc), "results_sha256": results_sha}
+if checklist_mode != "none":
+    checklist_failed = checklist is None or checklist["outcome"] == "failed" or (
+        checklist_mode == "require" and checklist["outcome"] != "generated")
+provenance["checklist"] = checklist
+provenance["scan"]["results_sha256"] = results_sha
+
 lines = ["STIG scan summary", ""]
+if checklist is not None:
+    lines.append("Checklist:")
+    lines.append(f"  mode: {checklist_mode}")
+    lines.append(f"  outcome: {checklist['outcome']}")
+    if checklist.get("reason"):
+        lines.append(f"  reason: {checklist['reason']}")
+    if checklist.get("outcome") == "generated":
+        for key in ("host_name", "stig", "formats", "vulns", "status", "na_by_reason", "not_reviewed_by_reason", "unpaired_refs"):
+            lines.append(f"  {key}: {json.dumps(checklist.get(key), sort_keys=True)}")
+    if checklist_failed:
+        lines.append("  checklist policy failed — failing the build.")
+    lines.append("")
 if plan:
     if "image" in plan:
         lines.append(f"  target-image:   {plan['image']}")
@@ -343,13 +411,24 @@ if provenance["target"]["dpkg_status"] and provenance["target"]["dpkg_status"]["
     reason = provenance["target"]["dpkg_status"]["reason"]
     lines.append("")
     lines.append(
-        "WARNING: the target has /var/lib/dpkg/status.d/ but no /var/lib/dpkg/status "
-        "(distroless layout), and none was built"
+        "WARNING: the target has no usable /var/lib/dpkg/status"
         + (f" ({reason})" if reason else "")
         + ". OpenSCAP's dpkg probe reads only the status file, so package rules "
-        "report error and package-removal checks were not evaluated. See README, "
+        "may error or evaluate false; package absence cannot be verified. See README, "
         "Distroless images."
     )
+
+if provenance["target"]["rpm_status"]:
+    inventory = provenance["target"]["rpm_status"]
+    lines.append("")
+    if inventory["state"] == "missing":
+        lines.append(
+            "WARNING: RPM inventory is unavailable"
+            + (f" ({inventory['reason']})" if inventory["reason"] else "")
+            + "; package absence and applicability cannot be verified."
+        )
+    else:
+        lines.append(f"RPM inventory: {inventory['state']} ({inventory['packages']} packages)")
 
 if rule_results == 0:
     lines.append("")
@@ -444,6 +523,7 @@ with open(summary_path + ".gate", "w", encoding="utf-8") as fh:
     fh.write(f"actionable={len(actionable)}\n")
     fh.write(f"evaluated={evaluated}\n")
     fh.write(f"rule_results={rule_results}\n")
+    fh.write(f"checklist_failed={int(checklist_failed)}\n")
 PY
 
 GATE_FILE="${SUMMARY}.gate"
@@ -455,16 +535,18 @@ fi
 ACTIONABLE=""
 EVALUATED=""
 RULE_RESULTS=""
+CHECKLIST_FAILED=""
 while IFS='=' read -r key value; do
     case "${key}" in
         actionable) ACTIONABLE="${value}" ;;
         evaluated) EVALUATED="${value}" ;;
         rule_results) RULE_RESULTS="${value}" ;;
+        checklist_failed) CHECKLIST_FAILED="${value}" ;;
     esac
 done < "${GATE_FILE}"
 rm -f "${GATE_FILE}"
 
-for pair in "actionable:${ACTIONABLE}" "evaluated:${EVALUATED}" "rule_results:${RULE_RESULTS}"; do
+for pair in "actionable:${ACTIONABLE}" "evaluated:${EVALUATED}" "rule_results:${RULE_RESULTS}" "checklist_failed:${CHECKLIST_FAILED}"; do
     name="${pair%%:*}"
     value="${pair#*:}"
     case "${value}" in
@@ -481,6 +563,10 @@ if [ "${RULE_RESULTS}" -eq 0 ]; then
 fi
 
 failed=0
+if [ "${CHECKLIST_FAILED}" -ne 0 ]; then
+    echo "==> checklist=${CHECKLIST} policy failed; see Checklist in summary.txt."
+    failed=1
+fi
 if [ "${EVALUATED}" -eq 0 ] && [ "${REQUIRE_EVALUATED_RULES}" = "true" ]; then
     echo "==> require_evaluated_rules=true and 0 rules evaluated to pass or fail — failing the build."
     echo "    That is not evidence of compliance. It usually means the scan was"
@@ -495,6 +581,14 @@ if [ "${ACTIONABLE}" -gt 0 ] && [ "${FAIL_ON_FINDING}" = "true" ]; then
     failed=1
 fi
 if [ "${failed}" -ne 0 ]; then
+    if [ "${DEFER_GATE}" = "true" ]; then
+        (set -o noclobber; printf '1\n' > "${SUMMARY}.exit-code")
+        echo "==> Policy failure recorded; the scan job enforces it after artifact upload."
+        exit 0
+    fi
     exit 1
+fi
+if [ "${DEFER_GATE}" = "true" ]; then
+    (set -o noclobber; printf '0\n' > "${SUMMARY}.exit-code")
 fi
 echo "==> summarize complete (actionable: ${ACTIONABLE}, evaluated: ${EVALUATED}, fail-on-finding ${FAIL_ON_FINDING}, require-evaluated-rules ${REQUIRE_EVALUATED_RULES})"

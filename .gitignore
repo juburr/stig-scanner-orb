@@ -8,3 +8,5 @@ orb.yml
 docs/*
 !docs/planning/
 docs/planning/research_notes/
+node_modules/
+__pycache__/

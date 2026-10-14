@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "@nuwcdivnpt/stig-manager-client-modules": "1.6.8"
+  },
+  "name": "stig-scanner-orb-checklist-validator",
+  "private": true,
+  "type": "module",
+  "description": "CI-only STIG Manager checklist compatibility checks"
+}

@@ -101,8 +101,8 @@ Known content defect: in SSG 0.1.82, the CIS banner rules `banner_etc_issue_cis`
 
 Google distroless images (`gcr.io/distroless/*-debian12`) ship `/etc/os-release` (`ID=debian`, `VERSION_ID=12`), so `auto` resolves them to `debian12`. They do not ship `/var/lib/dpkg/status`: each installed package is a stanza in its own file under `/var/lib/dpkg/status.d/`. OpenSCAP's dpkg probe reads only the status file, so without it every package check comes back `error`, and "package X must not be installed" rules are never evaluated.
 
-- **Image mode:** the orb builds `/var/lib/dpkg/status` from the `status.d/` stanzas in its scratch copy of the rootfs (never in the image), adding the `Status: install ok installed` line dpkg would have recorded. `summary.txt` shows `dpkg-status: synthesized … (N packages)`, and `provenance.json` records `target.dpkg_status`. Against `cc-debian12` this turns 27 `error` results into evaluated rules with the default CIS Level 1 Server profile (5 with the legacy `anssi_np_nt28_high`). If the file can't be built (`status.d/` holds no package stanzas, or `/var/lib/dpkg` is a symlink, which the orb won't write through), the scan records `dpkg_status: missing` with the reason and warns, as in `rootfs_path` mode.
-- **`rootfs_path` mode:** the orb never modifies your tree. It records `dpkg_status: missing` and prints a warning in the log and `summary.txt`. To fix it, add the file to your extracted tree before the scan (with the same `Status` line image mode adds):
+- **Image mode:** the orb builds `/var/lib/dpkg/status` from the `status.d/` stanzas in its scratch copy of the rootfs (never in the image), adding the `Status: install ok installed` line dpkg would have recorded. `summary.txt` shows `dpkg-status: synthesized … (N packages)`, and `provenance.json` records `target.dpkg_status`. Against `cc-debian12` this turns 27 `error` results into evaluated rules with the default CIS Level 1 Server profile (5 with the legacy `anssi_np_nt28_high`). If no usable status file exists and it can't be built (the package database is absent, the status file is not a readable regular file inside the rootfs, `status.d/` holds no package stanzas, or `/var/lib/dpkg` is a symlink, which the orb won't write through), the scan records `dpkg_status: missing` with the reason and warns, as in `rootfs_path` mode.
+- **`rootfs_path` mode:** the orb never modifies your tree. The orb checks availability as root in a read-only helper container, matching the scanner privileges rather than the runner's permissions. When no readable regular status file resolves inside your tree, it records `dpkg_status: missing` (even if `status.d/` is also absent) and prints a warning in the log and `summary.txt`. To fix it, add the file to your extracted tree before the scan (with the same `Status` line image mode adds):
   ```sh
   d=/path/to/rootfs/var/lib/dpkg
   for f in "$d"/status.d/*; do
@@ -183,7 +183,7 @@ Measured with SSG content 0.1.82 (rule results; `evaluated` = pass + fail):
 Two consequences for compliance evidence:
 
 - **A STIG run against a container is not an all-`notapplicable` baseline.** It produces real `fail` results with DISA identifiers (e.g. `configure_crypto_policy`, high severity). Triage them like any other finding.
-- **A clean STIG run covers only 10–15% of the profile.** The ~400 `notapplicable` rules are host controls (audit, SSH, kernel, boot), which an assessor will expect to see inherited from the host platform rather than satisfied by the image.
+- **A clean STIG run covers only 10–15% of the profile.** Most of the ~400 `notapplicable` rules concern host controls (audit, SSH, kernel, boot); assess those on the host/platform checklist. A checklist N/A status alone does not establish RMF inheritance.
 
 For a second container-relevant control set, override `profile_id` to one of:
 
@@ -191,7 +191,7 @@ For a second container-relevant control set, override `profile_id` to one of:
 - `xccdf_org.ssgproject.content_profile_pci-dss` — narrower scope, more container-relevant rules per scope.
 - `xccdf_basic_profile_.check` (only on Wolfi targets) — purpose-built for container scanning, not a host benchmark.
 
-A container-tailored RHEL STIG tailoring file is on the roadmap.
+The checklist output explains N/A conditions without deselecting host rules. Tailoring for site-specific values and additions is planned separately.
 
 ## 🎛️ Job parameters
 
@@ -209,6 +209,9 @@ A container-tailored RHEL STIG tailoring file is on the roadmap.
 | `fail_on_finding` | boolean | `false` | When true, exit 1 on any non-ignored `fail`, `error`, or `unknown` result. |
 | `require_evaluated_rules` | boolean | `true` | Fail the job when zero rules evaluate to pass, fail, fixed, or informational. Set false only on a job that intentionally records an all-notapplicable baseline (see [Gates](#-gates)). |
 | `ignore_findings` | string | `""` | Comma-separated rule IDs to subtract from the fail/error/unknown gate count. |
+| `checklist` | enum | `auto` (job/checklist); `none` (summarize) | `auto` allows documented skips and fails generation errors; `require` also fails skips; `none` disables generation and enforcement. |
+| `checklist_formats` | string | `ckl,cklb` | One or both formats; trimmed, case-insensitive, comma-separated. Empty or unknown formats are errors. |
+| `checklist_asset_name` | string | `""` | Stable unique asset name; defaults to the image reference. Required for rootfs checklists. XML-safe, trimmed, capped at 255 characters. |
 | `output_dir` | string | `build/stig` | Where reports and summary land. In `rootfs_path` mode it must not overlap the scanned tree; that is checked by physical path (symlinks resolved), so don't point it at a bind-mount alias of the tree either. |
 | `resource_class` | string | `medium` | Pass-through to the machine executor. |
 | `no_output_timeout` | string | `30m` | OpenSCAP can be silent for several minutes during evaluation. |
@@ -226,9 +229,94 @@ Under `<output_dir>/`:
 - `results.xml` — the XCCDF results document, machine-readable.
 - `summary.txt` — a provenance block, pass / fail / error / unknown / notapplicable counts, the rule list for fail, error, unknown, and notchecked, and a hollow-scan warning when nothing evaluated. The "ignored" tier appears separately for auditing.
 - `provenance.json` — the same provenance, machine-readable (see below).
+- `checklist.ckl`, `checklist.cklb` — STIG Viewer checklists for a supported STIG scan.
+- `checklist-meta.json` — generation outcome/reason, source and artifact hashes, STIG release, asset identity, status counts, and N/A reasons.
 - `scan-plan.env` — the raw `key=value` facts `scan` recorded (references, image ids, digests, datastream hash) and `summarize` reads.
 
 These are well-suited as ATO evidence and easy to attach to your container as in-toto attestations via Cosign.
+
+## STIG Viewer checklists
+
+The `scan` job generates `.ckl` (STIG Viewer 2 XML) and `.cklb` (STIG Viewer 3
+JSON) offline, using Python's standard library on the runner. Supported pinned
+releases are RHEL 8 V2R8, RHEL 9 V2R9, RHEL 10 V1R2, and Ubuntu 22.04 V2R8;
+RHEL `stig_gui` profiles are supported too. CIS, Debian, Fedora `standard`, and
+Wolfi/Chainguard profiles are skipped, even when their rules cite DISA IDs.
+A scan recording missing dpkg or RPM inventory also skips checklist generation: a
+failed package probe cannot prove package absence or N/A applicability. Repair
+`/var/lib/dpkg/status` or restore the RPM database and rerun the scan first.
+RPM inventory is queried with the exact scanner image, root user, and read-only
+rootfs mount; a failed or empty query cannot establish package absence.
+`scan-plan.env`, `summary.txt`, and `provenance.json` record the result and
+available package count.
+An unknown or modified datastream is skipped until its exact SHA-256 and
+profile mapping are verified in the release table. A profile title never
+supplies release identity: the pinned Ubuntu title names an older release.
+
+Each row is keyed by DISA V-ID and carries the full Rule ID for that release.
+Several scanner checks can contribute: any failure makes the row **Open**;
+otherwise any unevaluated check makes it **Not Reviewed**; all N/A checks make
+it **Not Applicable**; remaining pass/fixed checks make it **Not a Finding**.
+The finding ignore-list affects the build gate only, never checklist verdicts.
+Finding details retain every contributing result, scanner identity, datastream
+hash, target digest or local image ID, platform, runner CPU and scan times.
+
+Every N/A row explains the deciding condition: host control, absent graphical
+component, absent package, architecture, other platform condition, or a check
+that itself returned N/A. Compound conditions use a specific category only when
+the evidence proves which term failed. Host comments direct requirements to
+the host's assessment; they do not establish RMF inheritance or replace ISSM
+review. Architecture gates read the scanning host's CPU. Uncertain target
+applicability makes the row Not Reviewed; a gate demonstrably false for the
+target is recomputed as N/A, preserving the original result as evidence.
+
+This release uses **SSG metadata only**: no CCIs, SSG wording, and no rows for
+requirements absent from the selected scanner content, including manual-only
+requirements. It is automated evidence for the content's release, not a
+complete manual assessment or an assessment of the newest DISA release.
+Release-aware DISA metadata is planned separately.
+
+Open `.cklb` in STIG Viewer 3, or use **Import V2 Checklist** for `.ckl`.
+STIG Manager imports either format. Verify the intended asset and STIG revision
+before merging reviews. STIG Viewer's optional loose Rule ID matching does not
+prove a changed requirement was assessed. eMASS upload and assessor acceptance
+depend on your organization's workflow.
+
+```yaml
+jobs:
+  - stig-scanner-orb/scan:
+      image: registry.access.redhat.com/ubi9/ubi:latest
+      checklist: require
+      checklist_formats: cklb
+      checklist_asset_name: payments-api
+```
+
+Use a stable unique asset name across builds. `rootfs_path` checklists skip
+without `checklist_asset_name` under `auto`, and fail under `require`. Extracted
+trees may lack `/.dockerenv`, causing container-marker gates to evaluate host
+requirements and report additional findings. The generator preserves those
+results and never modifies the tree. Host/firmware N/A comments for rootfs
+scans describe the platform condition neutrally, since the tree may belong to
+a VM or host rather than a container. Asset marking and technology area are
+left blank for your organization's workflow.
+
+Conversion errors do not prevent summary generation. `summarize` enforces
+`auto` (errors fail, skips pass), `require` (only generated passes), or `none`
+(no checklist gate). Meta is bound to the exact `results.xml`; every listed
+artifact must match its hash. The job cleans stale artifacts before scanning
+and runs an upload guard even after an interrupted conversion. Ordinary scan
+evidence uploads first; only a successful guard permits CKL/CKLB uploads.
+Policy failures are decided by summarize and enforced after artifact upload,
+so a findings gate still preserves valid checklists. A guard failure, including
+unremovable invalid output, prevents checklist uploads. Standalone summarize
+continues to enforce policy immediately (`defer_gate: false`).
+
+Existing standalone `scan` → `summarize` callers keep working: the summarize
+command defaults to `checklist: none`. Custom jobs can insert the `checklist`
+command between them, passing the same `checklist` mode and `output_dir` to
+checklist and summarize. The packaged scan job also provides pre-scan cleanup
+and the always-run upload guard; prefer it when those guarantees are required.
+No checklist generation step makes additional network requests.
 
 ## 🔁 Reproducibility and provenance
 
@@ -278,7 +366,17 @@ The pins live in one place, `DEFAULT_CHAINGUARD_IMAGE` and `DEFAULT_RPM_SCANNER_
 2. Update both constants in `scan.sh` and the table above, keeping the `name:tag@sha256:` form.
 3. Run the local smoke from Local development below against a Wolfi image and a UBI image, and compare the provenance block and rule counts with the previous pin: `ssg-version`, `openscap`, and evaluated/fail counts. Update the measured tables in this README if they moved.
 4. Record the move in `CHANGELOG.md` with old → new SSG and OpenSCAP versions. A content bump changes scan results, and new `fail` results can trip `fail_on_finding`, so release it as at least a minor version.
-5. Push; the `test-deploy` matrix pulls every pin and exercises both scanner paths.
+5. For each STIG datastream in the new pin, record its exact SHA-256 and scan
+   every accepted `stig`/`stig_gui` profile. Run
+   `python3 tools/fingerprint-stig.py results.xml 'releases/*_Manual-xccdf.xml'`
+   against candidate DISA releases (add `--allow-unmapped enable_authselect`
+   where appropriate). Exactly one release must contain every selected Rule
+   ID; every profile must resolve to the same release, with no malformed
+   references. Update `RELEASE_TABLE` in `src/scripts/checklist.sh`: benchmark,
+   version, canonical release info, per-profile selection count/fingerprint,
+   V-ID count, unmapped-rule allowlist, and datastream filename. Never guess
+   from the profile label. The smoke matrix checks every table entry.
+6. Push; the `test-deploy` matrix pulls every pin and exercises both scanner paths.
 
 ## 🙈 Ignore-list semantics
 

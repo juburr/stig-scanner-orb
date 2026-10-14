@@ -26,7 +26,7 @@ set -euo pipefail
 # --- env-substitution shim: works in CircleCI and locally -----------------
 subst() {
     if command -v circleci >/dev/null 2>&1; then
-        circleci env subst "$1"
+        circleci env subst -- "$1"
     else
         echo "$1"
     fi
@@ -124,6 +124,12 @@ if [ -n "${ROOTFS_PATH}" ] && [ -d "${ROOTFS_PATH}" ] \
     exit 2
 fi
 
+# This must follow the physical overlap check: never clean the caller's tree.
+rm -f -- "${OUTPUT_DIR}/checklist-meta.json"
+rm -f -- "${OUTPUT_DIR}/summary.txt.exit-code"
+rm -f -- "${OUTPUT_DIR}/checklist.ckl" "${OUTPUT_DIR}/checklist.cklb" \
+    "${OUTPUT_DIR}/checklist.ckl.partial" "${OUTPUT_DIR}/checklist.cklb.partial" \
+    "${OUTPUT_DIR}/checklist-meta.json.partial"
 mkdir -p "${OUTPUT_DIR}"
 OUTPUT_DIR_ABS="$(cd "${OUTPUT_DIR}" && pwd)"
 HOST_UID="$(id -u)"
@@ -432,7 +438,7 @@ parse_os_release_field() {
 }
 # Prints "<target_base> <source>", source being os-release or package-db
 # (the filesystem-shape fallback).
-# rootfs_has -d|-f ROOTFS_REAL PATH: PATH is a directory / regular file
+# rootfs_has TEST ROOTFS_REAL PATH: PATH satisfies the file test
 # once every symlink in it is resolved, and it resolves inside ROOTFS_REAL
 # (the rootfs's physical path). Without the containment check an absolute
 # symlink in the image (e.g. var/lib/dpkg/status.d -> /etc) would be
@@ -611,7 +617,7 @@ echo "    datastream:    ${DATASTREAM}"
 echo "    profile:       ${PROFILE}"
 echo "    output:        ${OUTPUT_DIR_ABS}"
 
-# --- 3b. dpkg status for distroless images ---------------------------------
+# --- 3b. dpkg inventory availability and distroless synthesis ---------------------------------
 # OpenSCAP's dpkginfo probe reads only <root>/var/lib/dpkg/status. Google
 # distroless images record their packages as one stanza per file under
 # /var/lib/dpkg/status.d/ (plus *.md5sums) and ship no status file, so every
@@ -619,13 +625,19 @@ echo "    output:        ${OUTPUT_DIR_ABS}"
 # `pass`. In image mode the extracted rootfs is our scratch copy, so build
 # the status file there from the stanzas. In rootfs_path mode the tree
 # belongs to the caller and stays untouched; summarize warns instead.
+# An absent, unreadable, non-regular, or out-of-tree status file cannot
+# establish package absence, even when status.d/ is also absent.
 # Recorded as dpkg_status=synthesized|missing in scan-plan.env, with the
 # reason when the file could not be built.
 DPKG_STATUS=""
 DPKG_STATUS_PACKAGES=""
 DPKG_STATUS_REASON=""
+DPKG_STATUS_SOURCE=""
 ROOTFS_REAL="$(cd "${ROOTFS_DIR}" && pwd -P)"
 ROOTFS_REAL="${ROOTFS_REAL%/}"
+if [ "${FAMILY}" = "dpkg" ] && rootfs_has -d "${ROOTFS_REAL}" "${ROOTFS_DIR}/var/lib/dpkg/status.d"; then
+    DPKG_STATUS_SOURCE="/var/lib/dpkg/status.d"
+fi
 if [ "${FAMILY}" = "dpkg" ] && [ "${CLEANUP_ROOTFS}" = "1" ]; then
     # The helper decides whether to write the package database OpenSCAP
     # will read, so record it as a donor role in the provenance.
@@ -668,7 +680,14 @@ if [ "${FAMILY}" = "dpkg" ] && [ "${CLEANUP_ROOTFS}" = "1" ]; then
         "${DONOR_ID}" -c '
             set -eu
             d=/target/var/lib/dpkg
-            if [ -e "$d/status" ] || [ -L "$d/status" ]; then echo present; exit 0; fi
+            if [ -e "$d/status" ] || [ -L "$d/status" ]; then
+                case "$(readlink -f "$d/status" || true)" in
+                    /target/*)
+                        if [ -f "$d/status" ] && [ -r "$d/status" ]; then echo present; exit 0; fi
+                        ;;
+                esac
+                echo unusable; exit 0
+            fi
             if [ ! -d "$d/status.d" ]; then echo absent; exit 0; fi
             if [ "$(readlink -f "$d")" != "$d" ]; then echo symlinked; exit 0; fi
             # Build in container-private temporaries, never at a fixed
@@ -688,13 +707,19 @@ if [ "${FAMILY}" = "dpkg" ] && [ "${CLEANUP_ROOTFS}" = "1" ]; then
             echo "synthesized ${count}"
         ')"
     case "${dpkg_result}" in
+        absent|unusable)
+            DPKG_STATUS="missing"
+            DPKG_STATUS_REASON="/var/lib/dpkg/status is absent or is not a readable regular file inside the rootfs"
+            ;;
         synthesized\ *)
             DPKG_STATUS="synthesized"
+            DPKG_STATUS_SOURCE="/var/lib/dpkg/status.d"
             DPKG_STATUS_PACKAGES="${dpkg_result#synthesized }"
             echo "==> Synthesized /var/lib/dpkg/status from status.d/ (${DPKG_STATUS_PACKAGES} packages) in the scratch rootfs"
             ;;
         empty)
             DPKG_STATUS="missing"
+            DPKG_STATUS_SOURCE="/var/lib/dpkg/status.d"
             DPKG_STATUS_REASON="status.d/ holds no package stanzas"
             ;;
         symlinked)
@@ -702,17 +727,43 @@ if [ "${FAMILY}" = "dpkg" ] && [ "${CLEANUP_ROOTFS}" = "1" ]; then
             DPKG_STATUS_REASON="/var/lib/dpkg is a symlink, which the orb does not write through"
             ;;
     esac
-elif [ "${FAMILY}" = "dpkg" ] \
-        && rootfs_has -d "${ROOTFS_REAL}" "${ROOTFS_DIR}/var/lib/dpkg/status.d" \
-        && ! rootfs_has -f "${ROOTFS_REAL}" "${ROOTFS_DIR}/var/lib/dpkg/status"; then
-    DPKG_STATUS="missing"
-    DPKG_STATUS_REASON="the orb does not modify a rootfs_path tree"
+elif [ "${FAMILY}" = "dpkg" ]; then
+    # The runner may not be able to read a mounted VM disk's root-owned
+    # database. Inspect as root, like OpenSCAP, using the same recursively
+    # read-only bind as the scanner. Never write to the caller's tree.
+    resolve_donor dpkg-status
+    # shellcheck disable=SC2016  # $d belongs to the helper container
+    dpkg_result="$(docker run --rm --network none -u 0:0 "${ROOTFS_MOUNT[@]}" \
+        --entrypoint sh "${DONOR_ID}" -c '
+            set -eu
+            d=/target/var/lib/dpkg
+            case "$(readlink -f "$d/status" || true)" in
+                /target/*)
+                    if [ -f "$d/status" ] && [ -r "$d/status" ]; then echo present; exit 0; fi
+                    ;;
+            esac
+            case "$(readlink -f "$d/status.d" || true)" in
+                /target/*)
+                    if [ -d "$d/status.d" ]; then echo missing-fragments; exit 0; fi
+                    ;;
+            esac
+            echo missing
+        ')"
+    DPKG_STATUS_SOURCE=""
+    case "${dpkg_result}" in
+        present) ;;
+        missing|missing-fragments)
+            DPKG_STATUS="missing"
+            DPKG_STATUS_REASON="/var/lib/dpkg/status is absent or unusable; the orb does not modify a rootfs_path tree"
+            if [ "${dpkg_result}" = "missing-fragments" ]; then DPKG_STATUS_SOURCE="/var/lib/dpkg/status.d"; fi
+            ;;
+        *) echo "ERROR: unrecognized dpkg availability result: ${dpkg_result}" >&2; exit 2 ;;
+    esac
 fi
 if [ "${DPKG_STATUS}" = "missing" ]; then
-    echo "WARNING: the target has /var/lib/dpkg/status.d/ but no /var/lib/dpkg/status," >&2
-    echo "         and none was built (${DPKG_STATUS_REASON})." >&2
+    echo "WARNING: the target has no usable /var/lib/dpkg/status (${DPKG_STATUS_REASON})." >&2
     echo "         OpenSCAP's dpkg probe reads only the status file, so package rules" >&2
-    echo "         will report 'error'. See the README (Distroless images)." >&2
+    echo "         may error or evaluate false; package absence cannot be verified." >&2
 fi
 
 # --- 4. pull scanner image -----------------------------------------------
@@ -807,6 +858,30 @@ fi
 # ${a[@]+"${a[@]}"}: an empty array is an unbound variable under set -u
 # in bash < 4.4 (e.g. the macOS system bash used for local runs).
 [ "${#ROOTFS_MOUNT[@]}" -gt 0 ] || ROOTFS_MOUNT=( -v "${ROOTFS_DIR}:/target:ro" )
+# Verify RPM inventory through the scanner's own librpm, user and rootfs
+# mount. A failed package probe is not evidence of absence.
+RPM_STATUS=""
+RPM_STATUS_PACKAGES=""
+RPM_STATUS_REASON=""
+if [ "${FAMILY}" = "rpm" ]; then
+    # shellcheck disable=SC2016  # $packages belongs to the scanner container
+    rpm_inventory="$(docker run --rm --network none -u 0:0 "${ROOTFS_MOUNT[@]}" \
+        --entrypoint sh "${SCANNER_ID}" -c '
+            set -eu
+            if packages=$(rpm --root /target -qa --qf "%{NAME}\n"); then
+                if [ -n "$packages" ]; then printf "%s\n" "$packages" | wc -l; exit 0; fi
+            fi
+            echo missing
+        ')"
+    case "${rpm_inventory}" in
+        ""|*[!0-9]*|0)
+            RPM_STATUS="missing"
+            RPM_STATUS_REASON="the scanner could not query a nonempty RPM inventory through its read-only rootfs mount"
+            echo "WARNING: ${RPM_STATUS_REASON}; package absence cannot be verified." >&2
+            ;;
+        *) RPM_STATUS="available"; RPM_STATUS_PACKAGES="${rpm_inventory}" ;;
+    esac
+fi
 # The scanner writes into a fresh private dir, never into output-dir
 # itself: output-dir is the caller's (it may be shared, hold sockets, or
 # contain the scratch rootfs), and /out is the scanner's one writable
@@ -899,6 +974,7 @@ fi
     echo "datastream=${DATASTREAM}"
     echo "datastream_source=${DATASTREAM_SOURCE}"
     echo "datastream_sha256=${DATASTREAM_SHA256}"
+    echo "results_sha256=$(sha256sum "${OUTPUT_DIR_ABS}/results.xml" | awk '{print $1}')"
     if [ -n "${DONOR_USED_FOR}" ]; then
         echo "donor_image=${DONOR_IMAGE}"
         echo "donor_image_id=${DONOR_ID}"
@@ -908,10 +984,16 @@ fi
     fi
     echo "profile=${PROFILE}"
     echo "family=${FAMILY}"
+    if [ -n "${RPM_STATUS}" ]; then
+        echo "rpm_status=${RPM_STATUS}"
+        echo "rpm_status_packages=${RPM_STATUS_PACKAGES}"
+        echo "rpm_status_reason=${RPM_STATUS_REASON}"
+    fi
     if [ -n "${DPKG_STATUS}" ]; then
         echo "dpkg_status=${DPKG_STATUS}"
         echo "dpkg_status_packages=${DPKG_STATUS_PACKAGES}"
         echo "dpkg_status_reason=${DPKG_STATUS_REASON}"
+        echo "dpkg_status_source=${DPKG_STATUS_SOURCE}"
     fi
     if [ -n "${IMAGE}" ]; then
         echo "image=${IMAGE}"
