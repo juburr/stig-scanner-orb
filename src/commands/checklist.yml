@@ -34,6 +34,26 @@ parameters:
 
 steps:
   - run:
+      name: Stage bundled DISA reference (rhel8)
+      environment:
+        PARAM_CHECKLIST: <<parameters.checklist>>
+      command: <<include(scripts/stig-data/rhel8.sh)>>
+  - run:
+      name: Stage bundled DISA reference (rhel9)
+      environment:
+        PARAM_CHECKLIST: <<parameters.checklist>>
+      command: <<include(scripts/stig-data/rhel9.sh)>>
+  - run:
+      name: Stage bundled DISA reference (rhel10)
+      environment:
+        PARAM_CHECKLIST: <<parameters.checklist>>
+      command: <<include(scripts/stig-data/rhel10.sh)>>
+  - run:
+      name: Stage bundled DISA reference (ubuntu2204)
+      environment:
+        PARAM_CHECKLIST: <<parameters.checklist>>
+      command: <<include(scripts/stig-data/ubuntu2204.sh)>>
+  - run:
       name: Generate STIG Viewer checklists
       environment:
         PARAM_OUTPUT_DIR: <<parameters.output_dir>>

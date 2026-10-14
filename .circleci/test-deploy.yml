@@ -59,6 +59,9 @@ jobs:
             python3 -m venv /tmp/checklist-validators
             /tmp/checklist-validators/bin/pip install -r tools/checklist-validator/requirements.txt
       - run:
+          name: Reproduce bundled DISA data from reviewed source ZIP checksums
+          command: python3 tools/refresh-stig-data.py --source-dir /tmp/stig-sources --download --check
+      - run:
           name: Validate identity and review outcomes with STIG Manager
           command: node tools/checklist-validator/validate.mjs /tmp/checklist-validation/*
       - run:

@@ -9,6 +9,15 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 
 ### Added
 
+- Bundled, checksum-pinned DISA reference data for each verified RHEL 8/9/10
+  and Ubuntu 22.04 datastream: complete default checklists with official text,
+  CCIs and manual-only rows, offline staging, source attribution and deterministic
+  maintenance tooling. Missing or corrupt data fails generation.
+- Check-text comparison against the content-matched bundle preserves automated
+  verdicts across Rule ID revision changes only when the check is unchanged.
+  Changed checks and unverified/mixed revisions remain Not Reviewed with the
+  original evidence and comparison hashes retained.
+
 - `stig_xccdf_path` accepts an offline DISA manual XCCDF or bounded ZIP to
   generate complete checklists with official text, CCIs and release identity.
   Validate structure, STIG identity, profile completeness and known release

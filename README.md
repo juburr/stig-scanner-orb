@@ -271,9 +271,15 @@ review. Architecture gates read the scanning host's CPU. Uncertain target
 applicability makes the row Not Reviewed; a gate demonstrably false for the
 target is recomputed as N/A, preserving the original result as evidence.
 
-By default, checklists use **SSG metadata only**: no CCIs, SSG wording, and
-no rows for requirements absent from the selected scanner content, including
-manual-only requirements. They name the content's verified release.
+By default, verified pinned scans use **bundled DISA reference data** for their
+content-matched release: official requirement/check/fix text, CCIs, and every
+DISA row, including manual-only requirements. No DISA download or additional
+input is needed during a scan. Separate included steps stage compressed data
+in private runner temporaries; only short paths pass through the environment.
+Source credits and redistribution terms are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Missing, corrupt or mismatched bundled data is a generation failure; a verified
+pin never silently falls back to a partial checklist. Unknown datastreams still
+need a supplied skeleton, since no bundled release can be proven for them.
 
 Supply `stig_xccdf_path` to use an official DISA `*_Manual-xccdf.xml` or its
 STIG ZIP instead. The file must be readable by the runner. The generator reads
@@ -286,12 +292,24 @@ the file before the checklist command; generation remains offline.
 The supplied file determines the checklist's STIG release, full Rule IDs,
 severity, official requirement/check/fix text, CCIs and every DISA row. Rows
 without scanner checks and checks not selected by the evaluated profile are
-Not Reviewed, with distinct reasons. If **any contributing check cites a
-different Rule ID revision**, the row is Not Reviewed, even if OpenSCAP passed
-it or marked it N/A. Finding details preserve the automated result; assess the
-requirement against the supplied release before changing the verdict. This
-applies to older and newer skeletons alike. A matching release avoids these
-revision gaps; a newer release does not upgrade the scanner's coverage.
+Not Reviewed, with distinct reasons.
+
+For a supplied release whose Rule IDs differ from the scanner's references,
+the generator compares its check text with the bundled content-matched
+release. **Only identical parsed check text can retain an automated verdict**,
+and every contributing scanner check must cite the bundled Rule ID. Changed
+checks are Not Reviewed with `check_changed` as their reason; uncertain or
+mixed revisions remain Not Reviewed with `revision_mismatch`. The comparison
+also catches changed check text in a supplied file that retains the same Rule
+ID. It works for older and newer skeletons alike and does not turn scanner
+errors or uncertain architecture applicability into passes.
+
+Finding details retain the original results, both reference hashes and the
+check-text comparison. `revision_drift` in the metadata/summary counts rows
+with unchanged checks, changed checks, and unverified revisions. Unknown
+custom datastreams have no content-matched bundle, so different revisions
+remain Not Reviewed. A newer skeleton changes the checklist's release and
+metadata; it does not add automated scanner checks for new requirements.
 
 Validation rejects the wrong STIG, malformed or repeated identifiers, missing
 required text, invalid release dates, incomplete profiles, and a skeleton
@@ -320,7 +338,8 @@ pre-step, then set the path:
 The path is read after the scan, so checkout or staging must precede checklist
 generation. Each row carries the skeleton release, source path, XCCDF hash and
 ZIP hash/member where applicable; `checklist-meta.json` and `provenance.json`
-also record them. No DISA text is bundled in the orb.
+also record them. The `bundle` metadata block identifies the content-matched
+reference separately from a supplied skeleton.
 
 Open `.cklb` in STIG Viewer 3, or use **Import V2 Checklist** for `.ckl`.
 STIG Manager imports either format. Verify the intended asset and STIG revision
@@ -422,7 +441,11 @@ The pins live in one place, `DEFAULT_CHAINGUARD_IMAGE` and `DEFAULT_RPM_SCANNER_
    version, canonical release info, per-profile selection count/fingerprint,
    V-ID count, unmapped-rule allowlist, and datastream filename. Never guess
    from the profile label. The smoke matrix checks every table entry.
-6. Push; the `test-deploy` matrix pulls every pin and exercises both scanner paths.
+6. Review matching public DISA ZIPs and refresh their checksum-pinned bundles
+   using the procedure under "Refreshing bundled DISA data" below. Include source
+   checksum, inventory, generated script and `BUNDLE_TABLE` updates in the PR.
+7. Push; the `test-deploy` matrix pulls every pin and exercises both scanner paths,
+   and the consumer validator reproduces the DISA bundles from their source ZIPs.
 
 ## 🙈 Ignore-list semantics
 
@@ -543,3 +566,19 @@ Review and add the printed entries, including the
 canonical release date. Keep downloaded DISA text outside the repository.
 CI's matching and drift skeleton downloads have separate source ZIP checksum
 pins in `tools/fetch-stig-skeleton.py`.
+
+### Refreshing bundled DISA data
+
+After moving scanner/content pins, review the matching public DISA release
+ZIPs and update `tools/stig-sources.json` with their checksums and credits.
+Extend `STIG_INVENTORY` as needed, then regenerate and check:
+
+```sh
+python3 tools/refresh-stig-data.py --source-dir /path/to/approved/zips
+python3 tools/refresh-stig-data.py --source-dir /path/to/approved/zips --check
+```
+
+The tool refuses sources with a different checksum or pinned release. Commit
+the generated scripts and `BUNDLE_TABLE` changes in the pin-bump PR.
+`--download` explicitly fetches the reviewed DISA URLs at maintenance time;
+CI uses it with `--check` to reproduce every bundle. Scans remain offline.

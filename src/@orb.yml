@@ -6,7 +6,9 @@ description: >
   Debian / Ubuntu targets and the public OpenShift compliance-operator
   scanner for RHEL / Fedora / Rocky / Alma / Oracle Linux targets, with
   consistent reporting, an optional failure gate, and an ignore-list for
-  triaged baseline findings.
+  triaged baseline findings. Bundled DISA reference content is credited to
+  DISA, Red Hat and Canonical; source and reuse notices are in the repository's
+  THIRD_PARTY_NOTICES.md.
 
 display:
   source_url: "https://github.com/juburr/stig-scanner-orb"

@@ -139,3 +139,32 @@ unknown releases report self-consistency only. Skeletons never waive scan
 provenance, selected mapping, inventory or architecture checks. Without a
 skeleton, SSG-only limits still apply. Tailoring/answer files are not implemented. Manual STIG Viewer 3 import and ISSM
 wording review remain release acceptance tasks.
+
+## Bundled DISA data
+
+PR 3 defaults verified pins to full DISA metadata from generated
+`src/scripts/stig-data/*.sh` includes. Only payload file paths enter BASH_ENV;
+never put the base64 data into an env var or a YAML inline command. Local
+checklist.sh reads sibling includes directly, while packed commands stage them
+in private mktemp files. Staging errors leave an empty variable; generation
+records failed meta and summarize remains the gatekeeper. Unknown datastreams
+never borrow a bundle. BUNDLE_TABLE and RELEASE_TABLE key sets must agree.
+`tools/refresh-stig-data.py` is maintainer-only: reviewed ZIP checksum pins in
+`tools/stig-sources.json`, exact release/inventory checks, deterministic XZ
+and JSON, per-command size guards, `--check` reproducibility. Consumer CI reproduces from source ZIPs.
+Retain source credits and THIRD_PARTY_NOTICES.md when refreshing releases.
+A user skeleton can retain a verdict across revisions only when every scanner
+contributor cites the bundle's Rule ID and the parsed check text is identical.
+Changed check text is Not_Reviewed even if a user file kept the same Rule ID;
+error/architecture decisions stay unchanged. Unknown content retains PR 2's
+conservative revision policy. Record source hashes and drift reasons per row.
+
+CircleCI's compiled-config limit is lower than the packed-orb limit. The large
+CI matrix uses `.circleci/prepare-test-config.sh`: it packs the actual orb, keeps
+`smoke-rhel9` on the complete packed includes, and creates a second inline orb
+that prepares checkout for staging and changes only the four bundle staging bodies to run their identical scripts
+from checkout. It asserts that every other command, parameter, job and guard
+is equal after removing the checkout preparation. The full packed smoke scans
+without checkout, then checks out only for post-step assertions. All scan paths and both skeleton jobs still feed consumer validation.
+Do not duplicate product implementation in the CI adapter or omit the full-orb
+smoke. Every matrix job must checkout before bundle staging.
