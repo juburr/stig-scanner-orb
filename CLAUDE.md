@@ -128,6 +128,14 @@ dash-prefixed values as options before stale-output invalidation.
 `tests/checklist_test.py` loads production code, adding isolated release entries
 only in tests. Consumer validators in `tools/checklist-validator/` are CI-only.
 
-SSG-only scope is deliberate: no CCIs, manual-only rows, user DISA files,
-tailoring or answer-file overrides yet. Manual STIG Viewer 3 import and ISSM
+`stig_xccdf_path` supports a runner-readable DISA manual XCCDF or ZIP.
+Snapshot bytes in bounded memory (16 MiB archive and member), hash the exact
+XCCDF parsed and the source archive, never extract ZIP paths. STIG_INVENTORY
+contains identifier-only fingerprints; refresh with tools/stig-inventory.py.
+A skeleton supplies official metadata and all rows; any differing contributing
+Rule ID revision becomes Not_Reviewed, retaining automated evidence. Known
+release inventories and internal profile inventories are separate checks;
+unknown releases report self-consistency only. Skeletons never waive scan
+provenance, selected mapping, inventory or architecture checks. Without a
+skeleton, SSG-only limits still apply. Tailoring/answer files are not implemented. Manual STIG Viewer 3 import and ISSM
 wording review remain release acceptance tasks.

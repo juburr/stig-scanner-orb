@@ -413,6 +413,40 @@ workflows:
                 artifact_name: smoke-rhel9
           filters: *filters
       - stig-scanner-orb/scan:
+          name: smoke-rhel9-skeleton-matched
+          checkout: false
+          image: registry.access.redhat.com/ubi9/ubi
+          target_base: rhel9
+          checklist: require
+          stig_xccdf_path: /tmp/disa-rhel9.zip
+          pre-steps:
+            - checkout
+            - run:
+                name: Fetch checksum-pinned DISA RHEL 9 skeleton
+                command: python3 tools/fetch-stig-skeleton.py 9 /tmp/disa-rhel9.zip
+          post-steps:
+            - assert-checklist:
+                outcome: generated
+                artifact_name: smoke-rhel9-skeleton-matched
+          filters: *filters
+      - stig-scanner-orb/scan:
+          name: smoke-rhel9-skeleton-drift
+          checkout: false
+          image: registry.access.redhat.com/ubi9/ubi
+          target_base: rhel9
+          checklist: require
+          stig_xccdf_path: /tmp/disa-rhel9.zip
+          pre-steps:
+            - checkout
+            - run:
+                name: Fetch checksum-pinned DISA RHEL 9 skeleton
+                command: python3 tools/fetch-stig-skeleton.py 10 /tmp/disa-rhel9.zip
+          post-steps:
+            - assert-checklist:
+                outcome: generated
+                artifact_name: smoke-rhel9-skeleton-drift
+          filters: *filters
+      - stig-scanner-orb/scan:
           name: smoke-rhel9-cis
           # profile_id override coverage on the RPM path. CIS Level 1 is
           # the profile consumers pair with the host STIG for broader
@@ -801,7 +835,7 @@ workflows:
                 artifact_name: smoke-rootfs-checklist
           filters: *filters
       - checklist-validator:
-          requires: [smoke-ubuntu2204, smoke-rhel9, smoke-rhel8-auto, smoke-rhel10-auto, smoke-rootfs-checklist]
+          requires: [smoke-rhel9-skeleton-matched, smoke-rhel9-skeleton-drift, smoke-ubuntu2204, smoke-rhel9, smoke-rhel8-auto, smoke-rhel10-auto, smoke-rootfs-checklist]
           filters: *filters
       - orb-tools/pack:
           filters: *release-filters
@@ -820,6 +854,8 @@ workflows:
             - smoke-debian12-auto
             - smoke-rhel8-auto
             - smoke-rhel9
+            - smoke-rhel9-skeleton-matched
+            - smoke-rhel9-skeleton-drift
             - smoke-rhel9-cis
             - smoke-rhel10-auto
             - smoke-fedora
