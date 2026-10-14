@@ -32,7 +32,7 @@ fi
 if python3 - "${args[@]}" <<'PY_CHECKLIST'
 import argparse
 import base64
-import gzip
+import lzma
 import collections
 import datetime as dt
 import hashlib
@@ -882,10 +882,12 @@ def load_bundle(datastream_sha256, directory):
         if len(markers) != 2 or not sep:
             raise ValueError(f"bundled DISA data for {alias} has no unique payload")
     compressed = base64.b64decode(b"".join(encoded.split()), validate=True)
-    with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as member:
-        data = member.read(MAX_DISA_BYTES + 1)
+    decoder = lzma.LZMADecompressor(memlimit=64 << 20)
+    data = decoder.decompress(compressed, max_length=MAX_DISA_BYTES + 1)
     if len(data) > MAX_DISA_BYTES:
         raise ValueError("bundled DISA data exceeds 16 MiB")
+    if not decoder.eof or decoder.unused_data:
+        raise ValueError("bundled DISA data is truncated or has trailing compressed data")
     if hashlib.sha256(data).hexdigest() != descriptor["json_sha256"]:
         raise ValueError(f"bundled DISA data for {alias} does not match its pinned SHA-256")
     payload = json.loads(data)

@@ -2,7 +2,7 @@
 
 import base64
 import copy
-import gzip
+import lzma
 import hashlib
 import importlib.util
 import io
@@ -61,7 +61,7 @@ class BundleTests(unittest.TestCase):
             "source_sha256": source["sha256"],
             "xccdf_sha256": source["xccdf_sha256"],
         }
-        self.encoded = base64.b64encode(gzip.compress(data)).decode()
+        self.encoded = base64.b64encode(lzma.compress(data)).decode()
         self.bundle_path = self.out / "test.sh"
         self.bundle_path.write_text(refresh.render_script("test", self.encoded))
         pairs = sorted(f"{g['vid']} {g['rule_id']}" for g in disa["groups"])
@@ -215,6 +215,11 @@ class BundleTests(unittest.TestCase):
         self.bundle_path.write_text(refresh.render_script("test", "bad-base64"))
         self.assertEqual(self.run_bundle()[0], 1)
         self.bundle()
+        compressed = base64.b64decode(self.encoded)
+        for invalid in [compressed[:-1], compressed + b"trailing", compressed + compressed]:
+            self.bundle_path.write_text(refresh.render_script("test", base64.b64encode(invalid).decode()))
+            self.assertIn("truncated or has trailing", self.run_bundle()[1]["reason"])
+        self.bundle()
         self.descriptor["json_sha256"] = "wrong"
         self.assertIn("pinned SHA-256", self.run_bundle()[1]["reason"])
         self.bundle()
@@ -300,6 +305,15 @@ class BundleTests(unittest.TestCase):
                 "scripts/stig-data/" + descriptor["alias"] + ".sh",
                 (ROOT / "src/commands/checklist.yml").read_text(),
             )
+        for script in (ROOT / "src/scripts/stig-data").glob("*.sh"):
+            self.assertLess(script.stat().st_size, 120000)
+            # CircleCI machine execution may pass the full body as one argument.
+            result = subprocess.run(
+                ["bash", "-c", script.read_text()],
+                env={**os.environ, "PARAM_CHECKLIST": "none"},
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
         total = sum(p.stat().st_size for p in (ROOT / "src/scripts/stig-data").glob("*.sh"))
         self.assertLess(total, 2 << 20)
 

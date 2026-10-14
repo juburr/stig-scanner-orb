@@ -639,10 +639,11 @@ blanket license for future releases or separately supplied vendor material.
   orb). It turns each DISA zip matching a pinned datastream's
   release (D4 table) into compact JSON: V-ID → rule id, STIG id,
   severity, title, discussion, check, fix, CCIs, legacy ids.
-  - The JSON is committed gzip+base64 as `src/scripts/stig-data/<stig>.sh`
-    heredocs, ~150 KB each (less for Ubuntu).
+  - The JSON is committed XZ+base64 as `src/scripts/stig-data/<stig>.sh`
+    heredocs, <120 KB each (less for Ubuntu), guarded during refresh.
   - A separate `run` step writes it out. It's an included script, so no
-    128 KB env-var limit applies and orb-tools RC009 is not tripped.
+    env-var limit applies and orb-tools RC009 is not tripped. Each script
+    also stays below Linux's single-command-argument limit.
   - The packed orb stays well under 8 MB. The four raw XCCDFs would be ~5 MB.
 - **Default behaviour:** "DISA skeleton from bundled data" for content in
   the table. A user file newer than the bundle (PR 2) gets D7 precisely:

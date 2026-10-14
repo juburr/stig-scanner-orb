@@ -15,6 +15,9 @@ yq -o=json '.' .circleci/test-deploy.yml > "${STIG_CI_TEMPLATE}"
 yq -o=json '.' "${STIG_CI_PACKED}" | jq --slurpfile template "${STIG_CI_TEMPLATE}" '
     . as $orb |
     $template[0] |
+    walk(if type == "object" then
+        with_entries(.key |= sub("^stig-scanner-orb/"; "matrix-stig-scanner-orb/"))
+        else . end) |
     .orbs."stig-scanner-orb" = $orb |
     .orbs."matrix-stig-scanner-orb" = $orb |
     (.orbs."matrix-stig-scanner-orb".commands.checklist.steps[] |
@@ -22,11 +25,14 @@ yq -o=json '.' "${STIG_CI_PACKED}" | jq --slurpfile template "${STIG_CI_TEMPLATE
         (capture("(?<alias>rhel8|rhel9|rhel10|ubuntu2204)").alias |
          "bash src/scripts/stig-data/" + . + ".sh") |
     (.workflows[].jobs[]) |=
-        if has("stig-scanner-orb/scan") and ."stig-scanner-orb/scan".name != "smoke-rhel9" then
-            ."matrix-stig-scanner-orb/scan" = ."stig-scanner-orb/scan" |
-            del(."stig-scanner-orb/scan") |
-            ."matrix-stig-scanner-orb/scan"."pre-steps" =
-                ["checkout"] + (."matrix-stig-scanner-orb/scan"."pre-steps" // [])
+        if has("matrix-stig-scanner-orb/scan") then
+            if ."matrix-stig-scanner-orb/scan".name == "smoke-rhel9" then
+                ."stig-scanner-orb/scan" = ."matrix-stig-scanner-orb/scan" |
+                del(."matrix-stig-scanner-orb/scan")
+            else
+                ."matrix-stig-scanner-orb/scan"."pre-steps" =
+                    ["checkout"] + (."matrix-stig-scanner-orb/scan"."pre-steps" // [])
+            end
         else . end
 ' > /tmp/stig-test-config.yml
 
@@ -49,3 +55,11 @@ jq -e '[.workflows[].jobs[] | select(has("stig-scanner-orb/scan"))] |
 jq -e '[.workflows[].jobs[] | select(has("matrix-stig-scanner-orb/scan")) |
        ."matrix-stig-scanner-orb/scan"."pre-steps"[0] == "checkout"] |
        length > 0 and all' /tmp/stig-test-config.yml > /dev/null
+# Custom jobs also invoke reusable commands, rather than the orb scan job.
+# They already checkout; reject any future adapter call lacking that preparation.
+jq -e '[.jobs[] | select(any(.steps[] | objects | keys[]; startswith("matrix-stig-scanner-orb/"))) |
+       .steps[0] == "checkout"] | length > 0 and all' /tmp/stig-test-config.yml > /dev/null
+# Only the single full smoke may reference the production orb namespace.
+jq -e '[(.jobs, .commands, .workflows) | .. | objects | keys[] |
+        select(startswith("stig-scanner-orb/"))] |
+       . == ["stig-scanner-orb/scan"]' /tmp/stig-test-config.yml > /dev/null

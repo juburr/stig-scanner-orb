@@ -150,8 +150,8 @@ in private mktemp files. Staging errors leave an empty variable; generation
 records failed meta and summarize remains the gatekeeper. Unknown datastreams
 never borrow a bundle. BUNDLE_TABLE and RELEASE_TABLE key sets must agree.
 `tools/refresh-stig-data.py` is maintainer-only: reviewed ZIP checksum pins in
-`tools/stig-sources.json`, exact release/inventory checks, deterministic gzip
-and JSON, `--check` reproducibility. Consumer CI reproduces from source ZIPs.
+`tools/stig-sources.json`, exact release/inventory checks, deterministic XZ
+and JSON, per-command size guards, `--check` reproducibility. Consumer CI reproduces from source ZIPs.
 Retain source credits and THIRD_PARTY_NOTICES.md when refreshing releases.
 A user skeleton can retain a verdict across revisions only when every scanner
 contributor cites the bundle's Rule ID and the parsed check text is identical.

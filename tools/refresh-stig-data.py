@@ -12,7 +12,7 @@ in memory and fails if committed scripts or the generator's bundle pins drift.
 
 import argparse
 import base64
-import gzip
+import lzma
 import hashlib
 import io
 import json
@@ -130,10 +130,12 @@ def build(source_dir, download=False):
             },
         }
         data = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
-        compressed = io.BytesIO()
-        with gzip.GzipFile(fileobj=compressed, mode="wb", filename="", mtime=0, compresslevel=9) as f:
-            f.write(data)
-        scripts[alias] = render_script(alias, base64.b64encode(compressed.getvalue()).decode())
+        # XZ fits each included command below Linux's single-argument limit.
+        # Fixed settings and no timestamp keep refreshes reproducible.
+        compressed = lzma.compress(data, preset=6)
+        scripts[alias] = render_script(alias, base64.b64encode(compressed).decode())
+        if len(scripts[alias].encode()) >= 120000:
+            raise ValueError(f"{alias}: staging script exceeds the safe command size; split the payload")
         descriptors[sha] = {
             "alias": alias,
             "json_sha256": hashlib.sha256(data).hexdigest(),
