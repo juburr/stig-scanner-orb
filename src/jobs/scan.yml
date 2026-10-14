@@ -18,6 +18,12 @@ parameters:
     type: string
     default: "ckl,cklb"
     description: Comma-separated ckl and/or cklb, case-insensitive.
+  stig_xccdf_path:
+    type: string
+    default: ""
+    description: >
+      Runner-readable DISA manual XCCDF file or ZIP (16 MiB maximum).
+      Read offline from one in-memory snapshot; overrides the checklist release.
   checklist_asset_name:
     type: string
     default: ""
@@ -131,6 +137,7 @@ steps:
       output_dir: <<parameters.output_dir>>
       checklist: <<parameters.checklist>>
       checklist_formats: <<parameters.checklist_formats>>
+      stig_xccdf_path: <<parameters.stig_xccdf_path>>
       checklist_asset_name: <<parameters.checklist_asset_name>>
   - summarize:
       defer_gate: true

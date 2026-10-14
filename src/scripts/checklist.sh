@@ -13,13 +13,14 @@ CHECKLIST="$(subst "${PARAM_CHECKLIST:-auto}")"
 FORMATS="$(subst "${PARAM_CHECKLIST_FORMATS-ckl,cklb}")"
 ASSET_NAME="$(subst "${PARAM_CHECKLIST_ASSET_NAME:-}")"
 GUARD="$(subst "${PARAM_CHECKLIST_GUARD:-false}")"
+STIG_XCCDF_PATH="$(subst "${PARAM_STIG_XCCDF_PATH:-}")"
 ROOTFS_PATH="$(subst "${PARAM_ROOTFS_PATH:-}")"
 args=("--results=${OUTPUT_DIR}/results.xml" "--out-dir=${OUTPUT_DIR}")
 if [ "${GUARD}" = "true" ]; then
     args=(--guard "${args[@]}" "--rootfs-path=${ROOTFS_PATH}")
 else
     args+=("--plan=${OUTPUT_DIR}/scan-plan.env" "--mode=${CHECKLIST}"
-           "--host-name=${ASSET_NAME}" "--formats=${FORMATS}")
+           "--host-name=${ASSET_NAME}" "--formats=${FORMATS}" "--stig-xccdf-path=${STIG_XCCDF_PATH}")
 fi
 # Conversion errors are recorded in meta; do not suppress summarize.
 if python3 - "${args[@]}" <<'PY_CHECKLIST'
@@ -28,12 +29,14 @@ import collections
 import datetime as dt
 import hashlib
 import io
+import html
 import json
 import os
 import re
 import signal
 import sys
 import uuid
+import zipfile
 import xml.etree.ElementTree as ET
 
 X12 = "{http://checklists.nist.gov/xccdf/1.2}"
@@ -45,6 +48,9 @@ SV_RE = re.compile(r"SV-([0-9]+)r[0-9]+_rule")  # ASCII digits only (\d matches 
 # Bound untrusted XML before parsing: real results.xml is about 15–20 MiB.
 GENERATOR_VERSION = "1.0.0"
 MAX_RESULTS_BYTES = 128 << 20
+MAX_DISA_BYTES = 16 << 20
+X11 = "{http://checklists.nist.gov/xccdf/1.1}"
+MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
 def open_fresh(path):
@@ -361,6 +367,82 @@ SSG_STIG_IDS = {  # SSG benchmark -> DISA benchmark id / title (SSG-only mode)
 }
 
 
+# Known DISA releases: (benchmark id, version, release) -> (row count, sha256
+# of the sorted "V-ID Rule-ID" pairs, the release's canonical release info).
+# Identifiers only. Pairs, not just V-IDs:
+# several releases share a V-ID set (Ubuntu V2R7-V2R9, RHEL 10 V1R1-V1R2) and
+# differ only in Rule ID revisions, which consumers match exactly.
+STIG_INVENTORY = {
+    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "7"): (
+        188,
+        "12de845e06062acb595732396579707e79d18217e8f3b430ef19733bf90cbb7f",
+        "Release: 7 Benchmark Date: 05 Jan 2026",
+    ),
+    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "8"): (
+        188,
+        "f0c0a27b9381f0e6fc35556b3ae5fc90c2238f91f7057e0c9b793e37ba0a3ddd",
+        "Release: 8 Benchmark Date: 01 Apr 2026",
+    ),
+    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "9"): (
+        188,
+        "19f8465e1cc1c16910e152252023ca1050a8fdc1143931a200f6e3a2c900427c",
+        "Release: 9 Benchmark Date: 01 Jul 2026",
+    ),
+    ("CAN_Ubuntu_22-04_LTS_STIG", "2", "10"): (
+        191,
+        "7851e77f61f7fc4597369ee394cd13da0041612e7fea6fe34951fddf7659ae60",
+        "Release: 10 Benchmark Date: 30 Sep 2026",
+    ),
+    ("RHEL_8_STIG", "2", "7"): (
+        366,
+        "bc381b88e0f69335edcf6eb86a17695df981162e5d0ab9ee58c7efb3f771a2d7",
+        "Release: 7 Benchmark Date: 01 Apr 2026",
+    ),
+    ("RHEL_8_STIG", "2", "8"): (
+        369,
+        "edb2cb7a36599a78a6b3d0c8223d7d13faa9753a81a9e9515c9be9fd554ce922",
+        "Release: 8 Benchmark Date: 01 Jul 2026",
+    ),
+    ("RHEL_8_STIG", "2", "9"): (
+        371,
+        "1984e68e60f9772174c278f062f5b949e089dfb0d250ce8898a4a118c874aafc",
+        "Release: 9 Benchmark Date: 30 Sep 2026",
+    ),
+    ("RHEL_9_STIG", "2", "9"): (
+        445,
+        "d1290dec54ac0c7bac3a0ea0e3f76175e382245725409fc80f1c0a4d6f4baa89",
+        "Release: 9 Benchmark Date: 01 Jul 2026",
+    ),
+    ("RHEL_9_STIG", "2", "10"): (
+        445,
+        "71c7dd9d19b48e606700d0f3a4d39530eb7666272271fb68db045eefa26595dc",
+        "Release: 10 Benchmark Date: 30 Sep 2026",
+    ),
+    ("RHEL_10_STIG", "1", "1"): (
+        434,
+        "04685a247e535e1a2e770d8097e417c11fe5c55daecb5fa03fa624a39c2e33e5",
+        "Release: 1 Benchmark Date: 26 Feb 2026",
+    ),
+    ("RHEL_10_STIG", "1", "2"): (
+        434,
+        "ef19aa40608019b68764c2628f35faf9117b9c721c9d42a2ede0366c425f4ed6",
+        "Release: 2 Benchmark Date: 01 Jul 2026",
+    ),
+    ("RHEL_10_STIG", "1", "3"): (
+        435,
+        "65bcc7e6af3a182ff9b738448f0432ae81f680e0da715fc9ff1974c85e3e41e8",
+        "Release: 3 Benchmark Date: 30 Sep 2026",
+    ),
+}
+
+
+TARGET_STIG = {
+    "rhel8": "RHEL_8_STIG",
+    "rhel9": "RHEL_9_STIG",
+    "rhel10": "RHEL_10_STIG",
+    "ubuntu2204": "CAN_Ubuntu_22-04_LTS_STIG",
+}
+
 # D4 release table: the sha256 of the datastream the scan evaluated
 # (scan-plan.env datastream_sha256) -> its benchmark id and version, accepted
 # STIG profiles and DISA release (version, the release file's canonical
@@ -487,7 +569,254 @@ def target_ref(plan):
     return plan.get("image") or plan.get("rootfs_path") or ""
 
 
-def build_model(res, plan, runner_arch=None, release=None):
+def parse_disa(source):
+    root = ET.parse(source).getroot()
+    if root.tag not in (X11 + "Benchmark", X12 + "Benchmark"):
+        raise ValueError("the DISA file must be an XCCDF 1.1 or 1.2 Benchmark")
+    ns = X11 if root.tag.startswith(X11) else X12
+    for el in root.iter():
+        for tag in (
+            "version",
+            "title",
+            "description",
+            "check",
+            "check-content",
+            "check-content-ref",
+            "fixtext",
+        ):
+            if len(el.findall(ns + tag)) > 1:
+                raise ValueError(f"the DISA file repeats {tag} in {el.get('id') or el.tag}")
+    releases = [p for p in root.findall(ns + "plain-text") if p.get("id") == "release-info"]
+    if len(releases) != 1:
+        raise ValueError("the DISA file must have exactly one release-info")
+    groups = root.findall(ns + "Group")
+    if len(groups) != len(list(root.iter(ns + "Group"))) or len(list(root.iter(ns + "Rule"))) != sum(
+        len(g.findall(ns + "Rule")) for g in groups
+    ):
+        raise ValueError("the DISA file has nested Groups or Rules outside its Groups")
+    info = {
+        # DISA's manual XCCDFs carry profiles (9 on every file seen) that each
+        # select exactly the file's groups: an inventory inside the file.
+        "profiles": [
+            {s.get("idref") for s in p.findall(ns + "select") if s.get("selected") == "true"}
+            for p in root.findall(ns + "Profile")
+        ],
+        "benchmark_id": root.get("id"),
+        "title": text_of(root.find(ns + "title")),
+        "description": text_of(root.find(ns + "description")),
+        "version": (root.findtext(ns + "version") or "").strip(),
+        "releaseinfo": next(
+            (text_of(p) for p in root.findall(ns + "plain-text") if p.get("id") == "release-info"), ""
+        ),
+        "groups": [],
+    }
+    for g in groups:
+        # One Rule per Group in every DISA file: an extra Rule would be
+        # dropped silently while the group/profile inventory still matched.
+        rs = g.findall(ns + "Rule")
+        if len(rs) != 1:
+            raise ValueError(f"DISA group {g.get('id')} has {len(rs)} Rule elements, expected exactly one")
+        r = rs[0]
+        desc_raw = r.findtext(ns + "description") or ""
+        tags = dict(re.findall(r"<(\w+)>(.*?)</\1>", html.unescape(desc_raw), re.S))
+        chk = r.find(ns + "check")
+        info["groups"].append(
+            {
+                "vid": g.get("id"),
+                "group_title": text_of(g.find(ns + "title")),
+                "rule_id": r.get("id"),
+                "severity": r.get("severity"),
+                "weight": r.get("weight") or "10.0",
+                "rule_ver": r.findtext(ns + "version") or "",
+                "rule_title": text_of(r.find(ns + "title")),
+                "discussion": tags.get("VulnDiscussion", "").strip(),
+                "false_positives": tags.get("FalsePositives", ""),
+                "false_negatives": tags.get("FalseNegatives", ""),
+                "documentable": tags.get("Documentable", "false"),
+                "mitigations": tags.get("Mitigations", ""),
+                "potential_impacts": tags.get("PotentialImpacts", ""),
+                "third_party": tags.get("ThirdPartyTools", ""),
+                "mitigation_control": tags.get("MitigationControl", ""),
+                "responsibility": tags.get("Responsibility", ""),
+                "sec_override": tags.get("SeverityOverrideGuidance", ""),
+                "check_content": (
+                    (chk.findtext(ns + "check-content") or "").strip() if chk is not None else ""
+                ),
+                "check_ref": (
+                    (chk.find(ns + "check-content-ref").get("name") or "M")
+                    if chk is not None and chk.find(ns + "check-content-ref") is not None
+                    else "M"
+                ),
+                "fix_text": (r.findtext(ns + "fixtext") or "").strip(),
+                "ccis": [
+                    (i.text or "").strip()
+                    for i in r.findall(ns + "ident")
+                    if "cci" in (i.get("system") or "").lower()
+                ],
+                "legacy": [
+                    (i.text or "").strip()
+                    for i in r.findall(ns + "ident")
+                    if "legacy" in (i.get("system") or "").lower()
+                ],
+            }
+        )
+    if not info["groups"] or not info["title"]:
+        raise ValueError("the DISA file has no groups or benchmark title")
+    for p in root.findall(ns + "Profile"):
+        selects = p.findall(ns + "select")
+        ids = [x.get("idref") for x in selects]
+        if len(set(ids)) != len(ids) or any(x.get("selected") not in ("true", "1") for x in selects):
+            raise ValueError("the DISA file has repeated or disabled profile selections")
+    info["profiles"] = [
+        {x.get("idref") for x in p.findall(ns + "select")} for p in root.findall(ns + "Profile")
+    ]
+    return info
+
+
+def read_disa(path, expected):
+    """Snapshot once in bounded memory; hash exactly the bytes parsed. ZIP
+    members are read in memory, never extracted or resolved as local paths.
+    Record both archive and member hashes, since the source may be a ZIP."""
+    raw = read_capped(path, MAX_DISA_BYTES, "the DISA file")
+    data, member = raw, None
+    if zipfile.is_zipfile(io.BytesIO(raw)):
+        with zipfile.ZipFile(io.BytesIO(raw)) as z:
+            members = [
+                i for i in z.infolist() if not i.is_dir() and i.filename.lower().endswith("manual-xccdf.xml")
+            ]
+            if len(members) != 1:
+                raise ValueError(
+                    f"the DISA ZIP has {len(members)} manual XCCDF members; expected exactly one"
+                )
+            entry = members[0]
+            if entry.file_size > MAX_DISA_BYTES:
+                raise ValueError("the DISA ZIP manual XCCDF member is larger than 16 MiB")
+            with z.open(entry) as f:
+                data = f.read(MAX_DISA_BYTES + 1)
+            if len(data) > MAX_DISA_BYTES:
+                raise ValueError("the DISA ZIP manual XCCDF member is larger than 16 MiB")
+            member = entry.filename
+    disa = parse_disa(io.BytesIO(data))
+    if not expected:
+        raise ValueError("can't tell which DISA STIG this scan implements; the DISA file can't be checked")
+    if disa["benchmark_id"] != expected:
+        raise ValueError(
+            f"the DISA file is {disa['benchmark_id']}, but this scan's content implements {expected}"
+        )
+    validate_disa(disa)
+    disa.update(
+        sha256=hashlib.sha256(data).hexdigest(),
+        source_sha256=hashlib.sha256(raw).hexdigest(),
+        source_path=path,
+        member=member,
+    )
+    return disa
+
+
+def validate_disa(disa):
+    # Consumers key rows on the V-ID and on the full Rule ID: each must
+    # be well formed and unique, or two rows could collide.
+    for field, label, pat in (("vid", "V-IDs", r"V-[0-9]+"), ("rule_id", "Rule IDs", SV_RE.pattern)):
+        ids = [g[field] or "" for g in disa["groups"]]
+        bad = sorted({i for i in ids if not re.fullmatch(pat, i)})
+        dups = sorted(i for i, c in collections.Counter(ids).items() if c > 1)
+        if bad or dups:
+            why = [f"malformed {label}: {', '.join(bad[:5])}"] * bool(bad) + [
+                f"repeated {label}: {', '.join(dups[:5])}"
+            ] * bool(dups)
+            raise ValueError(f"the DISA file has {'; '.join(why)}")
+    # A DISA severity is the row's CAT level: every DISA Rule has
+    # high/medium/low, so a missing or other value is an edited file.
+    bad_sev = sorted(
+        {
+            f"{g['vid']}={g['severity']!r}"
+            for g in disa["groups"]
+            if g["severity"] not in ("high", "medium", "low")
+        }
+    )
+    if bad_sev:
+        raise ValueError(
+            f"the DISA file has {len(bad_sev)} Rule(s) without a "
+            f"high/medium/low severity, e.g. {', '.join(bad_sev[:5])}"
+        )
+    # And each Group's Rule must be its own: V-n carries SV-n…_rule
+    # (every DISA file), or the row joins one requirement to another's
+    # Rule ID.
+    # Every DISA Rule has a title, discussion, check procedure and fix
+    # text: manual-only rows are reviewed from them (the requirement
+    # statement comes only from the skeleton), so a blank one is an
+    # edited file.
+    blank = sorted(
+        g["vid"]
+        for g in disa["groups"]
+        if not all(g[k].strip() for k in ("rule_title", "discussion", "check_content", "fix_text"))
+    )
+    if blank:
+        raise ValueError(
+            f"the DISA file has {len(blank)} Rule(s) without a title, "
+            f"discussion, check content or fix text, e.g. {', '.join(blank[:5])}"
+        )
+    crossed = [
+        f"{g['vid']} {g['rule_id']}"
+        for g in disa["groups"]
+        if SV_RE.fullmatch(g["rule_id"]).group(1) != g["vid"][2:]
+    ]
+    if crossed:
+        raise ValueError(
+            f"the DISA file pairs V-IDs with other numbers' Rule IDs: " f"{', '.join(crossed[:5])}"
+        )
+    # Completeness, independent of what this scan maps: the file's own
+    # profiles must each select exactly its groups (deleting groups,
+    # mapped or manual-only, breaks that), and a known release must
+    # carry exactly its recorded V-ID set.
+    vids = {g["vid"] for g in disa["groups"]}
+    if not disa["profiles"] or any(sel != vids for sel in disa["profiles"]):
+        raise ValueError(
+            "the DISA file's profiles don't select exactly its V-IDs: "
+            "groups were removed or added (truncated or edited file)"
+        )
+    # The release info is copied into the checklist as its release
+    # identity, so it must have DISA's whole format (every DISA file
+    # does), not merely start with "Release: N".
+    # Canonical ASCII numbers only: "02" or "Release: 09" (or other
+    # Unicode digits) would miss the inventory key and pass a known
+    # release off as unknown.
+    rel_m = re.fullmatch(
+        r"Release: ([1-9][0-9]*) Benchmark Date: ([0-9]{2}) ([A-Z][a-z]{2}) ([0-9]{4})", disa["releaseinfo"]
+    )
+    if rel_m:
+        # A real calendar date (no locale: month names spelled out).
+        try:
+            dt.date(int(rel_m.group(4)), MONTHS.index(rel_m.group(3)) + 1, int(rel_m.group(2)))
+        except ValueError:
+            rel_m = None
+    if not re.fullmatch(r"[1-9][0-9]*", disa["version"]) or not rel_m:
+        # Without both, the checklist can't name its release (CKL
+        # version empty, CKLB version null) and no inventory applies.
+        raise ValueError(
+            f"the DISA file names no release: version "
+            f"{disa['version']!r}, release-info {disa['releaseinfo'][:60]!r}"
+        )
+    inv = STIG_INVENTORY.get((disa["benchmark_id"], disa["version"], rel_m.group(1)))
+    pairs = sorted(f"{g['vid']} {g['rule_id']}" for g in disa["groups"])
+    if inv and (len(pairs), hashlib.sha256("\n".join(pairs).encode()).hexdigest()) != inv[:2]:
+        raise ValueError(
+            f"the DISA file claims {disa['benchmark_id']} "
+            f"V{disa['version']}R{rel_m.group(1)}, but its {len(pairs)} V-ID/Rule ID pairs don't match "
+            f"that release's {inv[0]}"
+        )
+    if inv and disa["releaseinfo"] != inv[2]:
+        # Right pairs, wrong date: the published identity must be the
+        # release's own.
+        raise ValueError(
+            f"the DISA file claims {disa['benchmark_id']} "
+            f"V{disa['version']}R{rel_m.group(1)} with release info {disa['releaseinfo']!r}; that "
+            f"release's is {inv[2]!r}"
+        )
+    disa["completeness"] = "inventory" if inv else "internal"
+
+
+def build_model(res, plan, runner_arch=None, release=None, disa=None):
     # OpenSCAP's architecture platforms read the scanning host's /proc, not
     # the target. Image mode records the target platform (os/arch[/variant]);
     # rootfs_path doesn't. Compare architectures only, keep the full platform
@@ -608,9 +937,10 @@ def build_model(res, plan, runner_arch=None, release=None):
     # V-IDs whose scanner checks the profile didn't select (notselected:
     # a profile conflict, a selection default, tailoring). They don't count
     # toward any status. SSG-only output omits their rows.
+    deselected = collections.defaultdict(list)
     unpaired = []
     for rid, result in res["results"].items():
-        r = res["rules"][rid]  # main() fails a rule-result with no Rule
+        r = res["rules"][rid]
         # Pair every rule's references, deselected ones included (their V-IDs
         # drive the "deselected" wording, so a bad reference is reported too).
         # A reference that isn't a whole SV-<digits>r<digits>_rule names no
@@ -628,8 +958,7 @@ def build_model(res, plan, runner_arch=None, release=None):
             # SSG < 0.1.82 has no #vulnerability_id references: derive V-n from SV-n.
             vids = [f"V-{n}" for n in r["svs"]]
         for vid in vids:
-            if result != "notselected":
-                by_vid[vid].append(rid)
+            (deselected if result == "notselected" else by_vid)[vid].append(rid)
 
     prov = []
     if plan:
@@ -651,6 +980,12 @@ def build_model(res, plan, runner_arch=None, release=None):
         f"Content: {res['benchmark_id']} {res['benchmark_version']}, profile {res['profile_id']}; "
         f"scan {res['start']} .. {res['end']} ({res['test_system']})"
     )
+    if disa:
+        prov.append(
+            f"DISA STIG file: {disa['benchmark_id']} V{disa['version']} ({disa['releaseinfo']}); "
+            f"file {disa['source_path']}; XCCDF sha256 {disa['sha256']}; source sha256 {disa['source_sha256']}"
+            + (f"; ZIP member {disa['member']}" if disa["member"] else "")
+        )
     prov_txt = "\n".join(prov)
     arch_note = f"[architecture gate evaluated on the scanning host ({runner_arch}); target architecture {target_arch or 'unknown'}]"
 
@@ -741,86 +1076,169 @@ def build_model(res, plan, runner_arch=None, release=None):
         )
 
     vulns = []
-    key = res["benchmark_id"].replace("xccdf_org.ssgproject.content_benchmark_", "")
-    bid, title = SSG_STIG_IDS[key]  # main() skips unknown benchmarks
-    ver, releaseinfo = release  # main() skips content the release table doesn't verify
-    # The DISA file's own release info, verbatim: consumers read the
-    # release and date from it. The table lookup is in the meta.
-    stig = {
-        "benchmark_id": bid,
-        "title": title,
-        "description": res["profile_title"],
-        "version": ver,
-        "releaseinfo": releaseinfo,
-        "filename": f"{res['benchmark_id']}-{res['profile_id']}.xml",
-        "mapped_vids": len(by_vid),
-        "unpaired_refs": sorted(unpaired),
-        "ambiguous_vids": [],
-    }
-    for vid in sorted(by_vid, key=lambda v: int(v[2:])):
-        rids = by_vid[vid]
-        first = res["rules"][sorted(rids)[0]]
-        sev = max(
-            (res["rules"][r]["severity"] for r in rids), key=lambda s: {"high": 3, "medium": 2, "low": 1}.get(s, 0)
-        )
-        status, detail, comment, ssg_rule_ids, na_category, nr_reason = vuln_from_ssg(vid, rids)
-        if len(ssg_rule_ids) > 1:
-            # The content itself cites several revisions of this
-            # requirement, so no single Rule ID (D4) is provably right,
-            # and any one written would be arbitrary: main() skips.
-            stig["ambiguous_vids"].append(f"{vid} ({', '.join(sorted(ssg_rule_ids))})")
-            continue
-        # Rule_Ver (the DISA STIG id, e.g. RHEL-09-211010) carries no V-ID
-        # number to pair on, so use it only when it can only belong to
-        # this row: one id across the contributors, each citing one SV
-        # (a malformed one counts: the id could be its).
-        # Otherwise leave it empty and list the candidates as evidence.
-        stig_ids = sorted({sid for r in rids for sid in res["rules"][r]["stig_ids"]})
-        pairable = len(stig_ids) == 1 and all(
-            len(res["rules"][r]["svs"]) == 1 and not res["rules"][r]["bad_svs"] for r in rids
-        )
-        if stig_ids and not pairable:
-            detail += (
-                f"\n\nSTIG IDs cited by the contributing rules: {', '.join(stig_ids)}. They can't be "
-                f"paired with this V-ID, so Rule_Ver is left empty."
+    if disa:
+        stig = {k: disa[k] for k in ("benchmark_id", "title", "description", "version", "releaseinfo")}
+        rel = re.search(r"Release: *([0-9]+)", disa["releaseinfo"]).group(1)
+        stig["filename"] = f"U_{disa['benchmark_id']}_V{disa['version']}R{rel}_Manual-xccdf.xml"
+        seen = set()
+        for g in disa["groups"]:
+            rids = by_vid.get(g["vid"], [])
+            seen.add(g["vid"])
+            na_category = None
+            if rids:
+                status, detail, comment, ssg_rule_ids, na_category, nr_reason = vuln_from_ssg(g["vid"], rids)
+                if ssg_rule_ids != {g["rule_id"]}:
+                    # The content's revision of the requirement differs from the
+                    # skeleton's (the skeleton may be newer *or* older), and
+                    # nothing here proves the check is unchanged, so don't carry
+                    # the verdict: keep it as evidence only. Every contributing
+                    # rule must cite the skeleton's revision: a mixed set still
+                    # evaluates part of another revision.
+                    other_revs = sorted(ssg_rule_ids - {g["rule_id"]})
+                    detail += (
+                        f"\n\nRevision mismatch: the scanner content maps this check to "
+                        f"{', '.join(sorted(ssg_rule_ids))}; this checklist's STIG release has {g['rule_id']}, "
+                        f"so {', '.join(other_revs)} {'is a different revision' if len(other_revs) == 1 else 'are different revisions'}. "
+                        f"Automated result across the content's revisions: {status}."
+                    )
+                    status, na_category, nr_reason = "Not_Reviewed", None, "revision_mismatch"
+                    comment = (
+                        f"Not reviewed: this checklist's STIG release has {g['rule_id']}, and the automated result "
+                        f"comes from content aligned to a different revision of this requirement. Re-verify."
+                    )
+            elif deselected.get(g["vid"]):
+                # The content checks it, but the profile didn't select the
+                # check: say so, not "no automated check".
+                names = ", ".join(
+                    sorted(x.replace("xccdf_org.ssgproject.content_rule_", "") for x in deselected[g["vid"]])
+                )
+                # Same revision rule as evaluated rows: a check citing another
+                # Rule ID revision isn't a check of this release's text.
+                revs = sorted(
+                    {sv for x in deselected[g["vid"]] for sv in res["rules"][x]["svs"].get(g["vid"][2:], ())}
+                )
+                other = [sv for sv in revs if sv != g["rule_id"]]
+                # The reason stays "deselected" (nothing was evaluated, so no
+                # verdict is withheld); revision_mismatch counts withheld ones.
+                status, nr_reason = "Not_Reviewed", "deselected"
+                what = (
+                    (
+                        f"a different revision of this requirement ({', '.join(revs)}; this checklist's STIG release "
+                        f"has {g['rule_id']})"
+                    )
+                    if other
+                    else "this requirement"
+                )
+                detail = (
+                    f"The scanner content checks {what} with {names}, but OpenSCAP did not select it "
+                    f"for the evaluated profile (notselected: a profile conflict, a selection default or "
+                    f"tailoring), so nothing was evaluated.\n\n" + prov_txt
+                )
+                comment = (
+                    f"Not reviewed: the scanner content has an automated check for {what}, but the "
+                    "evaluated profile did not select it; manual review required."
+                )
+            else:
+                # Still name the scan and the skeleton file this row came from.
+                status, nr_reason = "Not_Reviewed", "no_scanner_rule"
+                detail = "No scanner rule maps to this requirement.\n\n" + prov_txt
+                comment = (
+                    "No automated check for this requirement in the scanner content; manual review required."
+                )
+            vulns.append(
+                {
+                    **g,
+                    "status": status,
+                    "finding_details": detail,
+                    "comments": comment,
+                    "na_category": na_category,
+                    "nr_reason": nr_reason,
+                }
             )
-        # SSG-only text follows ComplianceAsCode's own convention
-        # (discussion <- rationale, fix text <- description), from *every*
-        # contributing rule, failing ones first, so a fix for the rule that
-        # actually failed is never hidden behind another rule's text.
-        order = sorted(rids, key=lambda x: (res["results"][x] != "fail", x))
-        rules_ = [res["rules"][x] for x in order]
-
-        def labeled(field):
-            if len(rules_) == 1:
-                return rules_[0][field]
-            return "\n\n".join(
-                f"[{r['id'].replace('xccdf_org.ssgproject.content_rule_', '')}] {r[field]}" for r in rules_
+        stig["unmatched_ssg_vids"] = sorted(set(by_vid) - seen)
+        stig["mapped_vids"] = len(set(by_vid) & seen)
+        stig["unpaired_refs"] = sorted(unpaired)
+    else:
+        key = res["benchmark_id"].replace("xccdf_org.ssgproject.content_benchmark_", "")
+        bid, title = SSG_STIG_IDS[key]  # main() skips unknown benchmarks
+        ver, releaseinfo = release  # main() skips content the release table doesn't verify
+        # The DISA file's own release info, verbatim: consumers read the
+        # release and date from it. The table lookup is in the meta.
+        stig = {
+            "benchmark_id": bid,
+            "title": title,
+            "description": res["profile_title"],
+            "version": ver,
+            "releaseinfo": releaseinfo,
+            "filename": f"{res['benchmark_id']}-{res['profile_id']}.xml",
+            "mapped_vids": len(by_vid),
+            "unpaired_refs": sorted(unpaired),
+            "ambiguous_vids": [],
+        }
+        for vid in sorted(by_vid, key=lambda v: int(v[2:])):
+            rids = by_vid[vid]
+            first = res["rules"][sorted(rids)[0]]
+            sev = max(
+                (res["rules"][r]["severity"] for r in rids), key=lambda s: {"high": 3, "medium": 2, "low": 1}.get(s, 0)
             )
+            status, detail, comment, ssg_rule_ids, na_category, nr_reason = vuln_from_ssg(vid, rids)
+            if len(ssg_rule_ids) > 1:
+                # The content itself cites several revisions of this
+                # requirement, so no single Rule ID (D4) is provably right,
+                # and any one written would be arbitrary: main() skips.
+                stig["ambiguous_vids"].append(f"{vid} ({', '.join(sorted(ssg_rule_ids))})")
+                continue
+            # Rule_Ver (the DISA STIG id, e.g. RHEL-09-211010) carries no V-ID
+            # number to pair on, so use it only when it can only belong to
+            # this row: one id across the contributors, each citing one SV
+            # (a malformed one counts: the id could be its).
+            # Otherwise leave it empty and list the candidates as evidence.
+            stig_ids = sorted({sid for r in rids for sid in res["rules"][r]["stig_ids"]})
+            pairable = len(stig_ids) == 1 and all(
+                len(res["rules"][r]["svs"]) == 1 and not res["rules"][r]["bad_svs"] for r in rids
+            )
+            if stig_ids and not pairable:
+                detail += (
+                    f"\n\nSTIG IDs cited by the contributing rules: {', '.join(stig_ids)}. They can't be "
+                    f"paired with this V-ID, so Rule_Ver is left empty."
+                )
+            # SSG-only text follows ComplianceAsCode's own convention
+            # (discussion <- rationale, fix text <- description), from *every*
+            # contributing rule, failing ones first, so a fix for the rule that
+            # actually failed is never hidden behind another rule's text.
+            order = sorted(rids, key=lambda x: (res["results"][x] != "fail", x))
+            rules_ = [res["rules"][x] for x in order]
 
-        vulns.append(
-            {
-                "vid": vid,
-                "group_title": first["srg"] or "",
-                "rule_id": sorted(ssg_rule_ids)[0],
-                "severity": sev,
-                "weight": "10.0",
-                "rule_ver": stig_ids[0] if pairable else "",
-                "rule_title": " / ".join(dict.fromkeys(r["title"] for r in rules_)),
-                "discussion": labeled("rationale"),
-                "check_content": "Automated OpenSCAP check: " + ", ".join(sorted(rids)),
-                "check_ref": "M",
-                "fix_text": labeled("description"),
-                "ccis": [],
-                "legacy": [],
-                "documentable": "false",
-                "status": status,
-                "finding_details": detail,
-                "comments": comment,
-                "na_category": na_category,
-                "nr_reason": nr_reason,
-            }
-        )
+            def labeled(field):
+                if len(rules_) == 1:
+                    return rules_[0][field]
+                return "\n\n".join(
+                    f"[{r['id'].replace('xccdf_org.ssgproject.content_rule_', '')}] {r[field]}" for r in rules_
+                )
+
+            vulns.append(
+                {
+                    "vid": vid,
+                    "group_title": first["srg"] or "",
+                    "rule_id": sorted(ssg_rule_ids)[0],
+                    "severity": sev,
+                    "weight": "10.0",
+                    "rule_ver": stig_ids[0] if pairable else "",
+                    "rule_title": " / ".join(dict.fromkeys(r["title"] for r in rules_)),
+                    "discussion": labeled("rationale"),
+                    "check_content": "Automated OpenSCAP check: " + ", ".join(sorted(rids)),
+                    "check_ref": "M",
+                    "fix_text": labeled("description"),
+                    "ccis": [],
+                    "legacy": [],
+                    "documentable": "false",
+                    "status": status,
+                    "finding_details": detail,
+                    "comments": comment,
+                    "na_category": na_category,
+                    "nr_reason": nr_reason,
+                }
+            )
     stig["uuid"] = str(
         uuid.uuid5(
             uuid.NAMESPACE_URL, f"stig-scanner-orb:{stig['benchmark_id']}:{stig['version']}:{stig['releaseinfo']}"
@@ -1127,6 +1545,7 @@ def main():
     ap.add_argument("--results", required=True)
     ap.add_argument("--plan", required=True, help="the scan's scan-plan.env (scanner, target, datastream hash)")
     ap.add_argument("--host-name", default="")
+    ap.add_argument("--stig-xccdf-path", default="", help="DISA manual XCCDF or ZIP, read offline")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--stem", default="checklist")
     ap.add_argument("--mode", default="auto")
@@ -1331,7 +1750,10 @@ def main():
                     },
                     1,
                 )
-        if res["benchmark_id"].replace("xccdf_org.ssgproject.content_benchmark_", "") not in SSG_STIG_IDS:
+        key = res["benchmark_id"].replace("xccdf_org.ssgproject.content_benchmark_", "")
+        expected_stig = SSG_STIG_IDS.get(key, (None,))[0] or TARGET_STIG.get(plan.get("target_base", ""))
+        disa = read_disa(a.stig_xccdf_path, expected_stig) if a.stig_xccdf_path else None
+        if not disa and key not in SSG_STIG_IDS:
             # A DISA benchmark id can't be derived from an SSG benchmark name,
             # and consumers merge rows on the exact id: never invent one.
             return emit(
@@ -1341,7 +1763,7 @@ def main():
                 },
                 0,
             )
-        if not ent:
+        if not ent and not disa:
             return emit(
                 {
                     "outcome": "skipped",
@@ -1352,7 +1774,7 @@ def main():
                 },
                 0,
             )
-        release = ent[3]
+        release = ent[3] if ent else None
         unavailable_inventory = next((db for db in ("dpkg", "rpm") if plan.get(f"{db}_status") == "missing"), None)
         if unavailable_inventory:
             # Package and kernel platform conditions can depend on inventory probes.
@@ -1433,7 +1855,7 @@ def main():
         # conversion elsewhere differs. Unknown leaves arch rows unreviewed.
         sp = plan.get("scanner_platform", "")
         runner_arch = sp.split("/")[1] if sp.count("/") >= 1 else None
-        stig, vulns = build_model(res, plan, runner_arch, release)
+        stig, vulns = build_model(res, plan, runner_arch, release, disa)
         # Severity is published as is: it must be a CKLB severity (the
         # schema's enum; SSG itself marks a few rules "unknown", which SSG-only
         # rows carry), never a blank, null or made-up value.
@@ -1468,7 +1890,7 @@ def main():
         # whose references moved to another URL (or a custom datastream without
         # them) would yield an empty "checklist" that row-count checks can't
         # catch. Require at least one selected rule mapped to a DISA V-ID.
-        if len(ent) > 4:
+        if ent and len(ent) > 4:
             expected = ent[4]["profiles"][res["profile_id"].replace(_P, "", 1)]
             unmapped = sorted(
                 rid.replace("xccdf_org.ssgproject.content_rule_", "", 1)
@@ -1479,8 +1901,20 @@ def main():
                 raise ValueError(
                     f"selected rules without DISA references differ from the verified allowlist: {unmapped}"
                 )
-            if len(vulns) != expected["vids"]:
-                raise ValueError(f"checklist has {len(vulns)} V-IDs; the verified profile maps {expected['vids']}")
+            mapped_count = len(stig.get("unmatched_ssg_vids", [])) + stig["mapped_vids"]
+            if mapped_count != expected["vids"]:
+                raise ValueError(
+                    f"scanner content maps {mapped_count} V-IDs; the verified profile maps {expected['vids']}"
+                )
+        if disa:
+            missing = len(stig["unmatched_ssg_vids"])
+            mapped = missing + stig["mapped_vids"]
+            if not stig["mapped_vids"]:
+                raise ValueError("the DISA file shares no V-ID with selected scanner rules")
+            if missing > max(10, mapped // 20):
+                raise ValueError(
+                    f"the DISA file lacks {missing} of the {mapped} V-IDs this scan maps: incomplete, or not this STIG"
+                )
         if not stig["mapped_vids"]:
             return emit(
                 {
@@ -1535,7 +1969,13 @@ def main():
                 "profile_id": res["profile_id"],
                 "outcome": "generated",
                 "host_name": host_name,
-                "release_source": "table",
+                "release_source": "skeleton" if disa else "table",
+                "skeleton_completeness": disa["completeness"] if disa else None,
+                "skeleton_sha256": disa["sha256"] if disa else None,
+                "skeleton_source_sha256": disa["source_sha256"] if disa else None,
+                "skeleton_path": disa["source_path"] if disa else None,
+                "skeleton_member": disa["member"] if disa else None,
+                "unmatched_ssg_vids": stig.get("unmatched_ssg_vids", []),
                 "datastream_sha256": plan.get("datastream_sha256"),
                 "stig": {k: stig[k] for k in ("benchmark_id", "version", "releaseinfo")},
                 "formats": {
@@ -1565,7 +2005,7 @@ def main():
         print(json.dumps(meta, indent=1, default=list))
         return 0
     except BaseException as e:
-        stuck = remove_all(artifacts)  # finish cleanup even after a partial removal error
+        stuck = remove_all(artifacts)
         try:
             emit({"outcome": "failed", "reason": f"{type(e).__name__}: {e}"[:500], "cleanup_errors": stuck}, 1)
         except Exception:

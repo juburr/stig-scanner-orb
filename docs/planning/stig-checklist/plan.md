@@ -1,6 +1,6 @@
 # Plan: STIG Viewer checklists with container N/A justifications
 
-Status: **PR 1 implemented, pending review/merge**, 2026-10-14. Owner: TBD. Done: the independent
+Status: **PR 1 merged (#9); PR 2 implemented, pending review/merge**, 2026-10-14. Owner: TBD. Done: the independent
 `smoke-rhel10` item (as `smoke-rhel10-auto`).
 
 Inputs:
@@ -527,8 +527,10 @@ justifications are neutral about asset type and control inheritance.
 - **Parameter** `stig_xccdf_path`: a DISA `*_Manual-xccdf.xml`, or the DISA
   zip (member read in memory with `zipfile`, never extracted to disk;
   the raw file and the member's decompressed size are both capped at
-  16 MiB, read as at most cap + 1 bytes). It is snapshotted and hashed like `datastream_path` and
-  parsed with `xml.etree` as untrusted data.
+  16 MiB, read as at most cap + 1 bytes). It is snapshotted once in bounded
+  runner memory and parsed with `xml.etree` as untrusted data. The runner must
+  be able to read the file. Hashes bind the parsed XCCDF and source ZIP bytes;
+  no persistent snapshot or DISA text is written into the orb.
 - **Validation:** `Benchmark/@id` must match the expected STIG, checked
   right after parsing and before any model is built. The expected id comes
   from the scanned benchmark (`RHEL-9` → `RHEL_9_STIG`), else from the

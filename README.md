@@ -211,6 +211,7 @@ The checklist output explains N/A conditions without deselecting host rules. Tai
 | `ignore_findings` | string | `""` | Comma-separated rule IDs to subtract from the fail/error/unknown gate count. |
 | `checklist` | enum | `auto` (job/checklist); `none` (summarize) | `auto` allows documented skips and fails generation errors; `require` also fails skips; `none` disables generation and enforcement. |
 | `checklist_formats` | string | `ckl,cklb` | One or both formats; trimmed, case-insensitive, comma-separated. Empty or unknown formats are errors. |
+| `stig_xccdf_path` | string | `""` | Runner-readable DISA manual XCCDF file or ZIP, at most 16 MiB. Supplies official text, CCIs, all rows, and the checklist release. |
 | `checklist_asset_name` | string | `""` | Stable unique asset name; defaults to the image reference. Required for rootfs checklists. XML-safe, trimmed, capped at 255 characters. |
 | `output_dir` | string | `build/stig` | Where reports and summary land. In `rootfs_path` mode it must not overlap the scanned tree; that is checked by physical path (symlinks resolved), so don't point it at a bind-mount alias of the tree either. |
 | `resource_class` | string | `medium` | Pass-through to the machine executor. |
@@ -249,8 +250,8 @@ RPM inventory is queried with the exact scanner image, root user, and read-only
 rootfs mount; a failed or empty query cannot establish package absence.
 `scan-plan.env`, `summary.txt`, and `provenance.json` record the result and
 available package count.
-An unknown or modified datastream is skipped until its exact SHA-256 and
-profile mapping are verified in the release table. A profile title never
+Without `stig_xccdf_path`, an unknown or modified datastream is skipped until
+its exact SHA-256 and profile mapping are verified in the release table. A profile title never
 supplies release identity: the pinned Ubuntu title names an older release.
 
 Each row is keyed by DISA V-ID and carries the full Rule ID for that release.
@@ -270,11 +271,56 @@ review. Architecture gates read the scanning host's CPU. Uncertain target
 applicability makes the row Not Reviewed; a gate demonstrably false for the
 target is recomputed as N/A, preserving the original result as evidence.
 
-This release uses **SSG metadata only**: no CCIs, SSG wording, and no rows for
-requirements absent from the selected scanner content, including manual-only
-requirements. It is automated evidence for the content's release, not a
-complete manual assessment or an assessment of the newest DISA release.
-Release-aware DISA metadata is planned separately.
+By default, checklists use **SSG metadata only**: no CCIs, SSG wording, and
+no rows for requirements absent from the selected scanner content, including
+manual-only requirements. They name the content's verified release.
+
+Supply `stig_xccdf_path` to use an official DISA `*_Manual-xccdf.xml` or its
+STIG ZIP instead. The file must be readable by the runner. The generator reads
+one bounded in-memory snapshot, hashes the exact XCCDF bytes it parses, and
+records the original file's SHA-256 separately when the source is a ZIP.
+ZIPs must contain exactly one manual XCCDF member; the archive and decompressed
+member are each capped at 16 MiB. Members are never extracted. Fetch or stage
+the file before the checklist command; generation remains offline.
+
+The supplied file determines the checklist's STIG release, full Rule IDs,
+severity, official requirement/check/fix text, CCIs and every DISA row. Rows
+without scanner checks and checks not selected by the evaluated profile are
+Not Reviewed, with distinct reasons. If **any contributing check cites a
+different Rule ID revision**, the row is Not Reviewed, even if OpenSCAP passed
+it or marked it N/A. Finding details preserve the automated result; assess the
+requirement against the supplied release before changing the verdict. This
+applies to older and newer skeletons alike. A matching release avoids these
+revision gaps; a newer release does not upgrade the scanner's coverage.
+
+Validation rejects the wrong STIG, malformed or repeated identifiers, missing
+required text, invalid release dates, incomplete profiles, and a skeleton
+missing more than the greater of 10 or 5% of the scan's mapped V-IDs. Known
+releases also require the exact inventory of V-ID/Rule-ID pairs and release
+date. An unknown release is allowed after internal profile checks;
+`skeleton_completeness: internal` in metadata and the summary means only
+self-consistency was established. Compare its recorded source SHA-256 with
+your approved DISA download. Small sets of scan V-IDs removed in another
+release are reported as `unmatched_ssg_vids` rather than silently carried over.
+The supplied file cannot waive scan/provenance, profile, package-inventory or
+architecture checks. Invalid files record a failed checklist outcome, enforced
+by summarize under `auto` and `require`.
+
+For a job, commit an approved file or fetch it with a verified checksum in a
+pre-step, then set the path:
+
+```yaml
+- stig-scanner-orb/scan:
+    image: registry.access.redhat.com/ubi9/ubi
+    stig_xccdf_path: security/U_RHEL_9_STIG_V2R9_Manual-xccdf.xml
+    checklist: require
+    checklist_asset_name: payments-api
+```
+
+The path is read after the scan, so checkout or staging must precede checklist
+generation. Each row carries the skeleton release, source path, XCCDF hash and
+ZIP hash/member where applicable; `checklist-meta.json` and `provenance.json`
+also record them. No DISA text is bundled in the orb.
 
 Open `.cklb` in STIG Viewer 3, or use **Import V2 Checklist** for `.ckl`.
 STIG Manager imports either format. Verify the intended asset and STIG revision
@@ -481,4 +527,19 @@ The same scripts CircleCI runs in pipeline are runnable directly via `bash` — 
 - arm64 verification — the scan path works on amd64; arm64 may produce surprising probe results we haven't validated.
 
 ## ⚖️ Legal
-This project is released under an [MIT license](LICENSE) and as such is **provided without warranty of any kind**. I make no promises as to its correctness or accuracy. 
+This project is released under an [MIT license](LICENSE) and as such is **provided without warranty of any kind**. I make no promises as to its correctness or accuracy.
+### Updating DISA skeleton inventories
+
+`STIG_INVENTORY` in `src/scripts/checklist.sh` contains identifier-only
+fingerprints for RHEL 8 V2R7–V2R9, RHEL 9 V2R9–V2R10, RHEL 10 V1R1–V1R3, and
+Ubuntu 22.04 V2R7–V2R10. When refreshing pins or supporting new releases,
+download the approved DISA ZIPs and run:
+
+```sh
+python3 tools/stig-inventory.py /path/to/releases/*.zip
+```
+
+Review and add the printed entries, including the
+canonical release date. Keep downloaded DISA text outside the repository.
+CI's matching and drift skeleton downloads have separate source ZIP checksum
+pins in `tools/fetch-stig-skeleton.py`.
