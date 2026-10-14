@@ -282,6 +282,11 @@ provenance = {
             "source": plan.get("dpkg_status_source", "/var/lib/dpkg/status.d") or None,
             "reason": plan.get("dpkg_status_reason") or None,
         } if plan.get("dpkg_status") else None,
+        "rpm_status": {
+            "state": plan["rpm_status"],
+            "packages": int(plan["rpm_status_packages"]) if plan.get("rpm_status_packages", "").isdigit() else None,
+            "reason": plan.get("rpm_status_reason") or None,
+        } if plan.get("rpm_status") else None,
     },
     "target_base": {
         "requested": opt(plan.get("target_base_requested")),
@@ -412,6 +417,18 @@ if provenance["target"]["dpkg_status"] and provenance["target"]["dpkg_status"]["
         "may error or evaluate false; package absence cannot be verified. See README, "
         "Distroless images."
     )
+
+if provenance["target"]["rpm_status"]:
+    inventory = provenance["target"]["rpm_status"]
+    lines.append("")
+    if inventory["state"] == "missing":
+        lines.append(
+            "WARNING: RPM inventory is unavailable"
+            + (f" ({inventory['reason']})" if inventory["reason"] else "")
+            + "; package absence and applicability cannot be verified."
+        )
+    else:
+        lines.append(f"RPM inventory: {inventory['state']} ({inventory['packages']} packages)")
 
 if rule_results == 0:
     lines.append("")

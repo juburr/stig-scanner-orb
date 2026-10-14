@@ -242,9 +242,13 @@ JSON) offline, using Python's standard library on the runner. Supported pinned
 releases are RHEL 8 V2R8, RHEL 9 V2R9, RHEL 10 V1R2, and Ubuntu 22.04 V2R8;
 RHEL `stig_gui` profiles are supported too. CIS, Debian, Fedora `standard`, and
 Wolfi/Chainguard profiles are skipped, even when their rules cite DISA IDs.
-A scan recording a missing dpkg database also skips checklist generation: a
+A scan recording missing dpkg or RPM inventory also skips checklist generation: a
 failed package probe cannot prove package absence or N/A applicability. Repair
-`/var/lib/dpkg/status` and rerun the scan first.
+`/var/lib/dpkg/status` or restore the RPM database and rerun the scan first.
+RPM inventory is queried with the exact scanner image, root user, and read-only
+rootfs mount; a failed or empty query cannot establish package absence.
+`scan-plan.env`, `summary.txt`, and `provenance.json` record the result and
+available package count.
 An unknown or modified datastream is skipped until its exact SHA-256 and
 profile mapping are verified in the release table. A profile title never
 supplies release identity: the pinned Ubuntu title names an older release.

@@ -17,6 +17,13 @@ if expected == "skipped":
     assert not (out / "checklist.ckl").exists() and not (out / "checklist.cklb").exists()
     assert meta["reason"]
 else:
+    plan = dict(line.split("=", 1) for line in (out / "scan-plan.env").read_text().splitlines() if "=" in line)
+    if plan.get("family") == "rpm":
+        assert plan.get("rpm_status") == "available", plan
+        assert int(plan["rpm_status_packages"]) > 0
+        provenance = json.loads((out / "provenance.json").read_text())
+        assert provenance["target"]["rpm_status"]["state"] == "available"
+        assert provenance["target"]["rpm_status"]["packages"] == int(plan["rpm_status_packages"])
     script = Path("src/scripts/checklist.sh").read_text()
     code = script.split("<<'PY_CHECKLIST'\n", 1)[1].split("\nPY_CHECKLIST\n", 1)[0]
     generator = {"__name__": "smoke"}

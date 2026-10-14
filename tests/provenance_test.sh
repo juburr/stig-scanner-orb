@@ -190,6 +190,16 @@ summarize "${dir}" || fail "dpkg-absent: summarize exited $?"
 check_json dpkg-absent "${dir}" 'p["target"]["dpkg_status"]["source"] is None'
 check_summary dpkg-absent "${dir}" "package absence cannot be verified"
 
+# RPM inventory uses the actual scanner query, not filesystem layout hints.
+printf '%s\n' "rpm_status=missing" "rpm_status_packages=" "rpm_status_reason=RPM query failed" >> "${dir}/scan-plan.env"
+summarize "${dir}" || fail "rpm-missing: summarize exited $?"
+check_json rpm-missing "${dir}" 'p["target"]["rpm_status"] == {"state": "missing", "packages": None, "reason": "RPM query failed"}'
+check_summary rpm-missing "${dir}" "WARNING: RPM inventory is unavailable (RPM query failed)"
+printf '%s\n' "rpm_status=available" "rpm_status_packages=185" "rpm_status_reason=" >> "${dir}/scan-plan.env"
+summarize "${dir}" || fail "rpm-available: summarize exited $?"
+check_json rpm-available "${dir}" 'p["target"]["rpm_status"] == {"state": "available", "packages": 185, "reason": None}'
+check_summary rpm-available "${dir}" "RPM inventory: available (185 packages)"
+
 # --- no scan-plan.env: provenance.json still written from results.xml ----
 dir="$(mktemp -d)"
 ssg_results > "${dir}/results.xml"

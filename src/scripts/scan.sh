@@ -858,6 +858,30 @@ fi
 # ${a[@]+"${a[@]}"}: an empty array is an unbound variable under set -u
 # in bash < 4.4 (e.g. the macOS system bash used for local runs).
 [ "${#ROOTFS_MOUNT[@]}" -gt 0 ] || ROOTFS_MOUNT=( -v "${ROOTFS_DIR}:/target:ro" )
+# Verify RPM inventory through the scanner's own librpm, user and rootfs
+# mount. A failed package probe is not evidence of absence.
+RPM_STATUS=""
+RPM_STATUS_PACKAGES=""
+RPM_STATUS_REASON=""
+if [ "${FAMILY}" = "rpm" ]; then
+    # shellcheck disable=SC2016  # $packages belongs to the scanner container
+    rpm_inventory="$(docker run --rm --network none -u 0:0 "${ROOTFS_MOUNT[@]}" \
+        --entrypoint sh "${SCANNER_ID}" -c '
+            set -eu
+            if packages=$(rpm --root /target -qa --qf "%{NAME}\n"); then
+                if [ -n "$packages" ]; then printf "%s\n" "$packages" | wc -l; exit 0; fi
+            fi
+            echo missing
+        ')"
+    case "${rpm_inventory}" in
+        ""|*[!0-9]*|0)
+            RPM_STATUS="missing"
+            RPM_STATUS_REASON="the scanner could not query a nonempty RPM inventory through its read-only rootfs mount"
+            echo "WARNING: ${RPM_STATUS_REASON}; package absence cannot be verified." >&2
+            ;;
+        *) RPM_STATUS="available"; RPM_STATUS_PACKAGES="${rpm_inventory}" ;;
+    esac
+fi
 # The scanner writes into a fresh private dir, never into output-dir
 # itself: output-dir is the caller's (it may be shared, hold sockets, or
 # contain the scratch rootfs), and /out is the scanner's one writable
@@ -960,6 +984,11 @@ fi
     fi
     echo "profile=${PROFILE}"
     echo "family=${FAMILY}"
+    if [ -n "${RPM_STATUS}" ]; then
+        echo "rpm_status=${RPM_STATUS}"
+        echo "rpm_status_packages=${RPM_STATUS_PACKAGES}"
+        echo "rpm_status_reason=${RPM_STATUS_REASON}"
+    fi
     if [ -n "${DPKG_STATUS}" ]; then
         echo "dpkg_status=${DPKG_STATUS}"
         echo "dpkg_status_packages=${DPKG_STATUS_PACKAGES}"

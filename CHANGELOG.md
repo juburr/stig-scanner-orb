@@ -9,7 +9,7 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 
 ### Added
 
-- Record absent and unusable dpkg databases in both image and rootfs scans, checking rootfs availability with scanner-equivalent root privileges and read-only mounts.
+- Record absent and unusable dpkg databases in both image and rootfs scans, checking rootfs availability with scanner-equivalent root privileges and read-only mounts. RPM inventory must also pass a nonempty query through the exact scanner; unavailable inventory skips checklist generation.
 - Offline STIG Viewer `.ckl` and `.cklb` artifacts for verified pinned RHEL
   8/9/10 and Ubuntu 22.04 STIG profiles, with V-ID aggregation, derived N/A
   reasons, architecture-aware applicability, and per-row provenance.

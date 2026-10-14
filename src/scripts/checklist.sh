@@ -1353,17 +1353,27 @@ def main():
                 0,
             )
         release = ent[3]
-        if plan.get("dpkg_status") == "missing":
-            # Package and kernel platform conditions can depend on dpkg probes.
+        unavailable_inventory = next((db for db in ("dpkg", "rpm") if plan.get(f"{db}_status") == "missing"), None)
+        if unavailable_inventory:
+            # Package and kernel platform conditions can depend on inventory probes.
             # results.xml does not identify which false gates came from a failed
             # probe; without that database we cannot certify absence or N/A.
             return emit(
                 {
                     "outcome": "skipped",
-                    "reason": "the scan recorded dpkg_status=missing"
-                    + (f" ({plan['dpkg_status_reason']})" if plan.get("dpkg_status_reason") else "")
+                    "reason": f"the scan recorded {unavailable_inventory}_status=missing"
+                    + (
+                        f" ({plan[unavailable_inventory + '_status_reason']})"
+                        if plan.get(unavailable_inventory + "_status_reason")
+                        else ""
+                    )
                     + "; package absence and applicability cannot be verified. "
-                    "Repair /var/lib/dpkg/status and rerun the scan before generating a checklist",
+                    + (
+                        "Repair /var/lib/dpkg/status"
+                        if unavailable_inventory == "dpkg"
+                        else "Restore a usable RPM database"
+                    )
+                    + " and rerun the scan before generating a checklist",
                 },
                 0,
             )

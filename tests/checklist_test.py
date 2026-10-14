@@ -596,6 +596,67 @@ printf '%s\\n' "$1"
         self.assertIn("imagemagick package", rows[4]["comments"])
         self.assertIn("package_imagemagick", rows[4]["comments"])
 
+    def test_rpm_inventory_missing_skips_unsupported_absence_claims(self):
+        self.prepare(fixture([("package", 1, "notapplicable", ("#package_gdm",)), ("evaluated", 2, "pass", ())]))
+        self.plan.update(rpm_status="missing", rpm_status_reason="RPM query failed")
+        self.save_plan()
+        rc, meta = self.generate()
+        self.assertEqual(rc, 0)
+        self.assertEqual(meta["outcome"], "skipped")
+        self.assertIn("rpm_status=missing", meta["reason"])
+        self.assertIn("Restore a usable RPM database", meta["reason"])
+        self.assertFalse((self.out / "checklist.ckl").exists())
+        self.assertEqual(self.summary(mode="auto").returncode, 0)
+        self.assertEqual(self.summary(mode="require").returncode, 1)
+        self.plan.update(rpm_status="available", rpm_status_packages="12", rpm_status_reason="")
+        self.save_plan()
+        self.assertEqual(self.generate()[1]["outcome"], "generated")
+
+    def test_rpm_scanner_query_requires_readable_nonempty_inventory(self):
+        scan = (ROOT / "src/scripts/scan.sh").read_text()
+        section = scan.split('RPM_STATUS=""', 1)[1].split("# The scanner writes", 1)[0]
+        cli_dir = self.out / "rpm-bin"
+        cli_dir.mkdir()
+        rpm = cli_dir / "rpm"
+        rpm.write_text("""#!/bin/sh
+[ "$1 $2 $3" = "--root /target -qa" ] || exit 2
+case "$RPM_PROBE_CASE" in
+    available) printf 'one\\ntwo\\n' ;;
+    empty) exit 0 ;;
+    failed) echo 'cannot open RPM database' >&2; exit 1 ;;
+esac
+""")
+        rpm.chmod(0o755)
+        script = (
+            r"""set -euo pipefail
+ROOTFS_MOUNT=( -v /mounted/disk:/target:ro )
+SCANNER_ID=sha256:exact-scanner
+FAMILY=rpm
+docker() {
+    case " $* " in *" --network none -u 0:0 -v /mounted/disk:/target:ro --entrypoint sh sha256:exact-scanner -c "*) ;; *) exit 2 ;; esac
+    sh -c "${!#}"
+}
+RPM_STATUS="""
+            + section
+            + """
+printf '\nSTATE=%s\nPACKAGES=%s\n' "$RPM_STATUS" "$RPM_STATUS_PACKAGES"
+"""
+        )
+        for case in ("available", "empty", "failed"):
+            with self.subTest(case=case):
+                result = subprocess.run(
+                    ["bash", "-c", script],
+                    env=dict(os.environ, PATH=str(cli_dir) + os.pathsep + os.environ["PATH"], RPM_PROBE_CASE=case),
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("STATE=" + ("available" if case == "available" else "missing"), result.stdout)
+                if case == "available":
+                    self.assertIn("PACKAGES=2", result.stdout)
+                else:
+                    self.assertIn("package absence cannot be verified", result.stderr)
+
     def test_scanner_records_plain_absence_and_unusable_dpkg_inventory(self):
         scan = (ROOT / "src/scripts/scan.sh").read_text()
         section = scan.split('DPKG_STATUS=""', 1)[1].split("# --- 4.", 1)[0]
