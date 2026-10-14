@@ -1,6 +1,7 @@
 # Plan: STIG Viewer checklists with container N/A justifications
 
-Status: **proposed**, 2026-10-12. Owner: TBD.
+Status: **proposed**, 2026-10-12. Owner: TBD. Done: the independent
+`smoke-rhel10` item (as `smoke-rhel10-auto`).
 
 Inputs:
 - [spike.md](spike.md): measured on real ubi9, ubi8, ubuntu:22.04 and
@@ -448,7 +449,8 @@ files and parameters and changes no existing behaviour.
     `notselected` rule fails (it would turn a manual-only row into
     "deselected");
 - **CI** (`.circleci/test-deploy.yml`):
-  - `smoke-rhel9`, `smoke-rhel8-auto`, `smoke-ubuntu2204`: both files exist
+  - `smoke-rhel9`, `smoke-rhel8-auto`, `smoke-rhel10-auto`,
+    `smoke-ubuntu2204` (one per release-table entry): both files exist
     and parse. The meta's release source is `table` and its release equals the table's (this fails if a pin bump forgot the table). Every
     Not_Applicable row has non-empty COMMENTS. Row count equals the number
     of distinct V-IDs in the results. No hard-coded counts (CLAUDE.md
@@ -674,11 +676,16 @@ and N/A rules are gated on `cpe:/o:notapplicable` with a per-rule rationale.
 - README states plainly that this is an SRG checklist and Chainguard's
   vendor profile, not a DISA STIG.
 
-### Independent: `smoke-rhel10`
+### Independent: `smoke-rhel10` (done)
 
 The spike confirmed `ssg-rhel10-ds.xml` in the pin has `content_profile_stig`
-(V1R2). That is CLAUDE.md's precondition, so the job can be added any time;
-PR 1's assertions then cover RHEL 10.
+(V1R2), CLAUDE.md's precondition for the job. It landed as
+`smoke-rhel10-auto`: `ubi10/ubi` through `target_base: auto`, asserting the
+profile id and its "DISA STIG for … Enterprise Linux 10" title. Measured
+with the pin: 69 evaluated rules (63 pass, 6 fail), 404 notapplicable, 0
+`error`, the same host-STIG shape as RHEL 8/9. PR 1's assertions cover RHEL
+10 through this job (CI bullet above); they, not this job, check the V1R2
+release.
 
 ## Risks
 
