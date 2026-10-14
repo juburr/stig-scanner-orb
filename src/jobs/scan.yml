@@ -133,14 +133,38 @@ steps:
       checklist_formats: <<parameters.checklist_formats>>
       checklist_asset_name: <<parameters.checklist_asset_name>>
   - summarize:
+      defer_gate: true
       checklist: <<parameters.checklist>>
       output_dir: <<parameters.output_dir>>
       fail_on_finding: <<parameters.fail_on_finding>>
       require_evaluated_rules: <<parameters.require_evaluated_rules>>
       ignore_findings: <<parameters.ignore_findings>>
-  # Upload after summarize so summary.txt is captured. `when: always`
-  # ensures the artifacts still upload when fail_on_finding triggers a
-  # gate exit — the audit trail must be retrievable on a failing build.
+  # Preserve ordinary evidence before the guard can fail. Never
+  # upload output_dir wholesale: it may contain an unremovable bad checklist.
+  - store_artifacts:
+      path: <<parameters.output_dir>>/results.xml
+      destination: stig/results.xml
+      when: always
+  - store_artifacts:
+      path: <<parameters.output_dir>>/report.html
+      destination: stig/report.html
+      when: always
+  - store_artifacts:
+      path: <<parameters.output_dir>>/summary.txt
+      destination: stig/summary.txt
+      when: always
+  - store_artifacts:
+      path: <<parameters.output_dir>>/provenance.json
+      destination: stig/provenance.json
+      when: always
+  - store_artifacts:
+      path: <<parameters.output_dir>>/scan-plan.env
+      destination: stig/scan-plan.env
+      when: always
+  - store_artifacts:
+      path: <<parameters.output_dir>>/checklist-meta.json
+      destination: stig/checklist-meta.json
+      when: always
   - run:
       name: Guard checklist artifacts before upload
       when: always
@@ -150,6 +174,19 @@ steps:
         PARAM_CHECKLIST_GUARD: "true"
       command: <<include(scripts/checklist.sh)>>
   - store_artifacts:
-      path: <<parameters.output_dir>>
-      destination: stig
+      path: <<parameters.output_dir>>/checklist.ckl
+      destination: stig/checklist.ckl
+      when: on_success
+  - store_artifacts:
+      path: <<parameters.output_dir>>/checklist.cklb
+      destination: stig/checklist.cklb
+      when: on_success
+  # Expected policy failures are deferred until after artifact upload. An
+  # actual scan, parse, or guard failure already prevents checklist uploads.
+  - run:
+      name: Enforce summarized scan policies
       when: always
+      environment:
+        PARAM_OUTPUT_DIR: <<parameters.output_dir>>
+        PARAM_ROOTFS_PATH: <<parameters.rootfs_path>>
+      command: <<include(scripts/enforce-gate.sh)>>

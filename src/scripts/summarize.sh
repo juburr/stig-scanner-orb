@@ -49,11 +49,18 @@ fi
 if ! REQUIRE_EVALUATED_RULES="$(normalize_bool "require-evaluated-rules" "${PARAM_REQUIRE_EVALUATED_RULES:-true}")"; then
     exit 2
 fi
+if ! DEFER_GATE="$(normalize_bool "defer-gate" "${PARAM_DEFER_GATE:-false}")"; then
+    exit 2
+fi
 
 RESULTS="${OUTPUT_DIR}/results.xml"
 SUMMARY="${OUTPUT_DIR}/summary.txt"
 PLAN="${OUTPUT_DIR}/scan-plan.env"
 PROVENANCE="${OUTPUT_DIR}/provenance.json"
+if [ "${DEFER_GATE}" = "true" ]; then
+    # A retry that fails before deciding policy cannot reuse an old verdict.
+    rm -f -- "${SUMMARY}.exit-code"
+fi
 
 if [ ! -f "${RESULTS}" ]; then
     echo "ERROR: ${RESULTS} not found — did the scan step run?" >&2
@@ -558,6 +565,14 @@ if [ "${ACTIONABLE}" -gt 0 ] && [ "${FAIL_ON_FINDING}" = "true" ]; then
     failed=1
 fi
 if [ "${failed}" -ne 0 ]; then
+    if [ "${DEFER_GATE}" = "true" ]; then
+        (set -o noclobber; printf '1\n' > "${SUMMARY}.exit-code")
+        echo "==> Policy failure recorded; the scan job enforces it after artifact upload."
+        exit 0
+    fi
     exit 1
+fi
+if [ "${DEFER_GATE}" = "true" ]; then
+    (set -o noclobber; printf '0\n' > "${SUMMARY}.exit-code")
 fi
 echo "==> summarize complete (actionable: ${ACTIONABLE}, evaluated: ${EVALUATED}, fail-on-finding ${FAIL_ON_FINDING}, require-evaluated-rules ${REQUIRE_EVALUATED_RULES})"

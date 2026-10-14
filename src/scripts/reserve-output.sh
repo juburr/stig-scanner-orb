@@ -21,6 +21,7 @@ if [ -z "${ROOTFS_PATH}" ]; then
     mkdir -p "${OUTPUT_DIR}"
     # Invalidate meta first, even if later cleanup is interrupted.
     rm -f -- "${OUTPUT_DIR}/checklist-meta.json"
+    rm -f -- "${OUTPUT_DIR}/summary.txt.exit-code"
     rm -f -- "${OUTPUT_DIR}/checklist.ckl" "${OUTPUT_DIR}/checklist.cklb" \
         "${OUTPUT_DIR}/checklist.ckl.partial" "${OUTPUT_DIR}/checklist.cklb.partial" \
         "${OUTPUT_DIR}/checklist-meta.json.partial"

@@ -114,6 +114,15 @@ Cleanup invalidates meta first, following the physical overlap check in rootfs
 mode. The always-run guard also receives rootfs_path to avoid modifying a tree
 when scan refused overlapping output. Publication stages all formats, checks
 parse-back, and commits meta last. Meta binds results and files by SHA-256.
+The scan job uploads ordinary evidence individually before the guard; CKL/CKLB
+use `when: on_success` after it. Summarize records policy exit status with
+`defer_gate: true`, and `enforce-gate.sh` applies it after artifact upload.
+Parsing and guard failures are never deferred. Keep standalone summarize at
+`defer_gate: false`. Never restore a whole-output-dir upload after the guard.
+A recorded `dpkg_status=missing` skips checklist generation, since package and
+kernel platform conditions cannot establish absence without that database.
+Shell string arguments use `--option=value` to prevent argparse treating
+dash-prefixed values as options before stale-output invalidation.
 `tests/checklist_test.py` loads production code, adding isolated release entries
 only in tests. Consumer validators in `tools/checklist-validator/` are CI-only.
 

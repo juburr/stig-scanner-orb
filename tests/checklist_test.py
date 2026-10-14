@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import os
+import re
 from pathlib import Path
 import signal
 import subprocess
@@ -129,14 +130,40 @@ class ChecklistTests(unittest.TestCase):
     def rows(self):
         return json.loads((self.out / "checklist.cklb").read_text())["stigs"][0]["rules"]
 
-    def summary(self, mode="auto", findings="false"):
+    def summary(self, mode="auto", findings="false", defer="false"):
         env = {
             **os.environ,
             "PARAM_OUTPUT_DIR": str(self.out),
             "PARAM_CHECKLIST": mode,
             "PARAM_FAIL_ON_FINDING": findings,
+            "PARAM_DEFER_GATE": defer,
         }
         return subprocess.run(["bash", str(ROOT / "src/scripts/summarize.sh")], env=env, capture_output=True, text=True)
+
+    def enforce_gate(self, rootfs=""):
+        env = {**os.environ, "PARAM_OUTPUT_DIR": str(self.out), "PARAM_ROOTFS_PATH": rootfs}
+        return subprocess.run(
+            ["bash", str(ROOT / "src/scripts/enforce-gate.sh")], env=env, capture_output=True, text=True
+        )
+
+    def wrapper(self, **params):
+        # Only tests register the fixture's release; the shell argument handling
+        # and complete generator come unchanged from the production script.
+        script = self.out / "wrapper.sh"
+        script.write_text(
+            SCRIPT.read_text().replace(
+                'if __name__ == "__main__":', f'RELEASE_TABLE[{H!r}] = {self.entry!r}\n\nif __name__ == "__main__":', 1
+            )
+        )
+        env = {
+            **os.environ,
+            "PARAM_OUTPUT_DIR": str(self.out),
+            "PARAM_CHECKLIST": "auto",
+            "PARAM_CHECKLIST_FORMATS": "ckl,cklb",
+            "PARAM_CHECKLIST_ASSET_NAME": "",
+            **params,
+        }
+        return subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True)
 
     def guard(self):
         with contextlib.redirect_stdout(io.StringIO()):
@@ -500,8 +527,126 @@ main()
             rc = MOD["guard"](
                 ["--out-dir", str(self.out), "--results", "/missing/results.xml", "--rootfs-path", str(self.out)]
             )
-        self.assertEqual(rc, 0)
+        self.assertEqual(rc, 1)
         self.assertEqual((self.out / "checklist.ckl").read_bytes(), before)
+
+    def test_dash_prefixed_values_cannot_accept_stale_asset_output(self):
+        self.assertEqual(self.wrapper(PARAM_CHECKLIST_ASSET_NAME="old-asset").returncode, 0)
+        for name in ("-new-asset", "--help", "--formats=cklb"):
+            with self.subTest(name=name):
+                result = self.wrapper(PARAM_CHECKLIST_ASSET_NAME=name)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                meta = json.loads((self.out / "checklist-meta.json").read_text())
+                self.assertEqual(meta["host_name"], name)
+                self.assertEqual(meta["outcome"], "generated")
+                self.assertEqual(self.summary("require").returncode, 0)
+        self.wrapper(PARAM_CHECKLIST_FORMATS="-pdf")
+        self.assertEqual(json.loads((self.out / "checklist-meta.json").read_text())["outcome"], "failed")
+        self.assertFalse((self.out / "checklist.ckl").exists())
+        self.assertEqual(self.summary().returncode, 1)
+
+    def test_missing_dpkg_database_skips_supported_stig_without_absence_claims(self):
+        benchmark = "xccdf_org.ssgproject.content_benchmark_UBUNTU_22-04"
+        self.prepare(
+            fixture(
+                [
+                    ("file", 1, "pass", ()),
+                    ("gui", 2, "notapplicable", ("#package_gdm",)),
+                    ("host", 3, "notapplicable", ("#system_with_kernel",)),
+                ],
+                benchmark=benchmark,
+            )
+        )
+        self.entry = (benchmark, *self.entry[1:])
+        self.plan["dpkg_status"] = "missing"
+        self.plan["dpkg_status_reason"] = "the orb does not modify a rootfs_path tree"
+        self.plan["rootfs_path"] = "/tmp/distroless-ubuntu"
+        for key in ("image", "image_id", "image_platform"):
+            self.plan.pop(key)
+        self.save_plan()
+        rc, meta = self.generate("--host-name=ubuntu-app")
+        self.assertEqual(rc, 0)
+        self.assertEqual(meta["outcome"], "skipped")
+        self.assertIn("dpkg_status=missing", meta["reason"])
+        self.assertIn("Repair /var/lib/dpkg/status", meta["reason"])
+        self.assertFalse((self.out / "checklist.ckl").exists())
+        self.assertFalse((self.out / "checklist.cklb").exists())
+        self.assertEqual(self.summary().returncode, 0)
+        self.assertEqual(self.summary("require").returncode, 1)
+        self.plan["dpkg_status"] = "synthesized"
+        self.save_plan()
+        self.assertEqual(self.generate("--host-name=ubuntu-app")[1]["outcome"], "generated")
+
+    def test_deferred_finding_gate_preserves_checklist_then_fails_job(self):
+        self.prepare(fixture([("fail", 1, "fail", ())]))
+        self.generate()
+        self.assertEqual(self.summary(findings="true", defer="true").returncode, 0)
+        self.assertEqual((self.out / "summary.txt.exit-code").read_text(), "1\n")
+        self.assertEqual(self.guard(), 0)
+        self.assertTrue((self.out / "checklist.ckl").exists())
+        self.assertEqual(self.enforce_gate().returncode, 1)
+        self.assertFalse((self.out / "summary.txt.exit-code").exists())
+        self.assertEqual(self.summary(defer="true").returncode, 0)
+        self.assertEqual(self.enforce_gate().returncode, 0)
+
+    def test_deferred_checklist_policy_and_parse_errors_still_fail_closed(self):
+        self.prepare(fixture(profile="xccdf_org.ssgproject.content_profile_cis_server_l1"))
+        self.generate()
+        self.assertEqual(self.summary("require", defer="true").returncode, 0)
+        self.assertEqual(self.enforce_gate().returncode, 1)
+        (self.out / "summary.txt.exit-code").write_text("0\n")
+        (self.out / "results.xml").write_text("<truncated")
+        self.assertNotEqual(self.summary(defer="true").returncode, 0)
+        self.assertFalse((self.out / "summary.txt.exit-code").exists())
+        self.assertEqual(self.enforce_gate().returncode, 2)
+        (self.out / "summary.txt.exit-code").write_text("not-a-verdict\n")
+        self.assertEqual(self.enforce_gate().returncode, 2)
+
+    def test_final_gate_does_not_modify_refused_rootfs_tree(self):
+        gate = self.out / "summary.txt.exit-code"
+        gate.write_text("0\n")
+        self.assertEqual(self.enforce_gate(rootfs=str(self.out)).returncode, 2)
+        self.assertEqual(gate.read_text(), "0\n")
+
+    @unittest.skipIf(os.geteuid() == 0, "read-only directory reproduction needs a non-root runner")
+    def test_unremovable_bad_checklist_fails_guard_without_losing_scan_evidence(self):
+        self.generate()
+        self.assertEqual(self.wrapper().returncode, 0)
+        self.summary(defer="true")
+        (self.out / "report.html").write_text("scan report")
+        (self.out / "checklist-meta.json").write_text("{}")
+        ordinary = {
+            name: (self.out / name).read_bytes()
+            for name in ("results.xml", "report.html", "summary.txt", "provenance.json", "scan-plan.env")
+        }
+        self.out.chmod(0o555)
+        try:
+            result = self.wrapper(PARAM_CHECKLIST_GUARD="true")
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertTrue((self.out / "checklist.ckl").exists())
+            for name, data in ordinary.items():
+                self.assertEqual((self.out / name).read_bytes(), data)
+        finally:
+            self.out.chmod(0o700)
+
+    def test_job_only_uploads_checklists_after_successful_guard(self):
+        # This policy is what makes an unremovable source checklist safe:
+        # store_artifacts cannot have when:always or upload the whole directory.
+        job = (ROOT / "src/jobs/scan.yml").read_text()
+        guard = job.index("name: Guard checklist artifacts before upload")
+        final_gate = job.index("name: Enforce summarized scan policies")
+        uploads = list(re.finditer(r"(?ms)^  - store_artifacts:\n(.*?)(?=^  - |\Z)", job))
+        self.assertEqual(len(uploads), 8)
+        for step in uploads:
+            body = step.group(1)
+            if "path: <<parameters.output_dir>>/checklist.ckl" in body:
+                self.assertGreater(step.start(), guard)
+                self.assertLess(step.start(), final_gate)
+                self.assertIn("when: on_success", body)
+            else:
+                self.assertLess(step.start(), guard)
+                self.assertIn("when: always", body)
+        self.assertIn("defer_gate: true", job)
 
     def test_guard_finishes_cleanup_after_one_removal_error(self):
         self.generate()

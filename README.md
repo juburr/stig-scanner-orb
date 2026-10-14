@@ -242,6 +242,9 @@ JSON) offline, using Python's standard library on the runner. Supported pinned
 releases are RHEL 8 V2R8, RHEL 9 V2R9, RHEL 10 V1R2, and Ubuntu 22.04 V2R8;
 RHEL `stig_gui` profiles are supported too. CIS, Debian, Fedora `standard`, and
 Wolfi/Chainguard profiles are skipped, even when their rules cite DISA IDs.
+A scan recording a missing dpkg database also skips checklist generation: a
+failed package probe cannot prove package absence or N/A applicability. Repair
+`/var/lib/dpkg/status` and rerun the scan first.
 An unknown or modified datastream is skipped until its exact SHA-256 and
 profile mapping are verified in the release table. A profile title never
 supplies release identity: the pinned Ubuntu title names an older release.
@@ -295,7 +298,12 @@ Conversion errors do not prevent summary generation. `summarize` enforces
 `auto` (errors fail, skips pass), `require` (only generated passes), or `none`
 (no checklist gate). Meta is bound to the exact `results.xml`; every listed
 artifact must match its hash. The job cleans stale artifacts before scanning
-and runs an upload guard even after an interrupted conversion.
+and runs an upload guard even after an interrupted conversion. Ordinary scan
+evidence uploads first; only a successful guard permits CKL/CKLB uploads.
+Policy failures are decided by summarize and enforced after artifact upload,
+so a findings gate still preserves valid checklists. A guard failure, including
+unremovable invalid output, prevents checklist uploads. Standalone summarize
+continues to enforce policy immediately (`defer_gate: false`).
 
 Existing standalone `scan` → `summarize` callers keep working: the summarize
 command defaults to `checklist: none`. Custom jobs can insert the `checklist`

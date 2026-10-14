@@ -14,12 +14,12 @@ FORMATS="$(subst "${PARAM_CHECKLIST_FORMATS-ckl,cklb}")"
 ASSET_NAME="$(subst "${PARAM_CHECKLIST_ASSET_NAME:-}")"
 GUARD="$(subst "${PARAM_CHECKLIST_GUARD:-false}")"
 ROOTFS_PATH="$(subst "${PARAM_ROOTFS_PATH:-}")"
-args=(--results "${OUTPUT_DIR}/results.xml" --out-dir "${OUTPUT_DIR}")
+args=("--results=${OUTPUT_DIR}/results.xml" "--out-dir=${OUTPUT_DIR}")
 if [ "${GUARD}" = "true" ]; then
-    args=(--guard "${args[@]}" --rootfs-path "${ROOTFS_PATH}")
+    args=(--guard "${args[@]}" "--rootfs-path=${ROOTFS_PATH}")
 else
-    args+=(--plan "${OUTPUT_DIR}/scan-plan.env" --mode "${CHECKLIST}"
-           --host-name "${ASSET_NAME}" --formats "${FORMATS}")
+    args+=("--plan=${OUTPUT_DIR}/scan-plan.env" "--mode=${CHECKLIST}"
+           "--host-name=${ASSET_NAME}" "--formats=${FORMATS}")
 fi
 # Conversion errors are recorded in meta; do not suppress summarize.
 if python3 - "${args[@]}" <<'PY_CHECKLIST'
@@ -1059,7 +1059,7 @@ def guard(argv):
         tree, out = os.path.realpath(a.rootfs_path), os.path.realpath(a.out_dir)
         if os.path.commonpath((tree, out)) in (tree, out):
             print("Checklist guard skipped: output_dir overlaps rootfs_path", file=sys.stderr)
-            return 0
+            return 1
 
     def sha(p):
         try:
@@ -1345,6 +1345,20 @@ def main():
                 0,
             )
         release = ent[3]
+        if plan.get("dpkg_status") == "missing":
+            # Package and kernel platform conditions can depend on dpkg probes.
+            # results.xml does not identify which false gates came from a failed
+            # probe; without that database we cannot certify absence or N/A.
+            return emit(
+                {
+                    "outcome": "skipped",
+                    "reason": "the scan recorded dpkg_status=missing"
+                    + (f" ({plan['dpkg_status_reason']})" if plan.get("dpkg_status_reason") else "")
+                    + "; package absence and applicability cannot be verified. "
+                    "Repair /var/lib/dpkg/status and rerun the scan before generating a checklist",
+                },
+                0,
+            )
         if plan.get("rootfs_path") and not a.host_name:
             return emit(
                 {

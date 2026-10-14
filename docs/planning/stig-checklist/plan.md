@@ -168,6 +168,17 @@ ISSM wording acceptance remain pending. MARKING stays blank instead of guessing
 CUI. The always-run guard receives rootfs_path so it cannot modify a caller's
 tree after scan refused overlapping output. Later PRs remain proposed.
 
+Review follow-up: an unremovable invalid checklist cannot be archived. The job
+uploads the six ordinary evidence files with `when: always`, runs the guard,
+then uploads each checklist format only with `when: on_success`. Summarize
+records expected policy exit status; a final always-run step enforces it after
+uploads, preserving valid checklists when the finding gate fails. Parse and
+guard failures still immediately prevent checklist uploads. Standalone summary
+policy remains immediate by default. Both guard and final gate preserve a
+refused overlapping rootfs tree. Recorded missing dpkg databases skip checklist
+generation (unavailable probes do not establish absence); all wrapper string
+arguments use equals syntax so option-like values cannot bypass invalidation.
+
 - **New** `src/scripts/checklist.sh`: bash wrapper with `subst()` and an
   embedded stdlib Python heredoc, like `summarize.sh`. Port from
   `spike/xccdf2ckl.py`, keeping:

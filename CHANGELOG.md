@@ -17,6 +17,9 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   defaults to `none`. SSG-only checklists omit CCIs and manual-only rows.
 - Checklist metadata, summary/provenance reporting, result/file hash validation,
   pre-scan cleanup, and an always-run artifact guard.
+  Ordinary evidence uploads even on failure; checklist uploads require a
+  successful guard, with policy exits enforced afterwards. Missing dpkg
+  databases skip checklists, and dash-prefixed asset names remain literal.
 - Fault-injection tests and CI validation with pinned STIG Manager parsers and
   DISA's CKLB schema.
 
