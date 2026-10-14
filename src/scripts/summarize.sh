@@ -355,10 +355,15 @@ if checklist is not None:
     if checklist.get("reason"):
         lines.append(f"  reason: {checklist['reason']}")
     if checklist.get("outcome") == "generated":
-        for key in ("host_name", "release_source", "skeleton_completeness", "skeleton_sha256", "skeleton_source_sha256", "skeleton_path", "skeleton_member", "unmatched_ssg_vids", "stig", "formats", "vulns", "status", "na_by_reason", "not_reviewed_by_reason", "unpaired_refs"):
+        for key in ("host_name", "release_source", "bundle", "revision_drift", "skeleton_completeness", "skeleton_sha256", "skeleton_source_sha256", "skeleton_path", "skeleton_member", "unmatched_ssg_vids", "stig", "formats", "vulns", "status", "na_by_reason", "not_reviewed_by_reason", "unpaired_refs"):
             lines.append(f"  {key}: {json.dumps(checklist.get(key), sort_keys=True)}")
         if checklist.get("skeleton_completeness") == "internal":
             lines.append("  warning: unknown DISA release; skeleton completeness establishes self-consistency only. Compare its source hash with DISA's published file.")
+        drift = checklist.get("revision_drift", {})
+        if drift:
+            lines.append(f"  revision comparison: {drift.get('unchanged_check', 0)} row(s) have unchanged check text; "
+                         f"{drift.get('check_changed', 0)} have changed checks; "
+                         f"{drift.get('unverified_revision', 0)} cannot be verified.")
         mismatches = checklist.get("not_reviewed_by_reason", {}).get("revision_mismatch", 0)
         if mismatches:
             lines.append(f"  warning: {mismatches} row(s) use a different Rule ID revision; automated evidence is retained, but their verdict is Not_Reviewed.")

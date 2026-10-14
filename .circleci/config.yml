@@ -25,5 +25,14 @@ workflows:
           pipeline_number: << pipeline.number >>
           vcs_type: << pipeline.project.type >>
           orb_name: stig-scanner-orb
+          inject_orb: false
+          checkout: false
+          attach_workspace: false
+          config_path: /tmp/stig-test-config.yml
+          pre-steps:
+            - checkout
+            - run:
+                name: Prepare integration matrix and full packed-orb smoke
+                command: bash .circleci/prepare-test-config.sh
           requires: [orb-tools/lint, orb-tools/pack, orb-tools/review, shellcheck/check]
           filters: *filters

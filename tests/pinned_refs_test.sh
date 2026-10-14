@@ -60,3 +60,25 @@ if [ "${failures}" -ne 0 ]; then
     exit 1
 fi
 echo "pinned refs ok: $(echo "${refs}" | wc -l | tr -d ' ') digest-pinned default image(s), all listed in README"
+
+# Bundle identity and source ZIP pins must move with every datastream pin.
+python3 - "${ROOT}" <<'PY_BUNDLE_PINS'
+import json
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+script = root / 'src/scripts/checklist.sh'
+code = script.read_text().split("<<'PY_CHECKLIST'\n", 1)[1].split('\nPY_CHECKLIST\n', 1)[0]
+gen = {'__name__': 'pins'}
+exec(compile(code, str(script), 'exec'), gen)
+sources = json.loads((root / 'tools/stig-sources.json').read_text())
+assert set(gen['BUNDLE_TABLE']) == set(gen['RELEASE_TABLE']), 'bundle/datastream pin sets differ'
+for sha, descriptor in gen['BUNDLE_TABLE'].items():
+    data = gen['load_bundle'](sha, str(root / 'src/scripts/stig-data'))
+    assert (data['version'], data['releaseinfo']) == gen['RELEASE_TABLE'][sha][3]
+    source = sources[descriptor['alias']]
+    assert data['source_sha256'] == source['sha256']
+    assert data['source_path'] == source['url']
+    assert data['credits'] == source['credits']
+print('bundled DISA pins ok: every datastream release and source ZIP hash matches')
+PY_BUNDLE_PINS

@@ -14,17 +14,20 @@ FORMATS="$(subst "${PARAM_CHECKLIST_FORMATS-ckl,cklb}")"
 ASSET_NAME="$(subst "${PARAM_CHECKLIST_ASSET_NAME:-}")"
 GUARD="$(subst "${PARAM_CHECKLIST_GUARD:-false}")"
 STIG_XCCDF_PATH="$(subst "${PARAM_STIG_XCCDF_PATH:-}")"
+BUNDLE_DIR="$(dirname "${BASH_SOURCE[0]}")/stig-data"
 ROOTFS_PATH="$(subst "${PARAM_ROOTFS_PATH:-}")"
 args=("--results=${OUTPUT_DIR}/results.xml" "--out-dir=${OUTPUT_DIR}")
 if [ "${GUARD}" = "true" ]; then
     args=(--guard "${args[@]}" "--rootfs-path=${ROOTFS_PATH}")
 else
     args+=("--plan=${OUTPUT_DIR}/scan-plan.env" "--mode=${CHECKLIST}"
-           "--host-name=${ASSET_NAME}" "--formats=${FORMATS}" "--stig-xccdf-path=${STIG_XCCDF_PATH}")
+           "--host-name=${ASSET_NAME}" "--formats=${FORMATS}" "--stig-xccdf-path=${STIG_XCCDF_PATH}" "--bundle-dir=${BUNDLE_DIR}")
 fi
 # Conversion errors are recorded in meta; do not suppress summarize.
 if python3 - "${args[@]}" <<'PY_CHECKLIST'
 import argparse
+import base64
+import gzip
 import collections
 import datetime as dt
 import hashlib
@@ -46,7 +49,7 @@ HREF_VULN = "https://www.cyber.mil/stigs/srg-stig-tools#vulnerability_id"
 # and write it as the row's Rule_ID.
 SV_RE = re.compile(r"SV-([0-9]+)r[0-9]+_rule")  # ASCII digits only (\d matches any Unicode digit)
 # Bound untrusted XML before parsing: real results.xml is about 15–20 MiB.
-GENERATOR_VERSION = "1.0.0"
+GENERATOR_VERSION = "1.1.0"
 MAX_RESULTS_BYTES = 128 << 20
 MAX_DISA_BYTES = 16 << 20
 X11 = "{http://checklists.nist.gov/xccdf/1.1}"
@@ -509,6 +512,36 @@ RELEASE_TABLE = {
 }
 
 
+# BEGIN GENERATED BUNDLE_TABLE (tools/refresh-stig-data.py)
+BUNDLE_TABLE = {
+    "27fc84bb2ea29619a944d5a75b361961e1ac7a8dadd48f4165f00d106b0ef944": {
+        "alias": "rhel9",
+        "json_sha256": "7252ba062da96c688911f862ceade4ab57232bc3a075227f1fe251d1d8113cd5",
+        "source_sha256": "1875de2543d01695c5a346c51888cc336113e9199bfe6726d74a08de286ca1ae",
+        "xccdf_sha256": "c912407aa6a2f151979db8bf6d901a06116f1624bf60b19b3737febf73bba539"
+    },
+    "58b6e4cb1032a29b21aede508817dc83335e1a3e34304f3093538e8b64c3988d": {
+        "alias": "rhel10",
+        "json_sha256": "211a79b40c9b99b1828ba7d2a0e1af71c2a65ba6f457129686fbd17342a3a834",
+        "source_sha256": "d050b93c00d3c2cf8b0adec4a852f27bd827720cc4510ce32f3368006ad63ac3",
+        "xccdf_sha256": "91327cd50ab0b4041463a9a1bdaf9b7c365576d67b6ed9864ab99b002bb33ae1"
+    },
+    "5ee6c1d4dcf8ca1245e1f532771e9c56a615a415ac076092229209d680f90989": {
+        "alias": "ubuntu2204",
+        "json_sha256": "b870ffe3d51e26ff94cb131d0da25a302d3bed5fd8fd4a921324195c33ba68c3",
+        "source_sha256": "649bb9efb5bbcb69b07ee49732783d8b44b424f228792ec58c687d20c827f3b5",
+        "xccdf_sha256": "73c26b6592dfc02f7f0eb456e0f89143ea1e2d8af7ebc61bd8bfae01f5a4c9d8"
+    },
+    "b0c25f6ef5cdbb5cf72d88c8e17a300aa24e4536ca5d1037c92f67474435217a": {
+        "alias": "rhel8",
+        "json_sha256": "2a3eacf704657158b1d852c092cbc5e8dcbf67f3e72f07843ab516aa7072f465",
+        "source_sha256": "5180ff6be545c306950f2041330e0cba835b148529e3c51c55c386f95c363a8c",
+        "xccdf_sha256": "4dcfbe0aa0d9745e2c37ec1d63bc2922d67bb86dc8e2bda10c851a461318a3ff"
+    }
+}
+# END GENERATED BUNDLE_TABLE
+
+
 ARCH_ALIASES = {"x86_64": "amd64", "aarch64": "arm64"}
 ARCH_TERM = re.compile(r"^(not_)?(x86_64|aarch64|ppc64le|s390x)_arch$")
 SSG_CPU = {"x86_64": "amd64", "aarch64": "arm64", "ppc64le": "ppc64le", "s390x": "s390x"}
@@ -816,7 +849,74 @@ def validate_disa(disa):
     disa["completeness"] = "inventory" if inv else "internal"
 
 
-def build_model(res, plan, runner_arch=None, release=None, disa=None):
+def load_bundle(datastream_sha256, directory):
+    """Load only the bundle bound to these exact datastream bytes. Hash the
+    compact JSON before trusting it and cap both encoded and expanded bytes.
+    CircleCI stages data in a separate included step; local scripts can read
+    the same payload directly from their sibling generated shell files."""
+    descriptor = BUNDLE_TABLE.get(datastream_sha256)
+    if not descriptor:
+        # Entries identifying a pinned content file require a bundle. Missing
+        # data indicates an incomplete pin bump, never a reason to downgrade.
+        ent = RELEASE_TABLE.get(datastream_sha256)
+        if ent and len(ent) > 4 and ent[4].get("filename"):
+            raise ValueError("the verified datastream has no bundled DISA data; refresh the bundles")
+        return None
+    alias = descriptor["alias"]
+    path = os.environ.get("STIG_DATA_" + alias.upper())
+    if path is not None:
+        if not path:
+            raise ValueError(f"bundled DISA data for {alias} could not be staged")
+        encoded = read_capped(path, 2 << 20, "encoded DISA bundle")
+    else:
+        script = read_capped(os.path.join(directory, alias + ".sh"), 2 << 20, "DISA bundle script")
+        markers = script.split(b"\nSTIG_DATA_B64\n")
+        prefix, sep, encoded = markers[0].partition(b"<<'STIG_DATA_B64'\n")
+        if len(markers) != 2 or not sep:
+            raise ValueError(f"bundled DISA data for {alias} has no unique payload")
+    compressed = base64.b64decode(b"".join(encoded.split()), validate=True)
+    with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as member:
+        data = member.read(MAX_DISA_BYTES + 1)
+    if len(data) > MAX_DISA_BYTES:
+        raise ValueError("bundled DISA data exceeds 16 MiB")
+    if hashlib.sha256(data).hexdigest() != descriptor["json_sha256"]:
+        raise ValueError(f"bundled DISA data for {alias} does not match its pinned SHA-256")
+    payload = json.loads(data)
+    if payload["schema"] != "stig-scanner-orb/stig-data/v1":
+        raise ValueError("unsupported DISA bundle schema")
+    disa = payload["stig"]
+    ent = RELEASE_TABLE.get(datastream_sha256)
+    if not ent or payload["datastream_sha256"] != datastream_sha256:
+        raise ValueError("DISA bundle does not match the verified datastream")
+    expected = SSG_STIG_IDS[ent[0].replace("xccdf_org.ssgproject.content_benchmark_", "")][0]
+    if disa["benchmark_id"] != expected or (disa["version"], disa["releaseinfo"]) != ent[3]:
+        raise ValueError("DISA bundle does not match the pinned STIG release")
+    source = payload["source"]
+    if (
+        source["sha256"] != descriptor["source_sha256"]
+        or source["xccdf_sha256"] != descriptor["xccdf_sha256"]
+    ):
+        raise ValueError("DISA bundle source hashes do not match their pins")
+    disa["profiles"] = [set(p) for p in disa["profiles"]]
+    validate_disa(disa)
+    if disa["completeness"] != "inventory":
+        raise ValueError("bundled DISA release has no verified inventory")
+    disa.update(
+        sha256=source["xccdf_sha256"],
+        source_sha256=source["sha256"],
+        source_path=source["url"],
+        member=source["member"],
+        bundle_sha256=descriptor["json_sha256"],
+        credits=source["credits"],
+    )
+    return disa
+
+
+def release_label(disa):
+    return f"V{disa['version']}R{disa['releaseinfo'].split()[1]}"
+
+
+def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=None):
     # OpenSCAP's architecture platforms read the scanning host's /proc, not
     # the target. Image mode records the target platform (os/arch[/variant]);
     # rootfs_path doesn't. Compare architectures only, keep the full platform
@@ -986,6 +1086,11 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None):
             f"file {disa['source_path']}; XCCDF sha256 {disa['sha256']}; source sha256 {disa['source_sha256']}"
             + (f"; ZIP member {disa['member']}" if disa["member"] else "")
         )
+    if baseline:
+        prov.append(f"Reference content credits: {baseline['credits']}; reuse policy https://www.cyber.mil/privacy-security")
+        prov.append(f"Content-matched DISA reference: {baseline['benchmark_id']} {release_label(baseline)}; "
+                    f"XCCDF sha256 {baseline['sha256']}; source ZIP sha256 {baseline['source_sha256']}; "
+                    f"bundle sha256 {baseline['bundle_sha256']}")
     prov_txt = "\n".join(prov)
     arch_note = f"[architecture gate evaluated on the scanning host ({runner_arch}); target architecture {target_arch or 'unknown'}]"
 
@@ -1081,31 +1186,52 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None):
         rel = re.search(r"Release: *([0-9]+)", disa["releaseinfo"]).group(1)
         stig["filename"] = f"U_{disa['benchmark_id']}_V{disa['version']}R{rel}_Manual-xccdf.xml"
         seen = set()
+        baseline_rows = {g["vid"]: g for g in baseline["groups"]} if baseline else {}
         for g in disa["groups"]:
             rids = by_vid.get(g["vid"], [])
             seen.add(g["vid"])
-            na_category = None
+            na_category, drift = None, None
             if rids:
                 status, detail, comment, ssg_rule_ids, na_category, nr_reason = vuln_from_ssg(g["vid"], rids)
-                if ssg_rule_ids != {g["rule_id"]}:
-                    # The content's revision of the requirement differs from the
-                    # skeleton's (the skeleton may be newer *or* older), and
-                    # nothing here proves the check is unchanged, so don't carry
-                    # the verdict: keep it as evidence only. Every contributing
-                    # rule must cite the skeleton's revision: a mixed set still
-                    # evaluates part of another revision.
-                    other_revs = sorted(ssg_rule_ids - {g["rule_id"]})
+                reference = baseline_rows.get(g["vid"])
+                # The exact pinned datastream must cite *only* the reference's
+                # Rule ID in every contributor before its check text can prove
+                # equivalence. A mixed revision set never earns a carry-forward.
+                verified_reference = reference and ssg_rule_ids == {reference["rule_id"]}
+                revision_changed = ssg_rule_ids != {g["rule_id"]}
+                check_changed = verified_reference and reference["check_content"] != g["check_content"]
+                if revision_changed or check_changed:
                     detail += (
-                        f"\n\nRevision mismatch: the scanner content maps this check to "
-                        f"{', '.join(sorted(ssg_rule_ids))}; this checklist's STIG release has {g['rule_id']}, "
-                        f"so {', '.join(other_revs)} {'is a different revision' if len(other_revs) == 1 else 'are different revisions'}. "
-                        f"Automated result across the content's revisions: {status}."
+                        f"\n\nRevision comparison: scanner references {', '.join(sorted(ssg_rule_ids))}; "
+                        f"checklist {release_label(disa)} has {g['rule_id']}. Automated result across the content's revisions: {status}."
                     )
-                    status, na_category, nr_reason = "Not_Reviewed", None, "revision_mismatch"
-                    comment = (
-                        f"Not reviewed: this checklist's STIG release has {g['rule_id']}, and the automated result "
-                        f"comes from content aligned to a different revision of this requirement. Re-verify."
-                    )
+                    if verified_reference:
+                        detail += (
+                            f"\nCheck-content SHA-256: content-matched {hashlib.sha256(reference['check_content'].encode()).hexdigest()}; "
+                            f"supplied {hashlib.sha256(g['check_content'].encode()).hexdigest()}."
+                        )
+                    if verified_reference and not check_changed:
+                        drift = "unchanged_check"
+                        note = (
+                            f"Check content is unchanged between the content-matched {release_label(baseline)} "
+                            f"and checklist {release_label(disa)}; automated result retained: {status}."
+                        )
+                        detail += "\n" + note
+                        comment = "\n".join(filter(None, (comment, note)))
+                    else:
+                        drift = "check_changed" if check_changed else "unverified_revision"
+                        reason = (
+                            (
+                                f"check content in {release_label(disa)} differs from the content-matched "
+                                f"{release_label(baseline)}"
+                            )
+                            if check_changed
+                            else "a different revision cannot be verified against content-matched check text"
+                        )
+                        detail += "\nNot reviewed: " + reason + "."
+                        status, na_category = "Not_Reviewed", None
+                        nr_reason = "check_changed" if check_changed else "revision_mismatch"
+                        comment = "Not reviewed: " + reason + "; re-verify this requirement."
             elif deselected.get(g["vid"]):
                 # The content checks it, but the profile didn't select the
                 # check: say so, not "no automated check".
@@ -1153,6 +1279,7 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None):
                     "comments": comment,
                     "na_category": na_category,
                     "nr_reason": nr_reason,
+                    "revision_drift": drift,
                 }
             )
         stig["unmatched_ssg_vids"] = sorted(set(by_vid) - seen)
@@ -1547,6 +1674,7 @@ def main():
     ap.add_argument("--host-name", default="")
     ap.add_argument("--stig-xccdf-path", default="", help="DISA manual XCCDF or ZIP, read offline")
     ap.add_argument("--out-dir", required=True)
+    ap.add_argument("--bundle-dir", default="", help="local generated bundle scripts; CircleCI uses staged payloads")
     ap.add_argument("--stem", default="checklist")
     ap.add_argument("--mode", default="auto")
     ap.add_argument("--formats", default="ckl,cklb", help="comma-separated: ckl, cklb")
@@ -1752,7 +1880,8 @@ def main():
                 )
         key = res["benchmark_id"].replace("xccdf_org.ssgproject.content_benchmark_", "")
         expected_stig = SSG_STIG_IDS.get(key, (None,))[0] or TARGET_STIG.get(plan.get("target_base", ""))
-        disa = read_disa(a.stig_xccdf_path, expected_stig) if a.stig_xccdf_path else None
+        baseline = load_bundle(plan.get("datastream_sha256", ""), a.bundle_dir) if ent else None
+        disa = read_disa(a.stig_xccdf_path, expected_stig) if a.stig_xccdf_path else baseline
         if not disa and key not in SSG_STIG_IDS:
             # A DISA benchmark id can't be derived from an SSG benchmark name,
             # and consumers merge rows on the exact id: never invent one.
@@ -1855,7 +1984,7 @@ def main():
         # conversion elsewhere differs. Unknown leaves arch rows unreviewed.
         sp = plan.get("scanner_platform", "")
         runner_arch = sp.split("/")[1] if sp.count("/") >= 1 else None
-        stig, vulns = build_model(res, plan, runner_arch, release, disa)
+        stig, vulns = build_model(res, plan, runner_arch, release, disa, baseline)
         # Severity is published as is: it must be a CKLB severity (the
         # schema's enum; SSG itself marks a few rules "unknown", which SSG-only
         # rows carry), never a blank, null or made-up value.
@@ -1969,7 +2098,20 @@ def main():
                 "profile_id": res["profile_id"],
                 "outcome": "generated",
                 "host_name": host_name,
-                "release_source": "skeleton" if disa else "table",
+                "release_source": "skeleton" if a.stig_xccdf_path else "bundle" if baseline else "table",
+                "bundle": (
+                    {
+                        "sha256": baseline["bundle_sha256"],
+                        "source_sha256": baseline["source_sha256"],
+                        "xccdf_sha256": baseline["sha256"],
+                        "source_url": baseline["source_path"],
+                        "credits": baseline["credits"],
+                        "stig": {k: baseline[k] for k in ("benchmark_id", "version", "releaseinfo")},
+                    }
+                    if baseline
+                    else None
+                ),
+                "revision_drift": collections.Counter(v.get("revision_drift") for v in vulns if v.get("revision_drift")),
                 "skeleton_completeness": disa["completeness"] if disa else None,
                 "skeleton_sha256": disa["sha256"] if disa else None,
                 "skeleton_source_sha256": disa["source_sha256"] if disa else None,

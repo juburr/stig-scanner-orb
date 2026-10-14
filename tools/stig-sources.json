@@ -1,0 +1,26 @@
+{
+  "rhel8": {
+    "filename": "U_RHEL_8_V2R8_STIG.zip",
+    "url": "https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip/U_RHEL_8_V2R8_STIG.zip",
+    "sha256": "5180ff6be545c306950f2041330e0cba835b148529e3c51c55c386f95c363a8c",
+    "credits": "DISA"
+  },
+  "rhel9": {
+    "filename": "U_RHEL_9_V2R9_STIG.zip",
+    "url": "https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip/U_RHEL_9_V2R9_STIG.zip",
+    "sha256": "1875de2543d01695c5a346c51888cc336113e9199bfe6726d74a08de286ca1ae",
+    "credits": "Red Hat and DISA"
+  },
+  "rhel10": {
+    "filename": "U_RHEL_10_V1R2_STIG.zip",
+    "url": "https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip/U_RHEL_10_V1R2_STIG.zip",
+    "sha256": "d050b93c00d3c2cf8b0adec4a852f27bd827720cc4510ce32f3368006ad63ac3",
+    "credits": "Red Hat and DISA"
+  },
+  "ubuntu2204": {
+    "filename": "U_CAN_Ubuntu_22-04_LTS_V2R8_STIG.zip",
+    "url": "https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip/U_CAN_Ubuntu_22-04_LTS_V2R8_STIG.zip",
+    "sha256": "649bb9efb5bbcb69b07ee49732783d8b44b424f228792ec58c687d20c827f3b5",
+    "credits": "Canonical Ltd. and DISA"
+  }
+}
