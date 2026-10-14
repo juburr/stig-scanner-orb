@@ -678,7 +678,9 @@ def parse_disa(source):
                 "responsibility": tags.get("Responsibility", ""),
                 "sec_override": tags.get("SeverityOverrideGuidance", ""),
                 "check_content": (
-                    (chk.findtext(ns + "check-content") or "").strip() if chk is not None else ""
+                    "".join(chk.find(ns + "check-content").itertext()).strip()
+                    if chk is not None and chk.find(ns + "check-content") is not None
+                    else ""
                 ),
                 "check_ref": (
                     (chk.find(ns + "check-content-ref").get("name") or "M")

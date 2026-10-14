@@ -136,6 +136,34 @@ class BundleTests(unittest.TestCase):
             self.assertIn("check content", self.rows()[0]["comments"])
             self.assertIn("Automated result across", self.rows()[0]["finding_details"])
 
+    def test_nested_check_text_and_tails_are_compared_completely(self):
+        for revision in [1, 2]:
+            for changed_part in ["child", "tail"]:
+                with self.subTest(revision=revision, changed_part=changed_part):
+                    original = skeleton()
+                    check = original.find(".//" + MOD["X11"] + "check-content")
+                    check.text = "Inspect "
+                    child = common.ET.SubElement(check, "{http://www.w3.org/1999/xhtml}code")
+                    child.text = "setting"
+                    child.tail = " equals enabled"
+                    self.bundle(original)
+                    supplied = copy.deepcopy(original)
+                    supplied.find(".//" + MOD["X11"] + "Rule").set("id", f"SV-1r{revision}_rule")
+                    rc, meta = self.run_bundle(self.supplied(supplied))
+                    self.assertEqual(rc, 0)
+                    self.assertEqual(self.rows()[0]["status"], "not_a_finding")
+                    self.assertEqual(self.rows()[0]["check_content"], "Inspect setting equals enabled")
+                    element = supplied.find(".//{http://www.w3.org/1999/xhtml}code")
+                    if changed_part == "child":
+                        element.text = "another_setting"
+                    else:
+                        element.tail = " equals disabled"
+                    rc, meta = self.run_bundle(self.supplied(supplied))
+                    self.assertEqual(rc, 0)
+                    self.assertEqual(self.rows()[0]["status"], "not_reviewed")
+                    self.assertEqual(meta["revision_drift"], {"check_changed": 1})
+                    self.assertEqual(meta["not_reviewed_by_reason"]["check_changed"], 1)
+
     def test_strict_text_comparison_and_reverse_release_direction(self):
         self.bundle(skeleton(revision=2))
         self.prepare(fixture([("one", 1, "pass", (), [("sv", "SV-1r2_rule"), ("v", "V-1")])]))
@@ -241,10 +269,12 @@ class BundleTests(unittest.TestCase):
         payload.write_text(self.encoded)
         script = common.SCRIPT.read_text().replace(
             'if __name__ == "__main__":',
-            f'RELEASE_TABLE[{H!r}] = {self.entry!r}\n'
-            f'BUNDLE_TABLE[{H!r}] = {self.descriptor!r}\n'
-            f'STIG_INVENTORY[{self.inventory_key!r}] = {self.inventory!r}\n'
-            'if __name__ == "__main__":', 1)
+            f"RELEASE_TABLE[{H!r}] = {self.entry!r}\n"
+            f"BUNDLE_TABLE[{H!r}] = {self.descriptor!r}\n"
+            f"STIG_INVENTORY[{self.inventory_key!r}] = {self.inventory!r}\n"
+            'if __name__ == "__main__":',
+            1,
+        )
         env = {**os.environ, "PARAM_OUTPUT_DIR": str(self.out), "STIG_DATA_TEST": str(payload)}
         result = subprocess.run(["bash", "-s"], input=script, env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
