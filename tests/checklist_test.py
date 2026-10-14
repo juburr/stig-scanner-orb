@@ -596,6 +596,75 @@ printf '%s\\n' "$1"
         self.assertIn("imagemagick package", rows[4]["comments"])
         self.assertIn("package_imagemagick", rows[4]["comments"])
 
+    def test_scanner_records_plain_absence_and_unusable_dpkg_inventory(self):
+        scan = (ROOT / "src/scripts/scan.sh").read_text()
+        helpers = scan.split("rootfs_has() {", 1)[1].split("\ndetect_target_base()", 1)[0]
+        section = scan.split('DPKG_STATUS=""', 1)[1].split("# --- 4.", 1)[0]
+        tree = self.out / "rootfs"
+        database = tree / "var/lib/dpkg"
+        database.mkdir(parents=True)
+        script = (
+            """set -euo pipefail
+rootfs_has() {"""
+            + helpers
+            + r"""
+resolve_donor() { DONOR_ID=test-donor; }
+docker() {
+    local payload="${!#}"
+    payload="${payload//d=\/target\/var\/lib\/dpkg/d=$ROOTFS_DIR/var/lib/dpkg}"
+    payload="${payload//\/target\//$ROOTFS_DIR/}"
+    STANZA_AWK="$stanza_awk" sh -c "$payload"
+}
+DPKG_STATUS="""
+            + section
+            + """
+printf '\nSTATE=%s\nREASON=%s\n' "$DPKG_STATUS" "$DPKG_STATUS_REASON"
+"""
+        )
+
+        def probe(image):
+            return subprocess.run(
+                ["bash", "-c", script],
+                env=dict(os.environ, ROOTFS_DIR=str(tree), FAMILY="dpkg", CLEANUP_ROOTFS="1" if image else "0"),
+                text=True,
+                capture_output=True,
+                check=True,
+            ).stdout
+
+        for image in (False, True):
+            with self.subTest(image=image, layout="absent"):
+                self.assertIn("STATE=missing", probe(image))
+        status = database / "status"
+        external = self.out / "external-status"
+        external.write_text("Package: outside\nStatus: install ok installed\n\n")
+        status.symlink_to(external)
+        for image in (False, True):
+            with self.subTest(image=image, layout="outside-symlink"):
+                self.assertIn("STATE=missing", probe(image))
+        status.unlink()
+        status.mkdir()
+        for image in (False, True):
+            with self.subTest(image=image, layout="directory"):
+                self.assertIn("STATE=missing", probe(image))
+        status.rmdir()
+        status.symlink_to("missing")
+        for image in (False, True):
+            with self.subTest(image=image, layout="dangling-symlink"):
+                self.assertIn("STATE=missing", probe(image))
+        status.unlink()
+        status.write_text("Package: test\nStatus: install ok installed\n\n")
+        for image in (False, True):
+            with self.subTest(image=image, layout="present"):
+                self.assertNotIn("STATE=missing", probe(image))
+        status.unlink()
+        fragments = database / "status.d"
+        fragments.mkdir()
+        (fragments / "test").write_text("Package: test\nVersion: 1\n")
+        self.assertIn("STATE=missing", probe(False))
+        self.assertFalse(status.exists())
+        self.assertIn("STATE=synthesized", probe(True))
+        self.assertIn("Status: install ok installed", status.read_text())
+
     def test_missing_dpkg_database_skips_supported_stig_without_absence_claims(self):
         benchmark = "xccdf_org.ssgproject.content_benchmark_UBUNTU_22-04"
         self.prepare(

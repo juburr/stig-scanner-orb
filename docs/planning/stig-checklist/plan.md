@@ -737,3 +737,5 @@ release.
 6. **DISA oddity.** RHEL 8 V2R9 downloads on its own but is missing from the
    October 2026 library compilation, which lists it as "sunset/removed".
    Confirm before targeting it in PR 2/3.
+
+Review follow-up: scanner inventory checks now record every absent or unusable dpkg status file in both input modes, including targets with no status.d directory. Missing inventory skips checklist generation; provenance does not claim a fragment source when none exists.

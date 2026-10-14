@@ -155,7 +155,7 @@ check_json dpkg-synth "${dir}" 'p["donor"]["used_for"] == ["extraction", "dpkg-s
 check_summary dpkg-synth "${dir}" "(used for extraction, dpkg-status)"
 check_json dpkg-synth "${dir}" 'p["target"]["dpkg_status"] == {"state": "synthesized", "packages": 11, "source": "/var/lib/dpkg/status.d", "reason": None}'
 check_summary dpkg-synth "${dir}" "  dpkg-status:       synthesized from /var/lib/dpkg/status.d (11 packages)"
-if grep -q "^WARNING: the target has /var/lib/dpkg/status.d/" "${dir}/summary.txt"; then
+if grep -q "^WARNING: the target has no usable /var/lib/dpkg/status" "${dir}/summary.txt"; then
     fail "dpkg-synth: must not warn when the status file was synthesized"
 fi
 
@@ -169,8 +169,8 @@ printf '%s\n' "target_base=debian12" "scanner=s" "datastream=ssg-debian12-ds.xml
 summarize "${dir}" || fail "dpkg-missing: summarize exited $?"
 check_json dpkg-missing "${dir}" 'p["target"]["dpkg_status"]["state"] == "missing" and p["target"]["dpkg_status"]["packages"] is None'
 check_json dpkg-missing "${dir}" 'p["target"]["dpkg_status"]["reason"] == "the orb does not modify a rootfs_path tree"'
-check_summary dpkg-missing "${dir}" "WARNING: the target has /var/lib/dpkg/status.d/ but no /var/lib/dpkg/status"
-check_summary dpkg-missing "${dir}" "none was built (the orb does not modify a rootfs_path tree)"
+check_summary dpkg-missing "${dir}" "WARNING: the target has no usable /var/lib/dpkg/status"
+check_summary dpkg-missing "${dir}" "no usable /var/lib/dpkg/status (the orb does not modify a rootfs_path tree)"
 
 # Image mode whose status.d/ had nothing to build from: same warning.
 dir="$(mktemp -d)"
@@ -182,7 +182,13 @@ printf '%s\n' "target_base=debian12" "scanner=s" "datastream=ssg-debian12-ds.xml
     > "${dir}/scan-plan.env"
 summarize "${dir}" || fail "dpkg-empty: summarize exited $?"
 check_json dpkg-empty "${dir}" 'p["target"]["dpkg_status"] == {"state": "missing", "packages": None, "source": "/var/lib/dpkg/status.d", "reason": "status.d/ holds no package stanzas"}'
-check_summary dpkg-empty "${dir}" "none was built (status.d/ holds no package stanzas)"
+check_summary dpkg-empty "${dir}" "no usable /var/lib/dpkg/status (status.d/ holds no package stanzas)"
+
+# Plain absence is not evidence that the distroless fragment layout exists.
+printf '%s\n' "dpkg_status_source=" "dpkg_status_reason=package database absent" >> "${dir}/scan-plan.env"
+summarize "${dir}" || fail "dpkg-absent: summarize exited $?"
+check_json dpkg-absent "${dir}" 'p["target"]["dpkg_status"]["source"] is None'
+check_summary dpkg-absent "${dir}" "package absence cannot be verified"
 
 # --- no scan-plan.env: provenance.json still written from results.xml ----
 dir="$(mktemp -d)"

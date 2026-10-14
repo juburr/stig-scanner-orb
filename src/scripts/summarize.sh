@@ -279,7 +279,7 @@ provenance = {
         "dpkg_status": {
             "state": plan["dpkg_status"],
             "packages": int(plan["dpkg_status_packages"]) if plan.get("dpkg_status_packages", "").isdigit() else None,
-            "source": "/var/lib/dpkg/status.d",
+            "source": plan.get("dpkg_status_source", "/var/lib/dpkg/status.d") or None,
             "reason": plan.get("dpkg_status_reason") or None,
         } if plan.get("dpkg_status") else None,
     },
@@ -406,11 +406,10 @@ if provenance["target"]["dpkg_status"] and provenance["target"]["dpkg_status"]["
     reason = provenance["target"]["dpkg_status"]["reason"]
     lines.append("")
     lines.append(
-        "WARNING: the target has /var/lib/dpkg/status.d/ but no /var/lib/dpkg/status "
-        "(distroless layout), and none was built"
+        "WARNING: the target has no usable /var/lib/dpkg/status"
         + (f" ({reason})" if reason else "")
         + ". OpenSCAP's dpkg probe reads only the status file, so package rules "
-        "report error and package-removal checks were not evaluated. See README, "
+        "may error or evaluate false; package absence cannot be verified. See README, "
         "Distroless images."
     )
 

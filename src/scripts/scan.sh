@@ -438,7 +438,7 @@ parse_os_release_field() {
 }
 # Prints "<target_base> <source>", source being os-release or package-db
 # (the filesystem-shape fallback).
-# rootfs_has -d|-f ROOTFS_REAL PATH: PATH is a directory / regular file
+# rootfs_has TEST ROOTFS_REAL PATH: PATH satisfies the file test
 # once every symlink in it is resolved, and it resolves inside ROOTFS_REAL
 # (the rootfs's physical path). Without the containment check an absolute
 # symlink in the image (e.g. var/lib/dpkg/status.d -> /etc) would be
@@ -617,7 +617,7 @@ echo "    datastream:    ${DATASTREAM}"
 echo "    profile:       ${PROFILE}"
 echo "    output:        ${OUTPUT_DIR_ABS}"
 
-# --- 3b. dpkg status for distroless images ---------------------------------
+# --- 3b. dpkg inventory availability and distroless synthesis ---------------------------------
 # OpenSCAP's dpkginfo probe reads only <root>/var/lib/dpkg/status. Google
 # distroless images record their packages as one stanza per file under
 # /var/lib/dpkg/status.d/ (plus *.md5sums) and ship no status file, so every
@@ -625,13 +625,19 @@ echo "    output:        ${OUTPUT_DIR_ABS}"
 # `pass`. In image mode the extracted rootfs is our scratch copy, so build
 # the status file there from the stanzas. In rootfs_path mode the tree
 # belongs to the caller and stays untouched; summarize warns instead.
+# An absent, unreadable, non-regular, or out-of-tree status file cannot
+# establish package absence, even when status.d/ is also absent.
 # Recorded as dpkg_status=synthesized|missing in scan-plan.env, with the
 # reason when the file could not be built.
 DPKG_STATUS=""
 DPKG_STATUS_PACKAGES=""
 DPKG_STATUS_REASON=""
+DPKG_STATUS_SOURCE=""
 ROOTFS_REAL="$(cd "${ROOTFS_DIR}" && pwd -P)"
 ROOTFS_REAL="${ROOTFS_REAL%/}"
+if [ "${FAMILY}" = "dpkg" ] && rootfs_has -d "${ROOTFS_REAL}" "${ROOTFS_DIR}/var/lib/dpkg/status.d"; then
+    DPKG_STATUS_SOURCE="/var/lib/dpkg/status.d"
+fi
 if [ "${FAMILY}" = "dpkg" ] && [ "${CLEANUP_ROOTFS}" = "1" ]; then
     # The helper decides whether to write the package database OpenSCAP
     # will read, so record it as a donor role in the provenance.
@@ -674,7 +680,14 @@ if [ "${FAMILY}" = "dpkg" ] && [ "${CLEANUP_ROOTFS}" = "1" ]; then
         "${DONOR_ID}" -c '
             set -eu
             d=/target/var/lib/dpkg
-            if [ -e "$d/status" ] || [ -L "$d/status" ]; then echo present; exit 0; fi
+            if [ -e "$d/status" ] || [ -L "$d/status" ]; then
+                case "$(readlink -f "$d/status" || true)" in
+                    /target/*)
+                        if [ -f "$d/status" ] && [ -r "$d/status" ]; then echo present; exit 0; fi
+                        ;;
+                esac
+                echo unusable; exit 0
+            fi
             if [ ! -d "$d/status.d" ]; then echo absent; exit 0; fi
             if [ "$(readlink -f "$d")" != "$d" ]; then echo symlinked; exit 0; fi
             # Build in container-private temporaries, never at a fixed
@@ -694,13 +707,19 @@ if [ "${FAMILY}" = "dpkg" ] && [ "${CLEANUP_ROOTFS}" = "1" ]; then
             echo "synthesized ${count}"
         ')"
     case "${dpkg_result}" in
+        absent|unusable)
+            DPKG_STATUS="missing"
+            DPKG_STATUS_REASON="/var/lib/dpkg/status is absent or is not a readable regular file inside the rootfs"
+            ;;
         synthesized\ *)
             DPKG_STATUS="synthesized"
+            DPKG_STATUS_SOURCE="/var/lib/dpkg/status.d"
             DPKG_STATUS_PACKAGES="${dpkg_result#synthesized }"
             echo "==> Synthesized /var/lib/dpkg/status from status.d/ (${DPKG_STATUS_PACKAGES} packages) in the scratch rootfs"
             ;;
         empty)
             DPKG_STATUS="missing"
+            DPKG_STATUS_SOURCE="/var/lib/dpkg/status.d"
             DPKG_STATUS_REASON="status.d/ holds no package stanzas"
             ;;
         symlinked)
@@ -708,17 +727,17 @@ if [ "${FAMILY}" = "dpkg" ] && [ "${CLEANUP_ROOTFS}" = "1" ]; then
             DPKG_STATUS_REASON="/var/lib/dpkg is a symlink, which the orb does not write through"
             ;;
     esac
-elif [ "${FAMILY}" = "dpkg" ] \
-        && rootfs_has -d "${ROOTFS_REAL}" "${ROOTFS_DIR}/var/lib/dpkg/status.d" \
-        && ! rootfs_has -f "${ROOTFS_REAL}" "${ROOTFS_DIR}/var/lib/dpkg/status"; then
-    DPKG_STATUS="missing"
-    DPKG_STATUS_REASON="the orb does not modify a rootfs_path tree"
+elif [ "${FAMILY}" = "dpkg" ]; then
+    if ! rootfs_has -f "${ROOTFS_REAL}" "${ROOTFS_DIR}/var/lib/dpkg/status" \
+            || ! rootfs_has -r "${ROOTFS_REAL}" "${ROOTFS_DIR}/var/lib/dpkg/status"; then
+        DPKG_STATUS="missing"
+        DPKG_STATUS_REASON="/var/lib/dpkg/status is absent or unusable; the orb does not modify a rootfs_path tree"
+    fi
 fi
 if [ "${DPKG_STATUS}" = "missing" ]; then
-    echo "WARNING: the target has /var/lib/dpkg/status.d/ but no /var/lib/dpkg/status," >&2
-    echo "         and none was built (${DPKG_STATUS_REASON})." >&2
+    echo "WARNING: the target has no usable /var/lib/dpkg/status (${DPKG_STATUS_REASON})." >&2
     echo "         OpenSCAP's dpkg probe reads only the status file, so package rules" >&2
-    echo "         will report 'error'. See the README (Distroless images)." >&2
+    echo "         may error or evaluate false; package absence cannot be verified." >&2
 fi
 
 # --- 4. pull scanner image -----------------------------------------------
@@ -919,6 +938,7 @@ fi
         echo "dpkg_status=${DPKG_STATUS}"
         echo "dpkg_status_packages=${DPKG_STATUS_PACKAGES}"
         echo "dpkg_status_reason=${DPKG_STATUS_REASON}"
+        echo "dpkg_status_source=${DPKG_STATUS_SOURCE}"
     fi
     if [ -n "${IMAGE}" ]; then
         echo "image=${IMAGE}"
