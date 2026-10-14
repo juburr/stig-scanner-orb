@@ -305,12 +305,14 @@ class BundleTests(unittest.TestCase):
                 "scripts/stig-data/" + descriptor["alias"] + ".sh",
                 (ROOT / "src/commands/checklist.yml").read_text(),
             )
+        bash_env = self.out / "command-size-bash-env"
+        bash_env.write_text("")
         for script in (ROOT / "src/scripts/stig-data").glob("*.sh"):
             self.assertLess(script.stat().st_size, 120000)
             # CircleCI machine execution may pass the full body as one argument.
             result = subprocess.run(
                 ["bash", "-c", script.read_text()],
-                env={**os.environ, "PARAM_CHECKLIST": "none"},
+                env={**os.environ, "PARAM_CHECKLIST": "none", "BASH_ENV": str(bash_env)},
                 capture_output=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
