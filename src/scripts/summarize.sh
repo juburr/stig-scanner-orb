@@ -101,9 +101,7 @@ GATED_RESULTS = ("fail", "error", "unknown")
 ignores = {normalize(t) for t in ignore_csv.split(",") if t.strip()}
 
 with open(results_path, "rb") as fh:
-    results_bytes = fh.read((128 << 20) + 1)
-if len(results_bytes) > 128 << 20:
-    sys.exit("ERROR: results.xml exceeds 128 MiB")
+    results_bytes = fh.read()
 results_sha = hashlib.sha256(results_bytes).hexdigest()
 root = ET.fromstring(results_bytes)
 
