@@ -9,6 +9,10 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 
 ### Added
 
+- Generated, source-hash-verified checklist entry point that stays below Linux's
+  single-argument limit when CircleCI launches the packed generator and guard.
+  Maintainer checks enforce source equality and command-size headroom.
+
 - Release-bound `checklist_answers` JSON for explicit site status/comments and
   appended evidence, plus literal N/A category wording overrides. Exact snapshot
   hashes, original verdicts/comments and decision history travel with both

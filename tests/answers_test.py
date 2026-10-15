@@ -300,6 +300,28 @@ class AnswerTests(unittest.TestCase):
         self.assertIn('result before answer: Not_Reviewed', row['finding_details'])
         self.assertTrue(meta['tailoring'])
 
+    def test_packed_entry_point_verifies_source_and_fits_linux_argument_limit(self):
+        import runpy
+        pack = runpy.run_path(str(ROOT / 'tools/pack-checklist.py'))
+        source = (ROOT / 'src/scripts/checklist.sh').read_bytes()
+        entry = (ROOT / 'src/scripts/checklist-packed.sh').read_text()
+        pack['verify'](source, entry)
+        self.assertLess(len(entry.encode()), 120000)
+        for edited in (entry.replace('eval "${STIG_CHECKLIST_SCRIPT}"', 'true'),
+                       entry.replace('source hash mismatch', 'edited wrapper')):
+            with self.assertRaises(ValueError):
+                pack['verify'](source, edited)
+        with self.assertRaises(ValueError):
+            pack['verify'](source + b'# changed', entry)
+        # Exercise bash -c with the actual production entry as one argument,
+        # including its embedded decoder and the generator's failure policy.
+        self.save()
+        proc = subprocess.run(['bash', '-c', entry], env={**os.environ,
+            'PARAM_OUTPUT_DIR': str(self.out), 'PARAM_CHECKLIST_ANSWERS': str(self.path),
+            'PARAM_CHECKLIST': 'none'}, capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads((self.out / 'checklist-meta.json').read_text())['outcome'], 'skipped')
+
     def test_default_generator_runs_with_real_bundle_and_keeps_opt_in_explicit(self):
         h = next(h for h, d in MOD['BUNDLE_TABLE'].items() if d['alias'] == 'rhel9')
         baseline = MOD['load_bundle'](h, str(ROOT / 'src/scripts/stig-data'))

@@ -636,6 +636,14 @@ Cite `repo_digests` as the image digest, together with `platform`: the pinned Ch
 
 A donated or `datastream_path` datastream is copied into a private per-scan snapshot directory (as root inside a container, so a `datastream_path` only root can read works, as it does for the root-run scan), and both the hash and the scan read that snapshot, so `datastream.sha256` is the hash of the bytes `oscap` evaluated even if the original file changes mid-scan. Donated datastreams are not cached between scans: a reused file could be stale or modified and still be attributed to the pinned donor. Bundled datastreams are read from inside the digest-pinned scanner image.
 
+### Updating the checklist generator
+
+Edit the readable `src/scripts/checklist.sh`, then run
+`python3 tools/pack-checklist.py` to refresh its compact CircleCI entry point.
+`tests/checklist_test.sh` verifies that the entry decodes to the exact source
+and fits the runner's command-size limit. Commit both files together. This is
+also required after refreshing release tables during a scanner pin update.
+
 ### Updating the pinned images
 
 The pins live in one place, `DEFAULT_CHAINGUARD_IMAGE` and `DEFAULT_RPM_SCANNER_IMAGE` at the top of `src/scripts/scan.sh`. `tests/pinned_refs_test.sh` fails CI if they are not digest-pinned or if this README's table does not list them verbatim.

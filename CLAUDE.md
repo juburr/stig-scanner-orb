@@ -264,3 +264,14 @@ release. Do not broaden it to automatic/deselected checks or rootfs assumptions.
 `tests/answers_test.py` covers decisions, validation, snapshots, output collisions,
 publication, default pins and gate independence. `smoke-rhel9-answers` verifies
 real output and feeds the existing STIG Manager and DISA schema validators.
+
+CircleCI's bash -c launch is limited to one argument below 128 KiB.
+`src/scripts/checklist-packed.sh` is a generated, compressed entry for the
+readable checklist.sh (currently larger than that limit). It decodes and
+hash-checks the exact script, then executes it using bash's eval builtin;
+caller inputs never enter that payload. Both generation and the packed guard
+include this entry. After ANY checklist.sh edit, run
+`python3 tools/pack-checklist.py`; tests run `--check` and enforce a <120000-byte
+entry. The CI matrix guard still runs the identical readable source. Do not
+pass the decoded script through an external bash -c argument. The packing
+regression launches the actual entry via bash -c to catch this limit.

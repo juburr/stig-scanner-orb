@@ -208,7 +208,7 @@ steps:
         PARAM_OUTPUT_DIR: <<parameters.output_dir>>
         PARAM_ROOTFS_PATH: <<parameters.rootfs_path>>
         PARAM_CHECKLIST_GUARD: "true"
-      command: <<include(scripts/checklist.sh)>>
+      command: <<include(scripts/checklist-packed.sh)>>
   - store_artifacts:
       path: <<parameters.output_dir>>/checklist.ckl
       destination: stig/checklist.ckl

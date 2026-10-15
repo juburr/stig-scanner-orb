@@ -76,4 +76,4 @@ steps:
         PARAM_CHECKLIST_DEFAULT_ANSWERS: <<parameters.checklist_default_answers>>
         PARAM_STIG_XCCDF_PATH: <<parameters.stig_xccdf_path>>
         PARAM_CHECKLIST_ASSET_NAME: <<parameters.checklist_asset_name>>
-      command: <<include(scripts/checklist.sh)>>
+      command: <<include(scripts/checklist-packed.sh)>>

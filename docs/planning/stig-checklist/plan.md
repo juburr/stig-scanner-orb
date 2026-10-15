@@ -713,13 +713,19 @@ answers; all decisions remain visible. New releases require fresh review.
   (e.g. RHEL 9 V-257782, hardware RNG entropy gatherer). This is the one
   hand-maintained "container STIG" artefact that earns its keep.
 
-Validation: all script suites and 144 checklist tests (17 answer-file tests) pass,
+Validation: all script suites and 145 checklist tests (18 answer-file tests) pass,
 including Python 3.8 coverage. A real pinned RHEL 9 scan yields 445 rows;
 curated/site precedence, all 366 N/A category replacements, retained evidence
 and the independent fail-on-finding gate pass. Both formats import through the
 pinned STIG Manager consumers; CKLB passes the pinned DISA schema. ShellCheck,
 YAML lint, packing and the adapted CircleCI integration config validation pass.
-The new CI smoke feeds consumer validation and gates publishing. Manual STIG
+The new CI smoke feeds consumer validation and gates publishing. CircleCI's
+bash -c launch exposed Linux's 128 KiB per-argument limit once the source grew.
+A generated ~54 KB compressed entry now decodes/hash-checks the exact readable
+script and executes it through bash's eval builtin, avoiding an external source
+argument. Both packed generation and guard use it; tests verify exact source
+reproduction, the <120000-byte budget and a real bash -c launch. Full packed
+staging/generation/guard on real RHEL 9 results passes both consumers/schema. Manual STIG
 Viewer GUI import and ISSM wording acceptance remain release acceptance tasks.
 
 ### PR 6: Wolfi / Chainguard GPOS SRG checklist (S–M)
