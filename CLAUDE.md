@@ -155,12 +155,19 @@ benchmark/version. Tailored generation requires bundled or supplied DISA data:
 additions can select mappings outside the stock release verification.
 Requested selections resolve against item defaults and the complete benchmark
 profile ancestry, so a child request cannot bypass an unselected stock Group.
-Only customization-touched Rules enter the deselection evidence. Scalar value
-selectors fall back to the default value when they match only another property;
+Only customization-touched Rules enter the explicit deselection evidence.
+Shared V-IDs with any unselected contributor in a tailored TestResult are
+conservatively Not Reviewed, including requires/conflicts effects; label these
+as partial selection rather than claiming an explicit user deselection. Scalar
+value selectors fall back to the default value when they match only another property;
 complex defaults remain unsupported. Materialize unmatched scalar defaults in
 evaluated XML only when no explicit inherited/local set-value takes precedence;
-this avoids the pinned engines resolving unmatched selectors to an empty string. Checklist meta stores compact identity and
-the detailed manifest hash, keeping within the guard/summarizer's 1 MiB limit.
+this avoids the pinned RPM engine resolving unmatched selectors to an empty string.
+Resolve Value extends chains with append semantics before selecting properties;
+unknown/cyclic chains fail closed. Repeated selectors apply in document order
+and are normalized for the engines. Permit standard profile shadowing only
+when local id == extends == benchmark id, transitioning to the source profile.
+Checklist meta stores compact identity and the detailed manifest hash, keeping within the guard/summarizer's 1 MiB limit.
 Explicit tailoring deselections withhold the whole V-ID verdict even when
 another contributor ran. Preserve its evidence. Refined values use check-export
 value ids and TestResult set-values. The caller's source is never reopened. Resolve `cluster-id` aliases by item type and expand them in the evaluated XML

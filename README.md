@@ -380,8 +380,11 @@ the checklist already explains their N/A outcomes. Explicitly deselected checks
 remain **Not Reviewed** in complete DISA checklists, with the tailored profile
 and rule names recorded. This also applies when a requirement has several
 scanner checks and tailoring deselects only one: the remaining automated result
-stays as evidence, but cannot assess the complete requirement. The SSG-only
-model omits tailoring-deselected rows. Tailored generation requires a complete
+stays as evidence, but cannot assess the complete requirement. For tailored
+scans, any shared requirement with an unselected contributor is conservatively
+Not Reviewed, including exclusions caused by dependencies, conflicts or stock
+selection state. The evidence distinguishes these from explicit tailoring
+deselections. The SSG-only model omits these partial rows. Tailored generation requires a complete
 DISA reference (the pinned bundle, or `stig_xccdf_path`) because additions can
 fall outside a stock profile's verified release mapping. A tailored CIS or
 other non-STIG profile still skips checklist generation under `auto` and fails
@@ -391,9 +394,11 @@ Both scanners validate tailoring offline before evaluation. The orb snapshots
 and hashes the file using the scanner's root user, so a root-owned 0600 file
 can be used. It accepts UTF-8 XCCDF 1.2 XML up to 16 MiB, without DTDs or entity
 declarations, against a datastream containing exactly one Benchmark. Profile
-ids must be unique and must not shadow benchmark profiles; unknown references,
-cycles, and invalid selectors are refused. The benchmark `href` is recorded as
-a source label; the explicitly selected datastream is the input, and the orb
+ids must be unique within the tailoring file. A tailoring profile may shadow a
+benchmark profile only when its `id` and `extends` both equal the benchmark
+profile's id. Unknown references, cycles, and invalid selectors are refused;
+repeated profile selectors apply in document order. The benchmark `href` is
+recorded as a source label; the explicitly selected datastream is the input, and the orb
 never fetches that href. The tailoring file itself is never mounted into the
 target filesystem or reopened after the scan snapshot is made.
 

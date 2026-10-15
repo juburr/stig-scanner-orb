@@ -66,7 +66,7 @@ class TailoringTests(unittest.TestCase):
         self.plan.update(
             tailoring_file=str(self.tail_path),
             tailoring_sha256=meta["sha256"],
-            tailoring_profile=CUSTOM,
+            tailoring_profile=meta["profile_id"],
             tailoring_evaluated_sha256=meta["evaluated_sha256"],
             tailoring_meta_sha256=hashlib.sha256(raw).hexdigest(),
         )
@@ -339,23 +339,119 @@ class TailoringTests(unittest.TestCase):
         ET.SubElement(ds.find(X + "Profile"), X + "select", idref="g-one", selected="false")
         self.assertEqual(self.preflight(ds=ds)["deselected_rules"], ["two"])
 
+    def test_value_inheritance_resolves_selectors_defaults_and_invalid_chains(self):
+        ds = source()
+        child = ds.find(X + "Value")
+        child.set("extends", VALUE + "_base")
+        child.remove(child.findall(X + "value")[1])
+        base = ET.SubElement(ds, X + "Value", id=VALUE + "_base")
+        ET.SubElement(base, X + "value", selector="high").text = "20"
+        root = tailoring()
+        prof = root.find(X + "Profile")
+        prof.remove(prof.find(X + "set-value"))
+        setting = ET.SubElement(prof, X + "refine-value", idref=VALUE, selector="high")
+        meta = self.preflight(root, ds)
+        self.assertEqual(meta["values"][VALUE]["value"], "20")
+        self.assertEqual(meta["value_fallbacks_materialized"], [])
+        setting.set("selector", "unmatched")
+        self.assertEqual(self.preflight(root, ds)["values"][VALUE]["value"], "15")
+        child.remove(child.find(X + "value"))
+        self.assertEqual(self.preflight(root, ds)["values"][VALUE]["value"], "20")
+        for parent in (VALUE, "unknown"):
+            base.set("extends", parent)
+            with self.assertRaisesRegex(ValueError, "Value inheritance"):
+                self.preflight(root, ds)
+        base.attrib.pop("extends")
+        scalar = base.find(X + "value")
+        base.remove(scalar)
+        ET.SubElement(ET.SubElement(base, X + "complex-value", selector="high"), X + "item").text = "20"
+        setting.set("selector", "high")
+        with self.assertRaisesRegex(ValueError, "complex-value refinements"):
+            self.preflight(root, ds)
+
+    def test_repeated_selectors_follow_document_order(self):
+        root = tailoring()
+        prof = root.find(X + "Profile")
+        ET.SubElement(prof, X + "select", idref="two", selected="true")
+        ET.SubElement(prof, X + "set-value", idref=VALUE).text = "25"
+        ET.SubElement(prof, X + "refine-value", idref=VALUE, selector="long")
+        ET.SubElement(prof, X + "refine-value", idref=VALUE, operator="greater than")
+        meta = self.preflight(root)
+        self.assertEqual(meta["deselected_rules"], [])
+        self.assertTrue(meta["repeated_selectors_normalized"])
+        self.assertEqual([d["value"] for d in meta["values"][VALUE]["directives"][:2]], ["18", "25"])
+        evaluated = self.out / "evaluated.xml"
+        PRE["prepare"](str(self.tail_path), str(self.ds_path), CUSTOM, str(evaluated))
+        result = ET.parse(evaluated).find(".//" + X + "Profile")
+        self.assertEqual(len(result.findall(X + "select")), 1)
+        self.assertEqual(result.find(X + "select").get("selected"), "true")
+        self.assertEqual(result.find(X + "set-value").text, "25")
+        self.assertEqual(result.find(X + "refine-value").get("selector"), "long")
+        self.assertEqual(result.find(X + "refine-value").get("operator"), "greater than")
+
+    def test_shadowing_transitions_to_the_same_named_benchmark_profile(self):
+        ds, _ = self.tailored()
+        root = tailoring(profile=P)
+        self.preflight()  # Create the helper paths without assuming the selected id.
+        self.tail_path.write_bytes(ET.tostring(root))
+        self.ds_path.write_bytes(ET.tostring(ds))
+        meta = PRE["prepare"](str(self.tail_path), str(self.ds_path), P)
+        self.assertEqual(meta["base_profile_ancestry"], [P])
+        self.assertEqual(meta["deselected_rules"], ["two"])
+        meta["datastream_sha256"] = H
+        ds.find(X + "TestResult").find(X + "profile").set("idref", P)
+        self.plan["profile"] = P
+        self.prepare(ds, register=False)
+        self.save_meta(meta)
+        rc, result = self.generate(self.save_skeleton())
+        self.assertEqual((rc, result["outcome"]), (0, "generated"), result)
+        child = ET.SubElement(root, X + "Profile", id=CUSTOM, extends=P)
+        ET.SubElement(child, X + "select", idref="two", selected="true")
+        self.assertEqual(self.preflight(root)["deselected_rules"], [])
+
+    def test_indirect_or_stock_partial_selection_withholds_shared_requirement(self):
+        for cause in ("requires", "conflicts", "stock"):
+            with self.subTest(cause=cause):
+                ds, _ = self.tailored()
+                group = ET.SubElement(ds, X + "Group", id="g-indirect")
+                rule = copy.deepcopy(next(ds.iter(X + "Rule")))
+                rule.set("id", "indirect")
+                group.append(rule)
+                if cause != "stock":
+                    ET.SubElement(rule, X + cause, idref="two")
+                rr = ET.SubElement(ds.find(X + "TestResult"), X + "rule-result", idref="indirect")
+                ET.SubElement(rr, X + "result").text = "notselected"
+                meta = self.preflight(ds=ds)
+                self.assertEqual(meta["deselected_rules"], ["two"])
+                meta["datastream_sha256"] = H
+                self.prepare(ds, register=False)
+                self.save_meta(meta)
+                rc, result = self.generate(self.save_skeleton())
+                self.assertEqual((rc, result["outcome"]), (0, "generated"), result)
+                row = self.rows()[0]
+                self.assertEqual(row["status"], "not_reviewed")
+                self.assertIn("one: pass", row["finding_details"])
+                self.assertIn("Not selected under tailored profile", row["comments"])
+                self.assertEqual(result["not_reviewed_by_reason"]["tailored_partial_selection"], 1)
+
     def test_unknown_profiles_cycles_shadowing_and_duplicate_ids(self):
-        for change in ("missing", "cycle", "shadow", "duplicate"):
+        for change in ("missing", "cycle", "invalid_shadow", "duplicate"):
             root = tailoring()
             profile = root.find(X + "Profile")
             if change == "missing":
                 profile.set("extends", "unknown")
             elif change == "cycle":
                 profile.set("extends", CUSTOM)
-            elif change == "shadow":
+            elif change == "invalid_shadow":
                 profile.set("id", P)
+                profile.set("extends", "unknown")
             else:
                 root.append(copy.deepcopy(profile))
             with self.subTest(change=change), self.assertRaises(ValueError):
                 self.preflight(root)
 
-    def test_unknown_directives_and_duplicate_values_rejected(self):
-        for change in ("unknown_rule", "unknown_value", "duplicate", "flag"):
+    def test_unknown_directives_and_invalid_flags_rejected(self):
+        for change in ("unknown_rule", "unknown_value", "flag"):
             root = tailoring()
             prof = root.find(X + "Profile")
             if change == "unknown_rule":
@@ -365,8 +461,6 @@ class TailoringTests(unittest.TestCase):
             elif change == "selector":
                 prof.remove(prof.find(X + "set-value"))
                 ET.SubElement(prof, X + "refine-value", idref=VALUE, selector="unknown")
-            elif change == "duplicate":
-                ET.SubElement(prof, X + "set-value", idref=VALUE).text = "20"
             else:
                 prof.find(X + "select").set("selected", "perhaps")
             with self.subTest(change=change), self.assertRaises(ValueError):

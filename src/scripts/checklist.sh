@@ -1486,10 +1486,15 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
             )
     if res.get("tailoring"):
         t = res["tailoring"]
+        # Dependencies/conflicts and item inheritance can deselect additional
+        # contributors. TestResult is authoritative: conservatively withhold
+        # a shared requirement whenever a tailored scan left any contributor
+        # unselected, without claiming that stock exclusions were user actions.
+        explicit = set(t["deselected_rules"])
         affected = {
-            vid: sorted(set(rids) & set(t["deselected_rules"]))
+            vid: sorted(rids if vid in by_vid else set(rids) & explicit)
             for vid, rids in deselected.items()
-            if set(rids) & set(t["deselected_rules"])
+            if vid in by_vid or set(rids) & explicit
         }
         if not disa:
             vulns = [v for v in vulns if v["vid"] not in affected]
@@ -1498,13 +1503,21 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
             for v in vulns:
                 if v["vid"] not in affected:
                     continue
-                note = f"Deselected by tailoring {t['profile_id']}: {', '.join(affected[v['vid']])}."
+                direct = set(affected[v["vid"]]) & explicit
+                indirect = set(affected[v["vid"]]) - direct
+                notes = []
+                if direct:
+                    notes.append(f"Deselected by tailoring {t['profile_id']}: {', '.join(sorted(direct))}.")
+                if indirect:
+                    notes.append(f"Not selected under tailored profile {t['profile_id']}: {', '.join(sorted(indirect))}.")
+                note = " ".join(notes)
                 v["finding_details"] += "\n" + note + " Remaining automated evidence does not assess the complete requirement."
                 values = tailoring_value_notes(affected[v["vid"]])
                 if values:
                     v["finding_details"] += "\nDeselected checks' settings (checks were not evaluated):\n" + "\n".join(values)
                 v["comments"] = note + " Manual review required."
-                v["status"], v["nr_reason"], v["na_category"] = "Not_Reviewed", "tailoring_deselected", None
+                reason = "tailoring_deselected" if direct else "tailored_partial_selection"
+                v["status"], v["nr_reason"], v["na_category"] = "Not_Reviewed", reason, None
     stig["uuid"] = str(
         uuid.uuid5(
             uuid.NAMESPACE_URL, f"stig-scanner-orb:{stig['benchmark_id']}:{stig['version']}:{stig['releaseinfo']}"

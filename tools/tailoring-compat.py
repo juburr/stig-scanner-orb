@@ -48,6 +48,17 @@ def benchmark(case):
         ET.SubElement(root.find(X + "Profile"), X + "select", idref=G, selected="false")
     if case == "default-group":
         group.set("selected", "false")
+    if case == "inherited-value":
+        value.set("extends", V + "_base")
+        base_value = ET.Element(X + "Value", id=V + "_base", type="string")
+        ET.SubElement(base_value, X + "title").text = "Inherited setting"
+        ET.SubElement(base_value, X + "value", selector="high").text = "20"
+        root.insert(list(root).index(value), base_value)
+        p.remove(p.find(X + "set-value"))
+    if case == "requires":
+        ET.SubElement(list(group)[2], X + "requires", idref=RULES[0])
+    if case == "conflicts":
+        ET.SubElement(list(group)[2], X + "conflicts", idref=RULES[0])
     if case == "fallback":
         p.remove(p.find(X + "set-value"))
         value.set("type", "number")
@@ -60,17 +71,25 @@ def tailoring(case):
     root = ET.Element(X + "Tailoring", id="xccdf_org.example_tailoring_compat")
     ET.SubElement(root, X + "benchmark", href="benchmark.xml")
     ET.SubElement(root, X + "version", time="2026-10-15T00:00:00Z").text = "1"
-    p = ET.SubElement(root, X + "Profile", id=CUSTOM, extends=MID)
+    p = ET.SubElement(
+        root, X + "Profile", id=P if case == "shadow" else CUSTOM, extends=P if case == "shadow" else MID
+    )
     ET.SubElement(p, X + "title").text = "Custom"
-    if case in ("base-group", "default-group"):
+    if case in ("requires", "conflicts"):
+        ET.SubElement(p, X + "select", idref=RULES[0], selected="false" if case == "requires" else "true")
+    elif case in ("base-group", "default-group"):
         for rid in RULES:
             ET.SubElement(p, X + "select", idref=rid, selected="true")
     else:
         ET.SubElement(p, X + "select", idref="groups" if case == "group" else "rules", selected="false")
         if case == "group":
             ET.SubElement(p, X + "select", idref=RULES[0], selected="true")
-    if case == "fallback":
-        ET.SubElement(p, X + "refine-value", idref=V, selector="bounded")
+    if case == "repeated":
+        ET.SubElement(p, X + "select", idref=RULES[0], selected="true")
+        ET.SubElement(p, X + "select", idref=RULES[0], selected="false")
+        ET.SubElement(p, X + "set-value", idref=V).text = "first"
+    if case in ("fallback", "inherited-value"):
+        ET.SubElement(p, X + "refine-value", idref=V, selector="bounded" if case == "fallback" else "high")
     else:
         ET.SubElement(p, X + "set-value", idref="settings").text = "custom"
     return root
@@ -81,7 +100,18 @@ images = [
     for name in ("DEFAULT_RPM_SCANNER_IMAGE", "DEFAULT_CHAINGUARD_IMAGE")
 ]
 for image in images:
-    for case in ("rule-cluster", "group", "base-group", "default-group", "fallback"):
+    for case in (
+        "rule-cluster",
+        "group",
+        "base-group",
+        "default-group",
+        "fallback",
+        "inherited-value",
+        "requires",
+        "conflicts",
+        "repeated",
+        "shadow",
+    ):
         with tempfile.TemporaryDirectory(prefix="stig-tailoring-compat-") as directory:
             directory = Path(directory)
             bench = benchmark(case)
@@ -92,14 +122,19 @@ for image in images:
             # Deliberately compact: adjacent generated empty selectors exposed
             # a real skip in the pinned RPM XML reader without separators.
             ET.ElementTree(tailoring(case)).write(directory / "original.xml", encoding="utf-8", xml_declaration=True)
+            selected_profile = P if case == "shadow" else CUSTOM
             meta = preflight["prepare"](
                 str(directory / "original.xml"),
                 str(directory / "benchmark.xml"),
-                CUSTOM,
+                selected_profile,
                 str(directory / "evaluated.xml"),
             )
-            assert meta["base_profile_ancestry"] == [MID, P]
-            assert meta["deselected_rules"] == RULES
+            assert meta["base_profile_ancestry"] == ([P] if case == "shadow" else [MID, P])
+            expected_deselected = [RULES[0]] if case == "requires" else [] if case == "conflicts" else RULES
+            assert meta["deselected_rules"] == expected_deselected, meta["deselected_rules"]
+            if case == "inherited-value":
+                assert not meta["value_fallbacks_materialized"]
+                assert meta["values"][V]["value"] == "20"
             subprocess.run(
                 [
                     "docker",
@@ -120,7 +155,7 @@ for image in images:
                     image,
                     "-c",
                     "set -eu; oscap xccdf validate --skip-schematron /out/evaluated.xml; "
-                    "oscap xccdf eval --profile " + CUSTOM + " --tailoring-file /out/evaluated.xml "
+                    "oscap xccdf eval --profile " + selected_profile + " --tailoring-file /out/evaluated.xml "
                     "--results /out/results.xml /out/benchmark.xml; "
                     'chown "$HOST_UID:$HOST_GID" /out/results.xml',
                 ],
@@ -129,7 +164,10 @@ for image in images:
             )
             res = checklist["parse_results"](str(directory / "results.xml"), meta)
             checklist["validate_tailored_results"](res, meta)
-            assert res["results"] == {rid: "notselected" for rid in RULES}, res["results"]
-            expected = "15" if case == "fallback" else "custom"
+            expected_results = {rid: "notselected" for rid in RULES}
+            if case == "conflicts":
+                expected_results[RULES[0]] = "notchecked"
+            assert res["results"] == expected_results, res["results"]
+            expected = "15" if case == "fallback" else "20" if case == "inherited-value" else "custom"
             assert res["set_values"][V] == expected, res["set_values"]
         print(f"{image}: {case} selections and resolved values verified")

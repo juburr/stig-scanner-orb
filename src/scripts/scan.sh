@@ -956,8 +956,9 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
     # datastream is authoritative, and every idref below must resolve in it.
     local = indexed(tailoring.findall(X + "Profile"))
     original = indexed(bench.findall(X + "Profile"))
-    if set(local) & set(original):
-        raise ValueError("tailoring profile ids must not shadow benchmark profiles")
+    for pid in set(local) & set(original):
+        if local[pid].get("extends") != pid:
+            raise ValueError("a shadowing tailoring profile must extend its same-named benchmark profile")
     if profile_id not in local:
         raise ValueError("profile_id must name a profile in the tailoring file")
     chain, seen = [], set()
@@ -967,11 +968,14 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
             raise ValueError("cyclic tailoring profile inheritance")
         seen.add(current)
         chain.append(local[current])
-        current = local[current].get("extends")
+        extended = local[current].get("extends")
+        if extended == current and current in original:
+            break  # XCCDF shadowing transitions to the benchmark definition.
+        current = extended
     if current not in original:
         raise ValueError("tailored profile must extend an existing benchmark profile")
     base_profile = current
-    ancestry = []
+    ancestry, seen = [], set()
     while current:
         if current in seen or current not in original:
             raise ValueError("cyclic or unresolved benchmark profile inheritance")
@@ -981,6 +985,25 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
     rules = indexed(bench.iter(X + "Rule"))
     groups = indexed(bench.iter(X + "Group"))
     values = indexed(bench.iter(X + "Value"))
+
+    def value_choices(rid):
+        # Value properties use XCCDF's append inheritance model. Resolve
+        # before choosing a selector/default, retaining parent-first order.
+        lineage, visited = [], set()
+        current = rid
+        while current:
+            if current in visited or current not in values:
+                raise ValueError("cyclic or unresolved Value inheritance: " + rid)
+            visited.add(current)
+            lineage.append(values[current])
+            current = values[current].get("extends")
+        return [el for item in reversed(lineage) for el in item if el.tag in (X + "value", X + "complex-value")]
+
+    def default_choices(choices):
+        defaults = [v for v in choices if not v.get("selector")]
+        # XCCDF uses the first property if no empty-selector value exists.
+        return defaults or choices[:1]
+
     parent = {child: element for element in bench.iter() for child in element}
     items = {**groups, **rules, **values}
     if len(items) != len(groups) + len(rules) + len(values):
@@ -1013,7 +1036,7 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
             for rid in resolve(el.get("idref"), {**rules, **groups}, "rule/group or cluster"):
                 selected[rid] = el.get("selected") in ("true", "1")
     touched, refined = set(), {}
-    has_clusters = False
+    has_clusters = has_repeated = False
     inherited = []
     for profile in reversed(trace):
         duplicates = set()
@@ -1027,7 +1050,7 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
                 raise ValueError("set-complex-value is not supported: this orb supports scalar tailoring values only")
             ref = el.get("idref")
             if (tag, ref) in duplicates:
-                raise ValueError("duplicate tailoring directive: " + str(ref))
+                has_repeated = True
             duplicates.add((tag, ref))
             if tag == "select":
                 targets = resolve(ref, {**rules, **groups}, "rule/group or cluster")
@@ -1043,19 +1066,19 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
                     if tag == "set-value":
                         value = "".join(el.itertext())
                     else:
-                        choices = values[rid].findall(X + "value") + values[rid].findall(X + "complex-value")
+                        choices = value_choices(rid)
                         matches = [v for v in choices if v.get("selector", "") == el.get("selector")]
                         # A selector applies independently to value, bounds,
                         # choices, etc. If it has no value match, XCCDF uses
                         # the default value rather than rejecting the selector.
                         if el.get("selector") is not None and not matches:
-                            matches = [v for v in choices if not v.get("selector")]
+                            matches = default_choices(choices)
                         if len(matches) > 1:
                             raise ValueError("tailoring value selector does not resolve uniquely: " + str(rid))
                         if (matches and matches[0].tag == X + "complex-value") or (
                             el.get("selector") is None
-                            and not values[rid].findall(X + "value")
-                            and values[rid].findall(X + "complex-value")
+                            and default_choices(choices)
+                            and default_choices(choices)[0].tag == X + "complex-value"
                         ):
                             raise ValueError(
                                 "complex-value refinements are not supported: scalar tailoring values only"
@@ -1115,10 +1138,10 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
     for rid in sorted(set(refined) - explicit_values):
         if rid not in selectors:
             continue
-        choices = values[rid].findall(X + "value") + values[rid].findall(X + "complex-value")
+        choices = value_choices(rid)
         if any(v.get("selector", "") == selectors[rid] for v in choices):
             continue
-        defaults = [v for v in choices if not v.get("selector")]
+        defaults = default_choices(choices)
         if len(defaults) != 1 or defaults[0].tag != X + "value":
             raise ValueError("tailoring value selector has no unique scalar default: " + rid)
         fallbacks[rid] = "".join(defaults[0].itertext())
@@ -1147,7 +1170,7 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
         )
         oldest[:] = children[:index] + inherited + children[index:]
 
-    if has_clusters or inherited or fallbacks:
+    if has_clusters or has_repeated or inherited or fallbacks:
         # Expansion can produce overlapping concrete targets. Preserve the
         # last assignment per selector, merging partial refinement attributes
         # across inheritance layers instead of creating duplicate idrefs.
@@ -1170,7 +1193,7 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
     # aliases for the selected inheritance chain, retaining their original
     # references in metadata. Both original and evaluated bytes are hashed.
     ET.register_namespace("", X[1:-1])
-    if has_clusters or inherited or fallbacks:
+    if has_clusters or has_repeated or inherited or fallbacks:
         # The pinned RPM XML reader skips adjacent empty selector elements
         # without inter-element whitespace. Keep generated directives apart.
         for element in [tailoring] + list(local.values()):
@@ -1179,7 +1202,7 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
                     child.tail = "\n  "
     evaluated = (
         ET.tostring(tailoring, encoding="utf-8", xml_declaration=True)
-        if has_clusters or inherited or fallbacks
+        if has_clusters or has_repeated or inherited or fallbacks
         else raw
     )
     if len(evaluated) > 16 << 20:
@@ -1212,6 +1235,7 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
         "sha256": hashlib.sha256(raw).hexdigest(),
         "evaluated_sha256": hashlib.sha256(evaluated).hexdigest(),
         "clusters_expanded": has_clusters,
+        "repeated_selectors_normalized": has_repeated,
         "benchmark_overrides_materialized": bool(inherited),
         "value_fallbacks_materialized": sorted(fallbacks),
         "datastream_sha256": hashlib.sha256(source).hexdigest(),
