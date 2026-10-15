@@ -979,6 +979,7 @@ def prepare(tailoring_path, datastream_path, profile_id):
     rules = indexed(bench.iter(X + "Rule"))
     groups = indexed(bench.iter(X + "Group"))
     values = indexed(bench.iter(X + "Value"))
+    parent = {child: element for element in bench.iter() for child in element}
     selected, refined = {}, {}
     for profile in reversed(chain):
         duplicates = set()
@@ -996,9 +997,7 @@ def prepare(tailoring_path, datastream_path, profile_id):
                 flag = el.get("selected")
                 if flag not in ("true", "false", "1", "0"):
                     raise ValueError("invalid tailoring selected flag")
-                targets = [rid] if rid in rules else [r.get("id") for r in groups[rid].iter(X + "Rule")]
-                for target in targets:
-                    selected[target] = flag in ("true", "1")
+                selected[rid] = flag in ("true", "1")
             elif tag in ("set-value", "refine-value"):
                 if rid not in values:
                     raise ValueError("tailoring refines an unknown value: " + str(rid))
@@ -1029,6 +1028,17 @@ def prepare(tailoring_path, datastream_path, profile_id):
                 }
             elif rid not in rules and rid not in groups:
                 raise ValueError("tailoring refines an unknown rule/group: " + str(rid))
+    def explicitly_deselected(rule):
+        # Group selection applies at its own level: selecting a child cannot
+        # override a false ancestor. Conversely, selecting a Group does not
+        # undo an explicit deselection on one of its children.
+        current = rule
+        while current is not None:
+            if selected.get(current.get("id")) is False:
+                return True
+            current = parent.get(current)
+        return False
+
     lines = []
     for rid in sorted(rules):
         refs = rules[rid].findall(X + "reference")
@@ -1051,7 +1061,7 @@ def prepare(tailoring_path, datastream_path, profile_id):
         "base_profile_id": base_profile,
         "base_profile_ancestry": ancestry,
         "references_sha256": hashlib.sha256("\n".join(lines).encode()).hexdigest(),
-        "deselected_rules": sorted(rid for rid, flag in selected.items() if not flag),
+        "deselected_rules": sorted(rid for rid, rule in rules.items() if explicitly_deselected(rule)),
         "values": refined,
     }
 

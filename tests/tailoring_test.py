@@ -277,6 +277,17 @@ class TailoringTests(unittest.TestCase):
         root.find(X + "Profile").find(X + "select").set("idref", "g-two")
         self.assertEqual(self.preflight(root)["deselected_rules"], ["two"])
 
+    def test_group_and_child_flags_preserve_ancestor_selection_semantics(self):
+        root = tailoring()
+        profile = root.find(X + "Profile")
+        profile.find(X + "select").set("idref", "g-two")
+        ET.SubElement(profile, X + "select", idref="two", selected="true")
+        self.assertEqual(self.preflight(root)["deselected_rules"], ["two"])
+        root = tailoring()
+        profile = root.find(X + "Profile")
+        ET.SubElement(profile, X + "select", idref="g-two", selected="true")
+        self.assertEqual(self.preflight(root)["deselected_rules"], ["two"])
+
     def test_wrong_benchmark_and_multiple_benchmarks_rejected(self):
         root = tailoring()
         root.find(X + "benchmark").set("id", "different")
