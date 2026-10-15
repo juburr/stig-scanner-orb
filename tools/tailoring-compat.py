@@ -185,7 +185,7 @@ for image in images:
                 else (
                     [RULES[1]]
                     if case == "rule-refinement"
-                    else [] if case in ("conflicts", "inherited-metadata") else RULES
+                    else [] if case in ("conflicts", "inherited-metadata", "base-group", "default-group") else RULES
                 )
             )
             assert meta["deselected_rules"] == expected_deselected, meta["deselected_rules"]

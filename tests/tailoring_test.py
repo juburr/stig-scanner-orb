@@ -481,13 +481,15 @@ class TailoringTests(unittest.TestCase):
         fake.chmod(0o755)
         called = self.out / "docker-called"
         raw = ET.tostring(tailoring())
-        for case in ("direct", "dot", "directory_alias", "file_alias", "hardlink", "later_output"):
+        for case in ("direct", "dot", "directory_alias", "file_alias", "hardlink", "later_output", "datastream"):
             with self.subTest(case=case):
                 directory = self.out / case
                 directory.mkdir()
                 output = directory / "out"
                 output.mkdir()
-                artifact = output / ("results.xml" if case == "later_output" else "tailoring-meta.json")
+                artifact = output / (
+                    "results.xml" if case in ("later_output", "datastream") else "tailoring-meta.json"
+                )
                 artifact.write_bytes(raw)
                 evidence = output / "checklist-meta.json"
                 evidence.write_text("prior evidence")
@@ -515,12 +517,76 @@ class TailoringTests(unittest.TestCase):
                     PARAM_PROFILE_ID=CUSTOM,
                     PARAM_TAILORING_FILE=str(source),
                 )
+                if case == "datastream":
+                    source = directory / "tailoring.xml"
+                    source.write_bytes(raw)
+                    env["PARAM_TAILORING_FILE"] = str(source)
+                    env["PARAM_DATASTREAM_PATH"] = str(artifact)
                 run = subprocess.run(["bash", str(SCAN)], env=env, cwd=str(cwd), capture_output=True, text=True)
                 self.assertEqual(run.returncode, 2, run.stderr)
                 self.assertIn("collides with generated output", run.stderr)
                 self.assertEqual(artifact.read_bytes(), raw)
                 self.assertEqual(evidence.read_text(), "prior evidence")
                 self.assertFalse(called.exists())
+
+    def test_positive_group_requests_do_not_claim_stock_deselections(self):
+        ds, _ = self.tailored()
+        for rule in ds.iter(X + "Rule"):
+            rule.set("selected", "false")
+        for rr in ds.find(X + "TestResult").findall(X + "rule-result"):
+            rr.find(X + "result").text = "notselected"
+        ET.SubElement(ds, X + "platform", idref="not-evaluated")
+        root = tailoring()
+        prof = root.find(X + "Profile")
+        prof.remove(prof.find(X + "select"))
+        ET.SubElement(prof, X + "select", idref="g-one", selected="true")
+        meta = self.preflight(root, ds)
+        self.assertEqual(meta["deselected_rules"], [])
+        meta["datastream_sha256"] = H
+        self.prepare(ds, register=False)
+        self.save_meta(meta)
+        rc, result = self.generate(self.save_skeleton())
+        self.assertEqual((rc, result["outcome"]), (0, "skipped"), result)
+        self.assertIn("none of the Benchmark's platforms", result["reason"])
+        # An actual negative Group selector is recorded as such.
+        prof.find(X + "select").set("selected", "false")
+        self.assertEqual(self.preflight(root, ds)["deselected_rules"], ["one"])
+
+    def test_preflight_failure_cannot_republish_prior_scan_outputs(self):
+        self.preflight()
+        self.tail_path.write_text("not valid tailoring XML")
+        artifacts = (
+            "results.xml",
+            "report.html",
+            "scan-plan.env",
+            "summary.txt",
+            "provenance.json",
+            "tailoring-meta.json",
+        )
+        for filename in artifacts:
+            (self.out / filename).write_text("old invocation evidence")
+        # Load the exact production safety/cleanup prefix and preflight;
+        # omit only Docker provisioning, which test-scripts does not require.
+        prefix = SCAN.read_text().split("# --- image helpers", 1)[0]
+        harness = self.out / "preflight-harness.sh"
+        harness.write_text(
+            prefix + '\npython3 - "$TAILORING_FILE" "$TEST_DATASTREAM" "$PROFILE_ID_OVERRIDE" '
+            '"$OUTPUT_DIR/test-meta.json" "$OUTPUT_DIR/evaluated.xml" <<\'PY_TAILORING\'\n' + CODE + "\nPY_TAILORING\n"
+        )
+        env = dict(
+            os.environ,
+            PARAM_IMAGE="unused:test",
+            PARAM_OUTPUT_DIR=str(self.out),
+            PARAM_PROFILE_ID=CUSTOM,
+            PARAM_TAILORING_FILE=str(self.tail_path),
+            TEST_DATASTREAM=str(self.ds_path),
+        )
+        result = subprocess.run(["bash", str(harness)], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("invalid tailoring", result.stderr)
+        self.assertEqual(self.tail_path.read_text(), "not valid tailoring XML")
+        for filename in artifacts:
+            self.assertFalse((self.out / filename).exists(), filename)
 
     def test_ssg_only_omits_deselected_row(self):
         self.tailored()
@@ -771,13 +837,14 @@ class TailoringTests(unittest.TestCase):
                 root = tailoring()
                 root.find(X + "Profile").find(X + "select").set("selected", "true")
                 meta = self.preflight(root, ds)
-                self.assertEqual(meta["deselected_rules"], ["two"])
+                self.assertEqual(meta["deselected_rules"], [])
                 meta["datastream_sha256"] = H
                 self.prepare(ds, register=False)
                 self.save_meta(meta)
                 rc, result = self.generate(self.save_skeleton())
                 self.assertEqual((rc, result["outcome"]), (0, "generated"), result)
                 self.assertEqual(self.rows()[0]["status"], "not_reviewed")
+                self.assertIn("Not selected under tailored profile", self.rows()[0]["comments"])
                 self.assertIn("one: pass", self.rows()[0]["finding_details"])
                 # An explicit group override can enable the requested child.
                 ET.SubElement(root.find(X + "Profile"), X + "select", idref="g-two", selected="true")

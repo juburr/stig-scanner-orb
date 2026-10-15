@@ -153,9 +153,12 @@ remarks belong on select/refine selectors, not set-value. Complex tailoring
 values are unsupported because the pinned RPM engine cannot resolve them
 reliably; external TestResult complex values are retained by the parser.
 
-`tailoring-meta.json` derives from the same immutable snapshots as evaluation.
-Reject tailoring-file collisions with any generated output before cleanup,
-including directory aliases, final symlinks and hard links. Bind the
+After path/parameter safety checks, clear old ordinary scan outputs before
+provisioning/preflight so a failure cannot upload prior results/report/plan,
+summary or provenance. `tailoring-meta.json` derives from the same immutable
+snapshots as evaluation.
+Reject tailoring/datastream input collisions with generated outputs before
+cleanup, including directory aliases, final symlinks and hard links. Bind the
 original/evaluated XML and manifest hashes in scan-plan.env. Checklist
 meta stores compact identity and the manifest hash to stay below the guard and
 summarizer's 1 MiB limit. Conversion checks the complete Rule/DISA reference
@@ -166,8 +169,9 @@ DISA data. Reject every selected mapped V-ID absent from that reference.
 
 Requested selections resolve against item defaults and the full benchmark
 profile ancestry. A child request cannot bypass an unselected Group. Only
-customization-touched Rules enter explicit deselection evidence. Shared V-IDs
-with any unselected contributor in a tailored TestResult are conservatively
+effective negative selectors on Rules or ancestor Groups establish explicit
+deselection evidence; positive Group requests do not relabel stock exclusions.
+Shared V-IDs with any unselected contributor in a tailored TestResult are conservatively
 Not Reviewed, including requires/conflicts effects; distinguish partial
 selection from explicit user deselection and retain remaining evidence.
 Complete mapping eligibility counts matching explicit deselections and, for

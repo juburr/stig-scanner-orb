@@ -412,6 +412,8 @@ scan. The benchmark `href` is recorded as a source label; the explicitly selecte
 datastream is the input, and the orb never fetches that href. The tailoring file itself is never mounted into the
 target filesystem or reopened after the scan snapshot is made. Its path must
 not collide with a generated artifact; such collisions are rejected before cleanup.
+After path safety checks, old scan evidence is removed before preflight, so a
+failed new tailoring cannot republish a preceding scan's results or provenance.
 
 Inherited Rule references are resolved for mapping and source verification.
 Both pinned engines can drop inherited reference metadata when writing

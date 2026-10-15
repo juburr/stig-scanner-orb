@@ -137,24 +137,33 @@ fi
 # Refuse source/output collisions before invalidating any prior evidence.
 # Physical paths catch directory aliases; -ef also catches final symlinks and
 # hard links, including root-owned inputs readable only by the scanner.
-if [ -n "${TAILORING_FILE}" ]; then
-    tailoring_phys="$(phys_path "${TAILORING_FILE}")"
+reject_source_output_collision() {
+    local source="$1" label="$2" input_phys output_phys artifact
+    [ -n "${source}" ] || return 0
+    input_phys="$(phys_path "${source}")"
     output_phys="$(phys_path "${OUTPUT_DIR}")"
     for artifact in tailoring-meta.json checklist-meta.json summary.txt.exit-code \
             checklist.ckl checklist.cklb checklist.ckl.partial checklist.cklb.partial \
             checklist-meta.json.partial results.xml report.html scan-plan.env summary.txt provenance.json; do
-        if [ "${tailoring_phys}" = "${output_phys%/}/${artifact}" ] \
-                || [ "${TAILORING_FILE}" -ef "${OUTPUT_DIR}/${artifact}" ]; then
-            echo "ERROR: tailoring_file collides with generated output '${OUTPUT_DIR}/${artifact}'." >&2
-            exit 2
+        if [ "${input_phys}" = "${output_phys%/}/${artifact}" ] \
+                || [ "${source}" -ef "${OUTPUT_DIR}/${artifact}" ]; then
+            echo "ERROR: ${label} collides with generated output '${OUTPUT_DIR}/${artifact}'." >&2
+            return 2
         fi
     done
-fi
+    return 0
+}
+reject_source_output_collision "${TAILORING_FILE}" tailoring_file
+reject_source_output_collision "${DATASTREAM_PATH_OVERRIDE}" datastream_path
 
 # This must follow the physical overlap check: never clean the caller's tree.
 rm -f -- "${OUTPUT_DIR}/checklist-meta.json"
 rm -f -- "${OUTPUT_DIR}/summary.txt.exit-code"
 rm -f -- "${OUTPUT_DIR}/tailoring-meta.json"
+# A later preflight failure must not make old evidence available to the
+# job's always-run artifact uploads. File inputs were protected above.
+rm -f -- "${OUTPUT_DIR}/results.xml" "${OUTPUT_DIR}/report.html" \
+    "${OUTPUT_DIR}/scan-plan.env" "${OUTPUT_DIR}/summary.txt" "${OUTPUT_DIR}/provenance.json"
 rm -f -- "${OUTPUT_DIR}/checklist.ckl" "${OUTPUT_DIR}/checklist.cklb" \
     "${OUTPUT_DIR}/checklist.ckl.partial" "${OUTPUT_DIR}/checklist.cklb.partial" \
     "${OUTPUT_DIR}/checklist-meta.json.partial"
@@ -1129,14 +1138,14 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
     anchor = next((i for i, pid in enumerate(ancestry) if re.search(r"_profile_stig(_gui)?$", pid)), 0)
     trace = chain + [original[pid] for pid in ancestry[:anchor]]
     # Resolve stock selection state too, including item defaults and every
-    # benchmark ancestor. Only selections touched by customization become
-    # tailoring evidence; ordinary stock exclusions remain stock exclusions.
+    # benchmark ancestor. Explicit false selectors alone establish direct
+    # tailoring deselection; positive Group requests do not disable children.
     selected = {rid: item.get("selected", "true") in ("true", "1") for rid, item in {**groups, **rules}.items()}
     for pid in reversed(ancestry):
         for el in original[pid].findall(X + "select"):
             for rid in resolve(el.get("idref"), {**rules, **groups}, "rule/group or cluster"):
                 selected[rid] = el.get("selected") in ("true", "1")
-    touched, refined, rule_refinements = set(), {}, {}
+    custom_selection, refined, rule_refinements = {}, {}, {}
     has_clusters = False
     inherited = []
     for profile in reversed(trace):
@@ -1155,7 +1164,7 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
                 flag = el.get("selected")
                 for rid in targets:
                     selected[rid] = flag in ("true", "1")
-                    touched.update([rid] if rid in rules else (r.get("id") for r in groups[rid].iter(X + "Rule")))
+                    custom_selection[rid] = flag in ("true", "1")
             elif tag in ("set-value", "refine-value"):
                 for rid in targets:
                     value = requested[rid]
@@ -1328,11 +1337,9 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
         # Group selection applies at its own level: selecting a child cannot
         # override a false ancestor. Conversely, selecting a Group does not
         # undo an explicit deselection on one of its children.
-        if rule.get("id") not in touched:
-            return False
         current = rule
         while current is not None:
-            if selected.get(current.get("id")) is False:
+            if selected.get(current.get("id")) is False and custom_selection.get(current.get("id")) is False:
                 return True
             current = parent.get(current)
         return False
