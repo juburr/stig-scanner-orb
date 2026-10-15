@@ -20,6 +20,7 @@ exec(
 X = checklist["X12"]
 P = "xccdf_org.ssgproject.content_profile_stig"
 MID = "xccdf_org.example_profile_intermediary"
+STIG_MID = "xccdf_org.example_profile_stig_gui"
 CUSTOM = "xccdf_org.example_profile_custom"
 V = "xccdf_org.example_value_setting"
 G = "xccdf_org.example_group_items"
@@ -37,6 +38,10 @@ def benchmark(case):
     # An inherited benchmark alias must also be materialized; the local
     # override must win after expansion without duplicate concrete idrefs.
     ET.SubElement(p, X + "set-value", idref="settings").text = "intermediary"
+    if case == "stig-named-intermediary":
+        p.set("id", STIG_MID)
+        ET.SubElement(p, X + "select", idref=RULES[0], selected="false")
+        ET.SubElement(p, X + "refine-rule", idref=RULES[1], weight="2")
     value = ET.SubElement(root, X + "Value", id=V, type="string", **{"cluster-id": "settings"})
     ET.SubElement(value, X + "title").text = "Setting"
     ET.SubElement(value, X + "value").text = "original"
@@ -98,6 +103,11 @@ def tailoring(case):
         root, X + "Profile", id=P if case == "shadow" else CUSTOM, extends=P if case == "shadow" else MID
     )
     ET.SubElement(p, X + "title").text = "Custom"
+    if case == "inherited-title":
+        p.remove(p.find(X + "title"))
+    if case == "stig-named-intermediary":
+        p.set("extends", STIG_MID)
+        return root
     if case in ("requires", "conflicts"):
         ET.SubElement(p, X + "select", idref=RULES[0], selected="false" if case == "requires" else "true")
     elif case in ("base-group", "default-group"):
@@ -170,6 +180,8 @@ for image in images:
         "rule-reference-override",
         "rule-platform-inheritance",
         "group-platform-inheritance",
+        "inherited-title",
+        "stig-named-intermediary",
         "shadow",
     ):
         with tempfile.TemporaryDirectory(prefix="stig-tailoring-compat-") as directory:
@@ -189,10 +201,41 @@ for image in images:
                 selected_profile,
                 str(directory / "evaluated.xml"),
             )
-            assert meta["base_profile_ancestry"] == ([P] if case == "shadow" else [MID, P])
+            assert meta["base_profile_ancestry"] == (
+                [P] if case == "shadow" else [STIG_MID if case == "stig-named-intermediary" else MID, P]
+            )
+            if case == "inherited-title":
+                # profileType/title has minOccurs=1 in XCCDF 1.2. Inheritance
+                # cannot make an omitted local title schema-valid. Production
+                # performs this same validation before any evaluation.
+                invalid = subprocess.run(
+                    [
+                        "docker",
+                        "run",
+                        "--rm",
+                        "--network",
+                        "none",
+                        "-u",
+                        "0:0",
+                        "-v",
+                        str(directory) + ":/out:ro",
+                        "--entrypoint",
+                        "oscap",
+                        image,
+                        "xccdf",
+                        "validate",
+                        "--skip-schematron",
+                        "/out/evaluated.xml",
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                assert invalid.returncode == 2 and "title" in invalid.stderr, invalid.stderr
+                print(f"{image}: omitted Profile title rejected before evaluation")
+                continue
             expected_deselected = (
                 [RULES[0]]
-                if case == "requires"
+                if case in ("requires", "stig-named-intermediary")
                 else (
                     [RULES[1]]
                     if case == "rule-refinement"
@@ -257,6 +300,10 @@ for image in images:
                 expected_results[RULES[0]] = "notchecked"
             if case == "inherited-metadata":
                 expected_results = {rid: "notchecked" for rid in RULES}
+            if case == "stig-named-intermediary":
+                expected_results[RULES[1]] = "notchecked"
+                assert meta["rule_refinements"][RULES[1]]["directives"][0]["profile_id"] == STIG_MID
+                assert meta["values"][V]["directives"][0]["profile_id"] == STIG_MID
             assert res["results"] == expected_results, res["results"]
             expected = (
                 "15"
@@ -267,7 +314,7 @@ for image in images:
                     else (
                         "25"
                         if case in ("set-after-refine", "partial-refine-last")
-                        else "intermediary" if case == "inherited-metadata" else "custom"
+                        else "intermediary" if case in ("inherited-metadata", "stig-named-intermediary") else "custom"
                     )
                 )
             )

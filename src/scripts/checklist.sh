@@ -1254,6 +1254,7 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
     # toward any status. SSG-only output omits their rows.
     deselected = collections.defaultdict(list)
     unpaired = []
+    unmapped_selected_rules = []
     for rid, result in res["results"].items():
         r = res["rules"][rid]
         # Pair every rule's references, deselected ones included (their V-IDs
@@ -1272,6 +1273,8 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
         else:
             # SSG < 0.1.82 has no #vulnerability_id references: derive V-n from SV-n.
             vids = [f"V-{n}" for n in r["svs"]]
+        if result != "notselected" and not vids:
+            unmapped_selected_rules.append(rid)
         for vid in vids:
             (deselected if result == "notselected" else by_vid)[vid].append(rid)
 
@@ -1660,13 +1663,14 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
             stig["mapped_vids"] = len(vulns)
         else:
             for v in vulns:
-                # A refinement may target a stock-unselected Rule without
-                # any explicit select action. Retain that request too, while
-                # keeping its ordinary selection reason and verdict.
-                unnoted = ((set(deselected.get(v["vid"], [])) & set(t.get("rule_refinements", {})))
-                           - set(affected.get(v["vid"], [])))
-                if unnoted:
-                    v["finding_details"] += "\nUnselected checks' requested settings (checks were not evaluated):\n" + "\n".join(tailoring_notes(unnoted))
+                # Requests can target stock-unselected checks without any
+                # select directive. Retain refinements and source-declared
+                # values too, with the ordinary selection reason/verdict and
+                # tailoring_notes' explicit uncertainty about check use.
+                unnoted = set(deselected.get(v["vid"], [])) - set(affected.get(v["vid"], []))
+                unnoted_notes = tailoring_notes(unnoted)
+                if unnoted_notes:
+                    v["finding_details"] += "\nUnselected checks' requested settings (checks were not evaluated):\n" + "\n".join(unnoted_notes)
                 if v["vid"] not in affected:
                     continue
                 direct = set(affected[v["vid"]]) & explicit
@@ -1689,6 +1693,7 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
             uuid.NAMESPACE_URL, f"stig-scanner-orb:{stig['benchmark_id']}:{stig['version']}:{stig['releaseinfo']}"
         )
     )
+    stig["unmapped_selected_rules"] = sorted(unmapped_selected_rules)
     return stig, vulns
 
 
@@ -2321,6 +2326,22 @@ def main():
         sp = plan.get("scanner_platform", "")
         runner_arch = sp.split("/")[1] if sp.count("/") >= 1 else None
         stig, vulns = build_model(res, plan, runner_arch, release, disa, baseline)
+        if tailoring:
+            # A selected Rule with no pairable references is absent from
+            # by_vid entirely, so the missing-V-ID guard cannot detect it.
+            # Preserve only the exact pinned profile's verified, reference-
+            # free support checks (e.g. enable_authselect); custom content
+            # and malformed references cannot acquire that exemption by id.
+            allowed_unmapped = set()
+            if ent and len(ent) > 4:
+                verified = ent[4]["profiles"].get(source_profile.replace(_P, "", 1), {})
+                allowed_unmapped = {"xccdf_org.ssgproject.content_rule_" + rid for rid in verified.get("unmapped", [])}
+            unmapped = [
+                rid for rid in stig["unmapped_selected_rules"]
+                if rid not in allowed_unmapped or any(res["rules"][rid][key] for key in ("svs", "bad_svs", "vids"))
+            ]
+            if unmapped:
+                raise ValueError("selected tailored Rules without pairable DISA references: " + ", ".join(unmapped[:10]))
         # Severity is published as is: it must be a CKLB severity (the
         # schema's enum; SSG itself marks a few rules "unknown", which SSG-only
         # rows carry), never a blank, null or made-up value.

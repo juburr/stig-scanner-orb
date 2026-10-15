@@ -229,6 +229,79 @@ class TailoringTests(unittest.TestCase):
         self.assertIn("Requested refine-rule", row["finding_details"])
         self.assertIn("checks were not evaluated", row["finding_details"])
 
+    def test_values_on_stock_unselected_rules_remain_in_complete_checklists(self):
+        ds, _ = self.tailored()
+        ET.SubElement(ds.find(X + "Profile"), X + "select", idref="two", selected="false")
+        rules = list(ds.iter(X + "Rule"))
+        check = rules[0].find(X + "check")
+        rules[0].remove(check)
+        rules[1].append(check)
+        root = tailoring()
+        prof = root.find(X + "Profile")
+        prof.remove(prof.find(X + "select"))
+        meta = self.preflight(root, ds)
+        self.assertEqual(meta["deselected_rules"], [])
+        meta["datastream_sha256"] = H
+        self.prepare(ds, register=False)
+        self.save_meta(meta)
+        rc, result = self.generate(self.save_skeleton())
+        self.assertEqual((rc, result["outcome"]), (0, "generated"), result)
+        row = self.rows()[1]
+        self.assertEqual(row["status"], "not_reviewed")
+        for evidence in (
+            "Tailored value " + VALUE,
+            "'18' (resolved by OpenSCAP)",
+            '"value": "18"',
+            "association with an executed check is not established",
+            "checks were not evaluated",
+        ):
+            self.assertIn(evidence, row["finding_details"])
+        ckl = ET.parse(self.out / "checklist.ckl")
+        self.assertIn("Tailored value " + VALUE, ckl.findall(".//FINDING_DETAILS")[1].text)
+
+    def test_selected_rules_without_pairable_references_fail_tailored_generation(self):
+        for references in (
+            [],
+            [("v", "V-1")],
+            [("sv", "SV-1bad")],
+            [("sv", "SV-1r1_rule"), ("v", "V-999")],
+            [("sv", "SV-1r1_rule"), ("v", "XX1")],
+        ):
+            with self.subTest(references=references):
+                ds, _ = self.tailored()
+                extra = fixture([("added", 1, "fail", (), references)])
+                ds.append(extra.find(X + "Group"))
+                ds.find(X + "TestResult").append(extra.find(X + "TestResult/" + X + "rule-result"))
+                meta = self.preflight(ds=ds)
+                meta["datastream_sha256"] = H
+                self.prepare(ds, register=False)
+                self.save_meta(meta)
+                rc, result = self.generate(self.save_skeleton())
+                self.assertEqual((rc, result["outcome"]), (1, "failed"), result)
+                self.assertIn("selected tailored Rules without pairable DISA references: added", result["reason"])
+                self.assertFalse((self.out / "checklist.ckl").exists())
+                self.assertFalse((self.out / "checklist.cklb").exists())
+
+    def test_only_pinned_reference_free_support_checks_are_allowlisted(self):
+        for pinned, malformed in ((True, False), (False, False), (True, True)):
+            with self.subTest(pinned=pinned, malformed=malformed):
+                ds, _ = self.tailored()
+                rid = "xccdf_org.ssgproject.content_rule_enable_authselect"
+                refs = [("v", "V-1")] if malformed else []
+                extra = fixture([(rid, 1, "fail", (), refs)])
+                ds.append(extra.find(X + "Group"))
+                ds.find(X + "TestResult").append(extra.find(X + "TestResult/" + X + "rule-result"))
+                meta = self.preflight(ds=ds)
+                meta["datastream_sha256"] = H if pinned else "a" * 64
+                self.plan["datastream_sha256"] = meta["datastream_sha256"]
+                self.entry = self.entry[:4] + ({"profiles": {"stig": {"unmapped": ["enable_authselect"]}}},)
+                self.prepare(ds, register=False)
+                self.save_meta(meta)
+                rc, result = self.generate(self.save_skeleton())
+                self.assertEqual(
+                    (rc, result["outcome"]), (0, "generated") if pinned and not malformed else (1, "failed"), result
+                )
+
     def test_group_cluster_refinements_are_bound_to_each_descendant_rule(self):
         ds = source()
         for group in ds.findall(X + "Group"):
@@ -1197,6 +1270,31 @@ class TailoringTests(unittest.TestCase):
         self.assertEqual(rc, 0, result)
         self.assertEqual(result["not_reviewed_by_reason"]["tailoring_deselected"], 1)
         self.assertIn("Tailored value", self.rows()[0]["finding_details"])
+
+    def test_stig_named_intermediary_retains_customizations_above_stock_anchor(self):
+        ds, _ = self.tailored()
+        mid = "xccdf_org.example_profile_stig_gui"
+        profile = ET.SubElement(ds, X + "Profile", id=mid, extends=P)
+        ET.SubElement(profile, X + "select", idref="two", selected="false")
+        ET.SubElement(profile, X + "set-value", idref=VALUE).text = "18"
+        ET.SubElement(profile, X + "refine-rule", idref="one", weight="2")
+        root = tailoring(base=mid)
+        custom = root.find(X + "Profile")
+        custom.remove(custom.find(X + "select"))
+        custom.remove(custom.find(X + "set-value"))
+        meta = self.preflight(root, ds)
+        self.assertEqual(meta["base_profile_ancestry"], [mid, P])
+        self.assertEqual(meta["deselected_rules"], ["two"])
+        self.assertEqual(meta["values"][VALUE]["directives"][0]["profile_id"], mid)
+        self.assertEqual(meta["rule_refinements"]["one"]["directives"][0]["profile_id"], mid)
+        self.assertTrue(meta["benchmark_overrides_materialized"])
+        meta["datastream_sha256"] = H
+        self.prepare(ds, register=False)
+        self.save_meta(meta)
+        rc, result = self.generate(self.save_skeleton())
+        self.assertEqual((rc, result["outcome"]), (0, "generated"), result)
+        self.assertEqual(result["not_reviewed_by_reason"]["tailoring_deselected"], 1)
+        self.assertIn("Requested refine-rule", self.rows()[0]["finding_details"])
 
     def test_cluster_expansion_binds_original_and_evaluated_bytes(self):
         ds = source()

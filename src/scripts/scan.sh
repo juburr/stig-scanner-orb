@@ -1138,7 +1138,11 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
     # Intermediate benchmark profiles are also customization layers. Keep
     # their selections and values in the evidence; exclude the STIG base's
     # own defaults so they are not mislabeled as tailoring overrides.
-    anchor = next((i for i, pid in enumerate(ancestry) if re.search(r"_profile_stig(_gui)?$", pid)), 0)
+    # A customization layer can itself have a STIG-named id. The oldest
+    # STIG ancestor is the source boundary; nearer matches still contribute
+    # their directives, just like any other intermediary profile.
+    stig_anchors = [i for i, pid in enumerate(ancestry) if re.search(r"_profile_stig(_gui)?$", pid)]
+    anchor = stig_anchors[-1] if stig_anchors else 0
     trace = chain + [original[pid] for pid in ancestry[:anchor]]
     # Resolve stock selection state too, including item defaults and every
     # benchmark ancestor. Explicit false selectors alone establish direct

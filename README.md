@@ -393,7 +393,10 @@ If no platform evaluation was recorded, the checklist says applicability was
 not established and keeps every requirement Not Reviewed. Tailored generation
 requires a complete DISA reference (the pinned bundle, or `stig_xccdf_path`) because additions can
 fall outside a stock profile's verified release mapping. Every selected mapped
-V-ID must exist in the DISA reference; any missing row fails generation. A
+V-ID must exist in the DISA reference; any missing row fails generation.
+Selected Rules without pairable DISA references also fail, except for the exact
+pinned profile's verified reference-free support checks. Custom datastreams
+cannot use that allowlist, and malformed references never qualify. A
 tailored CIS or other non-STIG profile still skips checklist generation under `auto` and fails
 under `require`.
 
@@ -431,8 +434,11 @@ exports can be identified. If check evidence is missing or ambiguous, the row
 labels the setting as global TestResult evidence whose use by that Rule is
 unverified; alternative checks may not have run. Rule refinements retain the
 requested selector, role, severity and weight alongside properties recorded in
-TestResult. Official DISA checklist severity stays unchanged. Provenance uses
-the tailored profile title from the hash-verified manifest.
+TestResult. Stock-unselected checks retain requested refinements and values,
+explicitly labeled as settings for checks that were not evaluated. Official
+DISA checklist severity stays unchanged. Provenance uses the tailored profile
+title from the hash-verified manifest. STIG-named intermediary profiles retain
+their customization directives above the source STIG ancestor.
 
 Summary verifies the scan plan's results hash before publishing tailored
 identity, even when checklist generation is disabled.
