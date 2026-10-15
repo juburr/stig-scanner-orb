@@ -60,6 +60,13 @@ parameters:
   datastream_path:
     type: string
     default: ""
+  tailoring_file:
+    type: string
+    default: ""
+    description: >
+      Host-local XCCDF 1.2 tailoring XML (at most 16 MiB). Snapshotted
+      and hashed offline; profile_id must name a profile in this file
+      extending a profile from the scanned benchmark.
   profile_id:
     type: string
     default: ""
@@ -129,6 +136,7 @@ steps:
       scanner_image: <<parameters.scanner_image>>
       datastream_name: <<parameters.datastream_name>>
       datastream_path: <<parameters.datastream_path>>
+      tailoring_file: <<parameters.tailoring_file>>
       profile_id: <<parameters.profile_id>>
       output_dir: <<parameters.output_dir>>
       donor_image: <<parameters.donor_image>>
@@ -163,6 +171,10 @@ steps:
   - store_artifacts:
       path: <<parameters.output_dir>>/provenance.json
       destination: stig/provenance.json
+      when: always
+  - store_artifacts:
+      path: <<parameters.output_dir>>/tailoring-meta.json
+      destination: stig/tailoring-meta.json
       when: always
   - store_artifacts:
       path: <<parameters.output_dir>>/scan-plan.env

@@ -9,6 +9,12 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 
 ### Added
 
+- Offline `tailoring_file` support for both scanner paths, with profile
+  validation, bounded immutable snapshots and hash-bound provenance. Complete
+  DISA checklists retain explicitly deselected requirements as Not Reviewed,
+  including partial many-to-one deselections, and record customized values
+  in finding details. Stock profile identity and selection checks remain enforced.
+
 - Bundled, checksum-pinned DISA reference data for each verified RHEL 8/9/10
   and Ubuntu 22.04 datastream: complete default checklists with official text,
   CCIs and manual-only rows, offline staging, source attribution and deterministic

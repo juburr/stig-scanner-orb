@@ -821,7 +821,7 @@ printf '\nSTATE=%s\nREASON=%s\n' "$DPKG_STATUS" "$DPKG_STATUS_REASON"
         guard = job.index("name: Guard checklist artifacts before upload")
         final_gate = job.index("name: Enforce summarized scan policies")
         uploads = list(re.finditer(r"(?ms)^  - store_artifacts:\n(.*?)(?=^  - |\Z)", job))
-        self.assertEqual(len(uploads), 8)
+        self.assertEqual(len(uploads), 9)
         for step in uploads:
             body = step.group(1)
             if "path: <<parameters.output_dir>>/checklist.ckl" in body:

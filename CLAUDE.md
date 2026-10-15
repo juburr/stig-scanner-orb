@@ -137,8 +137,82 @@ Rule ID revision becomes Not_Reviewed, retaining automated evidence. Known
 release inventories and internal profile inventories are separate checks;
 unknown releases report self-consistency only. Skeletons never waive scan
 provenance, selected mapping, inventory or architecture checks. Without a
-skeleton, SSG-only limits still apply. Tailoring/answer files are not implemented. Manual STIG Viewer 3 import and ISSM
+skeleton, SSG-only limits still apply. Answer files are not implemented. Manual STIG Viewer 3 import and ISSM
 wording review remain release acceptance tasks.
+
+## Tailoring
+
+`scan.sh` snapshots `tailoring_file` through the root scanner and preflights
+bounded UTF-8 XCCDF 1.2 XML. The exact scanner validates its schema offline;
+use `--skip-schematron` because the pinned RPM image lacks tailoring rules.
+Every local profile must extend a valid source benchmark profile and have
+valid directives, including unused profiles. Reject local-to-local extension,
+including references through another shadow; only a shadow's own same-name
+benchmark self-reference is exempt. Reject children in scalar set-value:
+remarks belong on select/refine selectors, not set-value. Complex tailoring
+values are unsupported because the pinned RPM engine cannot resolve them
+reliably; external TestResult complex values are retained by the parser.
+
+After path/parameter safety checks, clear old ordinary scan outputs before
+provisioning/preflight so a failure cannot upload prior results/report/plan,
+summary or provenance. `tailoring-meta.json` derives from the same immutable
+snapshots as evaluation.
+Reject tailoring/datastream input collisions with generated outputs before
+cleanup, including directory aliases, final symlinks and hard links. Bind the
+original/evaluated XML and manifest hashes in scan-plan.env. Checklist
+meta stores compact identity and the manifest hash to stay below the guard and
+summarizer's 1 MiB limit. Conversion checks the complete Rule/DISA reference
+inventory instead of a stock selection fingerprint for tailored profiles, while
+stock scans keep exact selection checks. Tailored generation still requires a
+verified inherited STIG profile, benchmark/version, and bundled or supplied
+DISA data. Reject every selected mapped V-ID absent from that reference.
+
+Requested selections resolve against item defaults and the full benchmark
+profile ancestry. A child request cannot bypass an unselected Group. Only
+effective negative selectors on Rules or ancestor Groups establish explicit
+deselection evidence; positive Group requests do not relabel stock exclusions.
+Shared V-IDs with any unselected contributor in a tailored TestResult are conservatively
+Not Reviewed, including requires/conflicts effects; distinguish partial
+selection from explicit user deselection and retain remaining evidence.
+Complete mapping eligibility counts matching explicit deselections and, for
+all-unselected profiles, indirect TestResult deselections too. All-unselected
+scans can generate complete Not Reviewed checklists; if no platform evaluation
+ran, state that applicability was not established. Keep the independent
+require_evaluated_rules gate and selected-rule mismatch checks intact.
+
+Resolve Value extends chains with append semantics before choosing selectors
+or defaults. A selector without a matching value falls back to the scalar
+default; complex defaults fail explicitly. Selector types apply in document
+order: a later refinement replaces an earlier set-value, and a later set-value
+wins. Normalize effective scalars after refinements to accommodate the pinned
+RPM engine's precedence and empty-string fallback behavior. Normalize repeated
+selectors and expand cluster IDs by item type in evaluated XML, retaining the
+original directive history. Insert inherited directives before trailing
+metadata/signatures. Signed inputs requiring any normalization are rejected;
+pass-through bytes stay exact and the manifest states that signature
+verification is not performed. Never mix unused profiles into selected
+effective evidence.
+
+Record refine-rule requests, Group/cluster targets and remarks alongside each
+TestResult instance's role, severity, weight and check identity. Retain requests
+on stock-unselected Rules too. Preserve official DISA severity and do not infer
+missing properties or effective Group weight from Rule weight. Resolve Rule
+extends chains before matching value exports, using check replacement keyed by
+system/selector. Resolve Rule and Group platform inheritance with
+append/override semantics, then combine the effective platforms with the
+item's physical Group/Benchmark gates for applicability and target architecture
+checks. Do not import a base item's enclosing Groups.
+Reject missing/duplicate Group IDs and cyclic/unresolved Group inheritance.
+For checks, inherited complex-check content takes precedence over simple
+checks. Resolve references with append/override semantics in source inventory
+and result mapping. Both pinned engines can erase inherited references and
+extends; reject the inventory mismatch rather than dropping a failed contributor.
+Omit unselected alternatives when recorded checks match completely;
+missing/ambiguous evidence labels values as global settings with unverified
+Rule use. Summarize verifies the bounded manifest hash/identity and results
+hash before using its profile title, including external profiles and same-name shadows.
+`tests/tailoring_test.py` exercises the production preflight and converter;
+`smoke-rhel9-tailoring` feeds both consumer validators and pinned-engine checks.
 
 ## Bundled DISA data
 
@@ -162,8 +236,9 @@ conservative revision policy. Record source hashes and drift reasons per row.
 CircleCI's compiled-config limit is lower than the packed-orb limit. The large
 CI matrix uses `.circleci/prepare-test-config.sh`: it packs the actual orb, keeps
 `smoke-rhel9` on the complete packed includes, and creates a second inline orb
-that prepares checkout for staging and changes only the four bundle staging bodies to run their identical scripts
-from checkout. It asserts that every other command, parameter, job and guard
+that prepares checkout for staging and changes the four bundle staging bodies
+and artifact guard body to run their identical scripts from checkout. Checklist
+generation and every other command stay packed in every scan. It asserts that every other command, parameter, job and guard
 is equal after removing the checkout preparation. The full packed smoke scans
 without checkout, then checks out only for post-step assertions. All scan paths and both skeleton jobs still feed consumer validation.
 Do not duplicate product implementation in the CI adapter or omit the full-orb

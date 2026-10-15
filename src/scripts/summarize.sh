@@ -212,11 +212,14 @@ for el in root.iter():
         notchecked_rules.append(record)
 
 plan = {}
+duplicate_plan_keys = set()
 if os.path.isfile(plan_path):
     with open(plan_path, encoding="utf-8") as plan_file:
         for line in plan_file:
-            if "=" in line:
-                k, v = line.strip().split("=", 1)
+            k, sep, v = line.rstrip("\n").partition("=")
+            if sep:
+                if k in plan:
+                    duplicate_plan_keys.add(k)
                 plan[k] = v
 
 actionable = [rec for name in GATED_RESULTS for rec in gated[name] if not rec["ignored"]]
@@ -252,6 +255,44 @@ for el in root.iter():
     if local(el.tag) == "Profile" and el.get("id") == profile_id:
         profile_title = child_text(el, "title") or None
         break
+# External and shadowing profiles take their identity from the scan's exact,
+# hash-bound tailoring snapshot, never a same-named stock Profile definition.
+tailoring_keys = ("tailoring_file", "tailoring_sha256", "tailoring_profile", "tailoring_meta_sha256", "tailoring_evaluated_sha256")
+if any(plan.get(key) for key in tailoring_keys):
+    # Stock standalone summaries retain legacy appended-field behavior.
+    # Hash-bound tailoring identity requires one unambiguous scan plan.
+    if duplicate_plan_keys:
+        raise ValueError("the scan plan repeats " + ", ".join(sorted(duplicate_plan_keys)))
+    if not all(plan.get(key) for key in tailoring_keys):
+        raise ValueError("the scan plan has incomplete tailoring provenance")
+    if plan.get("results_sha256") != results_sha:
+        raise ValueError("tailored results hash differs from the scan plan")
+    for key in ("tailoring_sha256", "tailoring_meta_sha256", "tailoring_evaluated_sha256", "datastream_sha256"):
+        if not re.fullmatch(r"[0-9a-f]{64}", plan.get(key, "")):
+            raise ValueError("invalid or missing tailoring provenance hash: " + key)
+    with open(os.path.join(os.path.dirname(plan_path), "tailoring-meta.json"), "rb") as fh:
+        tailoring_raw = fh.read((16 << 20) + 1)
+    if len(tailoring_raw) > 16 << 20 or hashlib.sha256(tailoring_raw).hexdigest() != plan.get("tailoring_meta_sha256"):
+        raise ValueError("tailoring metadata hash/size differs from the scan plan")
+    def unique_tailoring(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("tailoring metadata repeats " + key)
+            result[key] = value
+        return result
+    tailoring_identity = json.loads(tailoring_raw, object_pairs_hook=unique_tailoring)
+    if (not isinstance(tailoring_identity, dict) or tailoring_identity.get("schema") != "stig-scanner-orb/tailoring/v1"
+            or tailoring_identity.get("profile_id") != profile_id
+            or profile_id != plan.get("tailoring_profile")
+            or profile_id != plan.get("profile")
+            or tailoring_identity.get("sha256") != plan.get("tailoring_sha256")
+            or tailoring_identity.get("evaluated_sha256") != plan.get("tailoring_evaluated_sha256")
+            or tailoring_identity.get("datastream_sha256") != plan.get("datastream_sha256")
+            or not isinstance(tailoring_identity.get("profile_title"), str)
+            or not tailoring_identity["profile_title"]):
+        raise ValueError("tailoring metadata identity differs from the scan plan/results")
+    profile_title = tailoring_identity["profile_title"]
 # Only ComplianceAsCode-built benchmarks carry an SSG release number; the
 # Wolfi GPOS datastream, for one, is not SSG content.
 ssg_version = bench_version if bench_update and "ComplianceAsCode" in bench_update else None
@@ -294,6 +335,14 @@ provenance = {
         "resolved_from": opt(plan.get("target_base_source")),
     },
     "profile": {"id": profile_id, "title": profile_title},
+    "tailoring": {
+        "path": plan.get("tailoring_file"),
+        "sha256": plan.get("tailoring_sha256"),
+        "profile_id": plan.get("tailoring_profile"),
+        "profile_title": profile_title,
+        "metadata_sha256": plan.get("tailoring_meta_sha256"),
+        "evaluated_sha256": plan.get("tailoring_evaluated_sha256"),
+    } if plan.get("tailoring_file") else None,
     "scanner": {
         "image": opt(plan.get("scanner")),
         "image_id": opt(plan.get("scanner_image_id")),
@@ -402,6 +451,12 @@ if plan:
         lines.append(f"  donor-digest:      {digest_line(donor['repo_digests'], donor['image_id'], 'none', donor['platform'])} (used for {', '.join(donor['used_for'])})")
     if t["dpkg_status"] and t["dpkg_status"]["state"] == "synthesized":
         lines.append(f"  dpkg-status:       synthesized from /var/lib/dpkg/status.d ({t['dpkg_status']['packages']} packages) in the scratch rootfs copy")
+    if provenance["tailoring"]:
+        tailoring = provenance["tailoring"]
+        lines.append(f"  tailoring-file:    {tailoring['path']}")
+        lines.append(f"  tailoring-sha256:  {tailoring['sha256']}")
+        lines.append(f"  tailoring-eval-sha256: {tailoring['evaluated_sha256']}")
+        lines.append(f"  tailored-profile:  {tailoring['profile_id']}")
     lines.append(f"  datastream-source: {ds['source'] or ''}")
     lines.append(f"  datastream-sha256: {ds['sha256'] or 'unavailable'}")
     bench = f"{ds['benchmark_id'] or 'unknown'} {ds['benchmark_version'] or ''}".rstrip()

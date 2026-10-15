@@ -53,6 +53,7 @@ SCANNER_IMAGE_OVERRIDE="$(subst "${PARAM_SCANNER_IMAGE:-}")"
 DATASTREAM_NAME_OVERRIDE="$(subst "${PARAM_DATASTREAM_NAME:-}")"
 DATASTREAM_PATH_OVERRIDE="$(subst "${PARAM_DATASTREAM_PATH:-}")"
 PROFILE_ID_OVERRIDE="$(subst "${PARAM_PROFILE_ID:-}")"
+TAILORING_FILE="$(subst "${PARAM_TAILORING_FILE:-}")"
 OUTPUT_DIR="$(subst "${PARAM_OUTPUT_DIR:-build/stig}")"
 DONOR_IMAGE="$(subst "${PARAM_DONOR_IMAGE:-}")"
 [ -n "${DONOR_IMAGE}" ] || DONOR_IMAGE="${DEFAULT_CHAINGUARD_IMAGE}"
@@ -67,6 +68,15 @@ if [ -n "${DATASTREAM_NAME_OVERRIDE}" ]; then
             exit 2 ;;
     esac
 fi
+
+if [ -n "${TAILORING_FILE}" ] && [ -z "${PROFILE_ID_OVERRIDE}" ]; then
+    echo "ERROR: tailoring_file requires an explicit profile_id naming a profile in that file." >&2
+    exit 2
+fi
+# scan-plan.env is line-oriented; never let these inputs inject another key.
+case "${TAILORING_FILE}${PROFILE_ID_OVERRIDE}" in
+    *$'\n'*|*$'\r'*) echo "ERROR: tailoring_file and profile_id cannot contain newlines." >&2; exit 2 ;;
+esac
 
 # --- 1. validate input shape ---------------------------------------------
 if [ -n "${IMAGE}" ] && [ -n "${ROOTFS_PATH}" ]; then
@@ -124,9 +134,36 @@ if [ -n "${ROOTFS_PATH}" ] && [ -d "${ROOTFS_PATH}" ] \
     exit 2
 fi
 
+# Refuse source/output collisions before invalidating any prior evidence.
+# Physical paths catch directory aliases; -ef also catches final symlinks and
+# hard links, including root-owned inputs readable only by the scanner.
+reject_source_output_collision() {
+    local source="$1" label="$2" input_phys output_phys artifact
+    [ -n "${source}" ] || return 0
+    input_phys="$(phys_path "${source}")"
+    output_phys="$(phys_path "${OUTPUT_DIR}")"
+    for artifact in tailoring-meta.json checklist-meta.json summary.txt.exit-code \
+            checklist.ckl checklist.cklb checklist.ckl.partial checklist.cklb.partial \
+            checklist-meta.json.partial results.xml report.html scan-plan.env summary.txt provenance.json; do
+        if [ "${input_phys}" = "${output_phys%/}/${artifact}" ] \
+                || [ "${source}" -ef "${OUTPUT_DIR}/${artifact}" ]; then
+            echo "ERROR: ${label} collides with generated output '${OUTPUT_DIR}/${artifact}'." >&2
+            return 2
+        fi
+    done
+    return 0
+}
+reject_source_output_collision "${TAILORING_FILE}" tailoring_file
+reject_source_output_collision "${DATASTREAM_PATH_OVERRIDE}" datastream_path
+
 # This must follow the physical overlap check: never clean the caller's tree.
 rm -f -- "${OUTPUT_DIR}/checklist-meta.json"
 rm -f -- "${OUTPUT_DIR}/summary.txt.exit-code"
+rm -f -- "${OUTPUT_DIR}/tailoring-meta.json"
+# A later preflight failure must not make old evidence available to the
+# job's always-run artifact uploads. File inputs were protected above.
+rm -f -- "${OUTPUT_DIR}/results.xml" "${OUTPUT_DIR}/report.html" \
+    "${OUTPUT_DIR}/scan-plan.env" "${OUTPUT_DIR}/summary.txt" "${OUTPUT_DIR}/provenance.json"
 rm -f -- "${OUTPUT_DIR}/checklist.ckl" "${OUTPUT_DIR}/checklist.cklb" \
     "${OUTPUT_DIR}/checklist.ckl.partial" "${OUTPUT_DIR}/checklist.cklb.partial" \
     "${OUTPUT_DIR}/checklist-meta.json.partial"
@@ -242,6 +279,7 @@ ROOTFS_DIR=""
 CLEANUP_ROOTFS=0
 CID=""
 DATASTREAM_SNAP_DIR=""
+TAILORING_SNAP_DIR=""
 OUT_STAGE_DIR=""
 ROOTFS_MOUNT=()
 TARGET_IMAGE_ID=""
@@ -260,6 +298,9 @@ cleanup() {
         if [ -e "${DATASTREAM_SNAP_DIR}" ]; then
             echo "WARNING: could not remove the datastream snapshot ${DATASTREAM_SNAP_DIR}; remove it manually." >&2
         fi
+    fi
+    if [ -n "${TAILORING_SNAP_DIR}" ]; then
+        rm -rf -- "${TAILORING_SNAP_DIR}" 2>/dev/null || true
     fi
     if [ -n "${OUT_STAGE_DIR}" ]; then
         rm -rf "${OUT_STAGE_DIR}" 2>/dev/null || true
@@ -836,6 +877,9 @@ elif [ "${FAMILY}" != "rpm" ]; then
     # of falling into the donor flow and pulling the upstream Chainguard
     # image. If a consumer is mirroring a non-Chainguard-shape image for
     # a non-RPM target, they should set datastream-path explicitly.
+    if [ -n "${TAILORING_FILE}" ]; then
+        snapshot_datastream "${SCANNER_ID}" "/usr/share/xml/scap/ssg/content/${DATASTREAM}"
+    fi
     DATASTREAM_IN_SCANNER_PATH="/usr/share/xml/scap/ssg/content/${DATASTREAM}"
     DATASTREAM_SOURCE="bundled"
     echo "==> Using datastream bundled inside scanner image (target family: ${FAMILY})"
@@ -854,6 +898,516 @@ fi
 ds_mount_args=()
 if [ -n "${DATASTREAM_HOST_DIR}" ]; then
     ds_mount_args=( -v "${DATASTREAM_HOST_DIR}:/ds:ro" )
+fi
+# Tailoring is copied once by the scanner's root user, just like a supplied
+# datastream. The original file is never mounted during evaluation.
+tailoring_mount_args=()
+TAILORING_PATH=""
+TAILORING_SHA256=""
+TAILORING_META_SHA256=""
+TAILORING_EVALUATED_SHA256=""
+if [ -n "${TAILORING_FILE}" ]; then
+    [ -f "${TAILORING_FILE}" ] || { echo "ERROR: tailoring_file is not a regular file: ${TAILORING_FILE}" >&2; exit 2; }
+    tailoring_src="$(cd "$(dirname "${TAILORING_FILE}")" && pwd)/$(basename "${TAILORING_FILE}")"
+    TAILORING_SNAP_DIR="$(mktemp -d -t stig-tailoring.XXXXXX)"
+    docker run --rm --network none -u 0:0 \
+        -v "${tailoring_src}:/src/tailoring.xml:ro" -v "${TAILORING_SNAP_DIR}:/out" \
+        -e HOST_UID="${HOST_UID}" -e HOST_GID="${HOST_GID}" \
+        --entrypoint sh "${SCANNER_ID}" -c '
+            set -eu
+            # Bound the snapshot before parsing; never copy a growing file unbounded.
+            head -c 16777217 /src/tailoring.xml > /out/tailoring.xml
+            test -s /out/tailoring.xml
+            test "$(wc -c < /out/tailoring.xml)" -le 16777216
+            chown "${HOST_UID}:${HOST_GID}" /out/tailoring.xml
+            chmod 0444 /out/tailoring.xml
+        '
+    TAILORING_PATH="/tailoring/evaluated.xml"
+    tailoring_mount_args=( -v "${TAILORING_SNAP_DIR}:/tailoring:ro" )
+    python3 - "${TAILORING_SNAP_DIR}/tailoring.xml" "${DATASTREAM_HOST_DIR}/${DATASTREAM}" \
+        "${PROFILE}" "${TAILORING_SNAP_DIR}/meta.json" "${TAILORING_SNAP_DIR}/evaluated.xml" <<'PY_TAILORING'
+import copy
+import hashlib
+import json
+import re
+import sys
+import xml.etree.ElementTree as ET
+
+X = "{http://checklists.nist.gov/xccdf/1.2}"
+HREF_RULE = "https://www.cyber.mil/stigs/srg-stig-tools/"
+HREF_VULN = "https://www.cyber.mil/stigs/srg-stig-tools#vulnerability_id"
+
+
+def read_xml(path, cap):
+    with open(path, "rb") as f:
+        data = f.read(cap + 1)
+    if not data or len(data) > cap:
+        raise ValueError("empty or oversized XML input")
+    # OpenSCAP's libxml and the runner's expat must see the same literal
+    # content. Tailoring does not need DTDs or external entities.
+    text = data.decode("utf-8-sig")
+    encoding = re.search(r"<\?xml[^?]*encoding\s*=\s*[\"\']([^\"\']+)", text, re.I)
+    if encoding and encoding.group(1).lower() not in ("utf-8", "utf8"):
+        raise ValueError("tailoring/source XML must use UTF-8")
+    if re.search(r"<!\s*(DOCTYPE|ENTITY)\b", text, re.I):
+        raise ValueError("DTD/entity declarations are not supported")
+    return data, ET.fromstring(text)
+
+
+def indexed(elements):
+    result = {}
+    for el in elements:
+        key = el.get("id")
+        if not key or key in result:
+            raise ValueError("missing or duplicate XCCDF id: " + str(key))
+        result[key] = el
+    return result
+
+
+def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
+    raw, tailoring = read_xml(tailoring_path, 16 << 20)
+    source, ds = read_xml(datastream_path, 128 << 20)
+    if tailoring.tag != X + "Tailoring":
+        raise ValueError("expected an XCCDF 1.2 Tailoring document")
+    signature_present = any(
+        el.tag in (X + "signature", "{http://www.w3.org/2000/09/xmldsig#}Signature") for el in tailoring.iter()
+    )
+    benches = list(ds.iter(X + "Benchmark"))
+    if len(benches) != 1:
+        raise ValueError("tailoring requires a datastream with exactly one Benchmark")
+    bench = benches[0]
+    links = tailoring.findall(X + "benchmark")
+    if len(links) != 1 or not links[0].get("href"):
+        raise ValueError("tailoring must name its source benchmark")
+    if links[0].get("id") and links[0].get("id") != bench.get("id"):
+        raise ValueError("tailoring names a different benchmark id")
+    # href is a source label, never a resource to fetch. The explicit input
+    # datastream is authoritative, and every idref below must resolve in it.
+    local = indexed(tailoring.findall(X + "Profile"))
+    original = indexed(bench.findall(X + "Profile"))
+    for profile in local.values():
+        if profile.get("extends") in local and not (
+            profile.get("id") == profile.get("extends") and profile.get("id") in original
+        ):
+            raise ValueError("tailoring profiles cannot extend other tailoring profiles; extend a benchmark profile")
+        base = profile.get("extends")
+        if base not in original:
+            raise ValueError(
+                "every tailoring profile must extend an existing benchmark profile: " + str(profile.get("id"))
+            )
+        visited = set()
+        ancestor = base
+        while ancestor:
+            if ancestor in visited or ancestor not in original:
+                raise ValueError("cyclic or unresolved benchmark profile inheritance")
+            visited.add(ancestor)
+            ancestor = original[ancestor].get("extends")
+    for pid in set(local) & set(original):
+        if local[pid].get("extends") != pid:
+            raise ValueError("a shadowing tailoring profile must extend its same-named benchmark profile")
+    if profile_id not in local:
+        raise ValueError("profile_id must name a profile in the tailoring file")
+    # Tailoring profiles may extend source Benchmark profiles, including
+    # same-name shadowing, but XCCDF does not permit extending another local
+    # tailoring profile. Do not forward a structure that only some engines
+    # happen to accept.
+    chain = [local[profile_id]]
+    current = chain[0].get("extends")
+    if current not in original:
+        raise ValueError("tailored profile must extend an existing benchmark profile")
+    base_profile = current
+    ancestry, seen = [], set()
+    while current:
+        if current in seen or current not in original:
+            raise ValueError("cyclic or unresolved benchmark profile inheritance")
+        seen.add(current)
+        ancestry.append(current)
+        current = original[current].get("extends")
+    rules = indexed(bench.iter(X + "Rule"))
+    groups = indexed(bench.iter(X + "Group"))
+    values = indexed(bench.iter(X + "Value"))
+
+    def value_choices(rid):
+        # Value properties use XCCDF's append inheritance model. Resolve
+        # before choosing a selector/default, retaining parent-first order.
+        lineage, visited = [], set()
+        current = rid
+        while current:
+            if current in visited or current not in values:
+                raise ValueError("cyclic or unresolved Value inheritance: " + rid)
+            visited.add(current)
+            lineage.append(values[current])
+            current = values[current].get("extends")
+        return [el for item in reversed(lineage) for el in item if el.tag in (X + "value", X + "complex-value")]
+
+    def default_choices(choices):
+        defaults = [v for v in choices if not v.get("selector")]
+        # XCCDF uses the first property if no empty-selector value exists.
+        return defaults or choices[:1]
+
+    def rule_references(rule):
+        lineage, seen = [], set()
+        current = rule
+        while current is not None:
+            rid = current.get("id")
+            if rid in seen:
+                raise ValueError("cyclic Rule inheritance: " + str(rid))
+            seen.add(rid)
+            lineage.append(current)
+            base = current.get("extends")
+            if base and base not in rules:
+                raise ValueError("unresolved Rule inheritance: " + base)
+            current = rules.get(base) if base else None
+        references = []
+        for ancestor in reversed(lineage):
+            own = ancestor.findall(X + "reference")
+            # XCCDF Table 33: reference uses append unless the child
+            # explicitly replaces inherited references with override=true.
+            if any(r.get("override") in ("true", "1") for r in own):
+                references = []
+            references.extend(own)
+        return references
+
+    parent = {child: element for element in bench.iter() for child in element}
+    items = {**groups, **rules, **values}
+    if len(items) != len(groups) + len(rules) + len(values):
+        raise ValueError("XCCDF item ids must be unique across groups, rules and values")
+    clusters = {}
+    for rid, item in items.items():
+        if item.get("cluster-id"):
+            clusters.setdefault(item.get("cluster-id"), []).append(rid)
+    if set(clusters) & set(items):
+        raise ValueError("cluster ids must not shadow concrete XCCDF item ids")
+
+    def resolve(ref, allowed, what):
+        targets = [ref] if ref in items else clusters.get(ref, [])
+        targets = sorted(rid for rid in targets if rid in allowed)
+        if not targets:
+            raise ValueError("tailoring references an unknown " + what + ": " + str(ref))
+        return targets
+
+    def inspect_directive(el):
+        tag = el.tag[len(X) :] if el.tag.startswith(X) else el.tag
+        if tag not in ("select", "set-value", "set-complex-value", "refine-value", "refine-rule"):
+            return None, [], {}
+        if tag == "set-complex-value":
+            raise ValueError("set-complex-value is not supported: this orb supports scalar tailoring values only")
+        ref = el.get("idref")
+        targets = resolve(
+            ref,
+            values if tag in ("set-value", "refine-value") else {**rules, **groups},
+            "value or value cluster" if tag in ("set-value", "refine-value") else "rule/group or cluster",
+        )
+        requested = {}
+        if tag == "select" and el.get("selected") not in ("true", "false", "1", "0"):
+            raise ValueError("invalid tailoring selected flag")
+        if tag == "set-value":
+            if len(el):
+                raise ValueError("set-value must contain scalar text only; child elements are not permitted")
+            requested = {rid: el.text or "" for rid in targets}
+        if tag == "refine-value":
+            for rid in targets:
+                choices = value_choices(rid)
+                matches = [v for v in choices if v.get("selector", "") == el.get("selector")]
+                if el.get("selector") is not None and not matches:
+                    matches = default_choices(choices)
+                if len(matches) > 1 or (el.get("selector") is not None and not matches):
+                    raise ValueError("tailoring value selector does not resolve uniquely: " + str(rid))
+                if (matches and matches[0].tag == X + "complex-value") or (
+                    el.get("selector") is None
+                    and default_choices(choices)
+                    and default_choices(choices)[0].tag == X + "complex-value"
+                ):
+                    raise ValueError("complex-value refinements are not supported: scalar tailoring values only")
+                requested[rid] = "".join(matches[0].itertext()) if matches else None
+        return tag, targets, requested
+
+    # Unused profiles are part of the validated document too. This pass is
+    # pure: only the selected profile/benchmark trace below contributes to
+    # effective settings or evidence.
+    has_repeated = False
+    for profile in local.values():
+        seen_directives = set()
+        for el in profile:
+            tag, _, _ = inspect_directive(el)
+            if tag:
+                key = (tag, el.get("idref"))
+                has_repeated = has_repeated or key in seen_directives
+                seen_directives.add(key)
+
+    # Intermediate benchmark profiles are also customization layers. Keep
+    # their selections and values in the evidence; exclude the STIG base's
+    # own defaults so they are not mislabeled as tailoring overrides.
+    # A customization layer can itself have a STIG-named id. The oldest
+    # STIG ancestor is the source boundary; nearer matches still contribute
+    # their directives, just like any other intermediary profile.
+    stig_anchors = [i for i, pid in enumerate(ancestry) if re.search(r"_profile_stig(_gui)?$", pid)]
+    anchor = stig_anchors[-1] if stig_anchors else 0
+    trace = chain + [original[pid] for pid in ancestry[:anchor]]
+    # Resolve stock selection state too, including item defaults and every
+    # benchmark ancestor. Explicit false selectors alone establish direct
+    # tailoring deselection; positive Group requests do not disable children.
+    selected = {rid: item.get("selected", "true") in ("true", "1") for rid, item in {**groups, **rules}.items()}
+    for pid in reversed(ancestry):
+        for el in original[pid].findall(X + "select"):
+            for rid in resolve(el.get("idref"), {**rules, **groups}, "rule/group or cluster"):
+                selected[rid] = el.get("selected") in ("true", "1")
+    custom_selection, refined, rule_refinements = {}, {}, {}
+    has_clusters = False
+    inherited = []
+    for profile in reversed(trace):
+        duplicates = set()
+        expanded = []
+        for el in profile:
+            tag, targets, requested = inspect_directive(el)
+            if tag is None:
+                expanded.append(el)
+                continue
+            ref = el.get("idref")
+            if (tag, ref) in duplicates:
+                has_repeated = True
+            duplicates.add((tag, ref))
+            if tag == "select":
+                flag = el.get("selected")
+                for rid in targets:
+                    selected[rid] = flag in ("true", "1")
+                    custom_selection[rid] = flag in ("true", "1")
+            elif tag in ("set-value", "refine-value"):
+                for rid in targets:
+                    value = requested[rid]
+                    directives = refined.get(rid, {}).get("directives", []) + [
+                        {
+                            "profile_id": profile.get("id"),
+                            "directive": tag,
+                            "idref": ref,
+                            "value": value,
+                            "selector": el.get("selector"),
+                            "operator": el.get("operator"),
+                        }
+                    ]
+                    refined[rid] = {
+                        "value": value,
+                        "directive": tag,
+                        "selector": el.get("selector"),
+                        "operator": el.get("operator"),
+                        "directives": directives,
+                    }
+            else:
+                for target in targets:
+                    affected = [target] if target in rules else [r.get("id") for r in groups[target].iter(X + "Rule")]
+                    directive = {
+                        "profile_id": profile.get("id"),
+                        "idref": ref,
+                        "target_id": target,
+                        "target_type": "Rule" if target in rules else "Group",
+                        "attributes": {
+                            k: el.get(k) for k in ("selector", "role", "severity", "weight") if el.get(k) is not None
+                        },
+                        "remarks": [" ".join("".join(r.itertext()).split()) for r in el.findall(X + "remark")],
+                    }
+                    for rid in affected:
+                        rule_refinements.setdefault(rid, {"directives": []})["directives"].append(directive)
+            if ref in clusters:
+                has_clusters = True
+                for rid in targets:
+                    concrete = copy.deepcopy(el)
+                    concrete.set("idref", rid)
+                    expanded.append(concrete)
+            else:
+                expanded.append(el)
+        if profile.get("id") in local:
+            profile[:] = expanded
+        else:
+            inherited.extend(
+                copy.deepcopy(el)
+                for el in expanded
+                if el.tag in (X + "select", X + "set-value", X + "refine-value", X + "refine-rule")
+            )
+
+    # Selector types override one another in document order. The pinned RPM
+    # engine instead retains an earlier set-value and can resolve unmatched
+    # refinements to an empty string. Materialize the final scalar whenever
+    # either behavior would change XCCDF's effective value; preserve refine
+    # selectors for the independently selected bounds/choices/operator.
+    effective_values, saw_set, saw_refine = {}, set(), set()
+    for profile in [original[pid] for pid in reversed(ancestry)] + list(reversed(chain)):
+        for el in profile:
+            if el.tag not in (X + "set-value", X + "refine-value"):
+                continue
+            for rid in resolve(el.get("idref"), values, "value or value cluster"):
+                if el.tag == X + "set-value":
+                    saw_set.add(rid)
+                    effective_values[rid] = ("set", el.text or "")
+                elif el.get("selector") is not None:
+                    saw_refine.add(rid)
+                    effective_values[rid] = ("refine", el.get("selector"))
+    fallbacks, materialized_values = {}, {}
+    for rid in sorted(refined):
+        kind, selector = effective_values.get(rid, (None, None))
+        if kind == "set" and rid in saw_refine:
+            # Refinement deduplication can move inherited selector attributes
+            # after this assignment. Reassert the final scalar after that
+            # normalization so cross-type document order stays unchanged.
+            materialized_values[rid] = selector
+            continue
+        if kind != "refine":
+            continue
+        choices = value_choices(rid)
+        matches = [v for v in choices if v.get("selector", "") == selector]
+        unmatched = not matches
+        resolved = matches or default_choices(choices)
+        if len(resolved) != 1 or resolved[0].tag != X + "value":
+            raise ValueError("tailoring value selector has no unique scalar value: " + rid)
+        value = "".join(resolved[0].itertext())
+        if unmatched:
+            fallbacks[rid] = value
+        if unmatched or rid in saw_set:
+            materialized_values[rid] = value
+    if materialized_values:
+        profile = chain[0]
+        # Put effective assignments after all source selectors and before
+        # trailing metadata/signatures. Deduplication below removes earlier
+        # local assignments without overriding a later refinement's value.
+        index = next((i for i, el in enumerate(profile) if el.tag in (X + "metadata", X + "signature")), len(profile))
+        for rid, value in materialized_values.items():
+            el = ET.Element(X + "set-value", idref=rid)
+            el.text = value
+            profile.insert(index, el)
+            index += 1
+
+    if inherited:
+        # Materialize intermediary benchmark overrides into the oldest local
+        # profile. This also makes inherited value-cluster aliases work on the
+        # pinned RPM engine without modifying the original datastream.
+        oldest = chain[-1]
+        children = list(oldest)
+        index = next(
+            (
+                i
+                for i, el in enumerate(children)
+                if el.tag
+                in (
+                    X + "select",
+                    X + "set-value",
+                    X + "refine-value",
+                    X + "refine-rule",
+                    X + "metadata",
+                    X + "signature",
+                )
+            ),
+            len(children),
+        )
+        oldest[:] = children[:index] + inherited + children[index:]
+
+    needs_normalization = bool(has_clusters or has_repeated or inherited or materialized_values)
+    if needs_normalization and signature_present:
+        raise ValueError(
+            "signed tailoring cannot be normalized; use an unsigned equivalent or avoid rewriting selectors"
+        )
+    if needs_normalization:
+        # Expansion can produce overlapping concrete targets. Preserve the
+        # last assignment per selector, merging partial refinement attributes
+        # across inheritance layers instead of creating duplicate idrefs.
+        for profile in local.values():
+            merged, positions = [], {}
+            for element in profile:
+                if element.tag in (X + "select", X + "set-value", X + "refine-value", X + "refine-rule"):
+                    key = (element.tag, element.get("idref"))
+                    if key in positions:
+                        previous = merged[positions[key]]
+                        if element.tag in (X + "refine-value", X + "refine-rule"):
+                            element = copy.deepcopy(element)
+                            element.attrib.update({**previous.attrib, **element.attrib})
+                        merged[positions[key]] = None
+                    positions[key] = len(merged)
+                merged.append(element)
+            profile[:] = [el for el in merged if el is not None]
+
+    # OpenSCAP 1.3.6 resolves rule clusters but not value clusters. Normalize
+    # aliases for the selected inheritance chain, retaining their original
+    # references in metadata. Both original and evaluated bytes are hashed.
+    ET.register_namespace("", X[1:-1])
+    if needs_normalization:
+        # The pinned RPM XML reader skips adjacent empty selector elements
+        # without inter-element whitespace. Keep generated directives apart.
+        for element in [tailoring] + list(local.values()):
+            for child in element:
+                if not child.tail or not child.tail.strip():
+                    child.tail = "\n  "
+    evaluated = ET.tostring(tailoring, encoding="utf-8", xml_declaration=True) if needs_normalization else raw
+    if len(evaluated) > 16 << 20:
+        raise ValueError("expanded tailoring XML exceeds 16 MiB")
+    if evaluated_path:
+        with open(evaluated_path, "xb") as f:
+            f.write(evaluated)
+
+    def explicitly_deselected(rule):
+        # Group selection applies at its own level: selecting a child cannot
+        # override a false ancestor. Conversely, selecting a Group does not
+        # undo an explicit deselection on one of its children.
+        current = rule
+        while current is not None:
+            if selected.get(current.get("id")) is False and custom_selection.get(current.get("id")) is False:
+                return True
+            current = parent.get(current)
+        return False
+
+    lines = []
+    for rid in sorted(rules):
+        refs = rule_references(rules[rid])
+        svs = sorted({(r.text or "").strip() for r in refs if r.get("href") == HREF_RULE})
+        vids = sorted({(r.text or "").strip() for r in refs if r.get("href") == HREF_VULN})
+        lines.append(rid + "\t" + " ".join(svs) + "\t" + " ".join(vids))
+    return {
+        "schema": "stig-scanner-orb/tailoring/v1",
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "signature_present": signature_present,
+        "signature_verification": "not-performed" if signature_present else "not-present",
+        "evaluated_sha256": hashlib.sha256(evaluated).hexdigest(),
+        "clusters_expanded": has_clusters,
+        "repeated_selectors_normalized": has_repeated,
+        "benchmark_overrides_materialized": bool(inherited),
+        "value_fallbacks_materialized": sorted(fallbacks),
+        "value_overrides_materialized": sorted(materialized_values),
+        "datastream_sha256": hashlib.sha256(source).hexdigest(),
+        "benchmark_id": bench.get("id"),
+        "benchmark_version": bench.findtext(X + "version"),
+        "benchmark_href": links[0].get("href"),
+        "profile_id": profile_id,
+        "profile_title": (
+            " ".join("".join(local[profile_id].find(X + "title").itertext()).split())
+            if local[profile_id].find(X + "title") is not None
+            else ""
+        )
+        or profile_id,
+        "base_profile_id": base_profile,
+        "base_profile_ancestry": ancestry,
+        "references_sha256": hashlib.sha256("\n".join(lines).encode()).hexdigest(),
+        "deselected_rules": sorted(rid for rid, rule in rules.items() if explicitly_deselected(rule)),
+        "values": refined,
+        "rule_refinements": rule_refinements,
+    }
+
+
+if __name__ == "__main__":
+    try:
+        meta = prepare(*sys.argv[1:4], evaluated_path=sys.argv[5])
+        encoded = (json.dumps(meta, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        if len(encoded) > 16 << 20:
+            raise ValueError("derived tailoring metadata exceeds 16 MiB")
+        with open(sys.argv[4], "xb") as f:
+            f.write(encoded)
+    except (OSError, ValueError, ET.ParseError) as exc:
+        print("ERROR: invalid tailoring: " + str(exc), file=sys.stderr)
+        sys.exit(2)
+PY_TAILORING
+    # Validate with the exact OpenSCAP that will evaluate it, offline and before
+    # any target evaluation. Schema errors and missing profiles fail closed.
+    docker run --rm --network none -u 0:0 "${tailoring_mount_args[@]}" \
+        --entrypoint oscap "${SCANNER_ID}" xccdf validate --skip-schematron "${TAILORING_PATH}"
+    TAILORING_SHA256="$(sha256sum "${TAILORING_SNAP_DIR}/tailoring.xml" | awk '{print $1}')"
+    TAILORING_EVALUATED_SHA256="$(sha256sum "${TAILORING_SNAP_DIR}/evaluated.xml" | awk '{print $1}')"
+    TAILORING_META_SHA256="$(sha256sum "${TAILORING_SNAP_DIR}/meta.json" | awk '{print $1}')"
 fi
 # ${a[@]+"${a[@]}"}: an empty array is an unbound variable under set -u
 # in bash < 4.4 (e.g. the macOS system bash used for local runs).
@@ -887,7 +1441,7 @@ fi
 # contain the scratch rootfs), and /out is the scanner's one writable
 # mount. The two reports are copied out afterwards.
 OUT_STAGE_DIR="$(mktemp -d -t stig-out.XXXXXX)"
-mount_args=( "${ROOTFS_MOUNT[@]}" -v "${OUT_STAGE_DIR}:/out" ${ds_mount_args[@]+"${ds_mount_args[@]}"} )
+mount_args=( "${ROOTFS_MOUNT[@]}" -v "${OUT_STAGE_DIR}:/out" ${ds_mount_args[@]+"${ds_mount_args[@]}"} ${tailoring_mount_args[@]+"${tailoring_mount_args[@]}"} )
 
 # Hash the datastream as the scanner sees it: same image, same mount, same
 # path and same user (root) as oscap-chroot below. The image's default user
@@ -902,6 +1456,10 @@ esac
 if [ "${#DATASTREAM_SHA256}" -ne 64 ]; then
     echo "WARNING: could not hash ${DATASTREAM_IN_SCANNER_PATH} inside the scanner image; datastream_sha256 will be empty." >&2
     DATASTREAM_SHA256=""
+    if [ -n "${TAILORING_FILE}" ]; then
+        echo "ERROR: a tailored scan requires a hashed datastream." >&2
+        exit 2
+    fi
 fi
 
 echo "==> Running oscap-chroot"
@@ -913,11 +1471,16 @@ docker run --rm --network none -u 0:0 \
     "${mount_args[@]}" \
     -e PROFILE="${PROFILE}" \
     -e DS_PATH="${DATASTREAM_IN_SCANNER_PATH}" \
+    -e TAILORING_PATH="${TAILORING_PATH}" \
     -e HOST_UID="${HOST_UID}" \
     -e HOST_GID="${HOST_GID}" \
     --entrypoint /bin/sh \
     "${SCANNER_ID}" -c '
-        oscap-chroot /target xccdf eval \
+        set --
+        if [ -n "${TAILORING_PATH}" ]; then
+            set -- --tailoring-file "${TAILORING_PATH}"
+        fi
+        oscap-chroot /target xccdf eval "$@" \
             --profile "${PROFILE}" \
             --report /out/report.html \
             --results /out/results.xml \
@@ -958,6 +1521,10 @@ if [ ! -s "${OUTPUT_DIR_ABS}/results.xml" ] || [ ! -s "${OUTPUT_DIR_ABS}/report.
     exit 1
 fi
 
+if [ -n "${TAILORING_FILE}" ]; then
+    cp -- "${TAILORING_SNAP_DIR}/meta.json" "${OUTPUT_DIR_ABS}/tailoring-meta.json"
+fi
+
 # --- 7. record what produced these reports ------------------------------
 # summarize.sh turns this into the provenance block of summary.txt and
 # provenance.json. One key=value per line; list values are comma-separated.
@@ -983,6 +1550,13 @@ fi
         echo "donor_used_for=${DONOR_USED_FOR}"
     fi
     echo "profile=${PROFILE}"
+    if [ -n "${TAILORING_FILE}" ]; then
+        echo "tailoring_file=${TAILORING_FILE}"
+        echo "tailoring_sha256=${TAILORING_SHA256}"
+        echo "tailoring_profile=${PROFILE}"
+        echo "tailoring_evaluated_sha256=${TAILORING_EVALUATED_SHA256}"
+        echo "tailoring_meta_sha256=${TAILORING_META_SHA256}"
+    fi
     echo "family=${FAMILY}"
     if [ -n "${RPM_STATUS}" ]; then
         echo "rpm_status=${RPM_STATUS}"

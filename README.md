@@ -341,6 +341,126 @@ ZIP hash/member where applicable; `checklist-meta.json` and `provenance.json`
 also record them. The `bundle` metadata block identifies the content-matched
 reference separately from a supplied skeleton.
 
+### XCCDF tailoring
+
+Set `tailoring_file` to a local XCCDF 1.2 tailoring XML file and `profile_id`
+to a profile defined in that file. The profile must extend a profile in the
+scanned benchmark; inheritance can pass through intermediary profiles in the
+benchmark. Profiles in the tailoring file cannot extend other tailoring profiles,
+including another profile that shadows a benchmark profile.
+Stage the file before the scan (use checkout or a pre-step). For example:
+
+```yaml
+- stig-scanner-orb/scan:
+    image: registry.access.redhat.com/ubi9/ubi:latest
+    target_base: rhel9
+    tailoring_file: security/rhel9-tailoring.xml
+    profile_id: xccdf_org.example_profile_site_stig
+    checklist: require
+```
+
+The tailoring XML can contain a profile such as:
+
+```xml
+<Tailoring xmlns="http://checklists.nist.gov/xccdf/1.2"
+           id="xccdf_org.example_tailoring_site">
+  <benchmark href="ssg-rhel9-ds.xml"/>
+  <version time="2026-10-14T00:00:00Z">1</version>
+  <Profile id="xccdf_org.example_profile_site_stig"
+           extends="xccdf_org.ssgproject.content_profile_stig">
+    <title>Site STIG values</title>
+    <set-value idref="xccdf_org.ssgproject.content_value_var_password_pam_minlen">18</set-value>
+    <refine-value idref="xccdf_org.ssgproject.content_value_var_accounts_user_umask"
+                  selector="077"/>
+  </Profile>
+</Tailoring>
+```
+
+Use tailoring to set site values or add checks. Keep host rules selected:
+the checklist already explains their N/A outcomes. Explicitly deselected checks
+remain **Not Reviewed** in complete DISA checklists, with the tailored profile
+and rule names recorded. This also applies when a requirement has several
+scanner checks and tailoring deselects only one: the remaining automated result
+stays as evidence, but cannot assess the complete requirement. For tailored
+scans, any shared requirement with an unselected contributor is conservatively
+Not Reviewed, including exclusions caused by dependencies, conflicts or stock
+selection state. The evidence distinguishes these from explicit tailoring
+deselections. The SSG-only model omits these partial rows. A fully deselected
+STIG can generate a complete Not Reviewed checklist; the separate default
+`require_evaluated_rules` gate still fails a scan with zero evaluated Rules.
+Set that option to `false` only when intentionally creating such a checklist.
+If no platform evaluation was recorded, the checklist says applicability was
+not established and keeps every requirement Not Reviewed. Tailored generation
+requires a complete DISA reference (the pinned bundle, or `stig_xccdf_path`) because additions can
+fall outside a stock profile's verified release mapping. Every selected mapped
+V-ID must exist in the DISA reference; any missing row fails generation.
+Selected Rules without pairable DISA references also fail, except for the exact
+pinned profile's verified reference-free support checks. Custom datastreams
+cannot use that allowlist, and malformed references never qualify. A
+tailored CIS or other non-STIG profile still skips checklist generation under `auto` and fails
+under `require`.
+
+Both scanners validate tailoring offline before evaluation. The orb snapshots
+and hashes the file using the scanner's root user, so a root-owned 0600 file
+can be used. It accepts UTF-8 XCCDF 1.2 XML up to 16 MiB, without DTDs or entity
+declarations, against a datastream containing exactly one Benchmark. Profile
+ids must be unique within the tailoring file. A tailoring profile may shadow a
+benchmark profile only when its `id` and `extends` both equal the benchmark
+profile's id. Unknown references, cycles, and invalid selectors are refused;
+repeated profile selectors apply in document order, including value overrides
+across selector types. Each tailoring profile must extend a source benchmark
+profile; local-to-local tailoring inheritance is refused. Bases and directives
+are validated for unused profiles too; only the selected profile affects the
+scan. The benchmark `href` is recorded as a source label; the explicitly selected
+datastream is the input, and the orb never fetches that href. The tailoring file itself is never mounted into the
+target filesystem or reopened after the scan snapshot is made. Its path must
+not collide with a generated artifact; such collisions are rejected before cleanup.
+After path safety checks, old scan evidence is removed before preflight, so a
+failed new tailoring cannot republish a preceding scan's results or provenance.
+
+Signed tailoring is passed through unchanged only when no normalization is
+needed. Signed inputs requiring selector/cluster/value rewriting are rejected;
+the orb does not verify XML signatures. Signature presence and verification
+status are recorded in the tailoring manifest.
+
+Inherited Rule and Group platforms are resolved before applicability and target
+architecture decisions. Inherited references are resolved for mapping and
+source verification.
+Both pinned engines can drop inherited reference metadata when writing
+results; conversion then fails closed instead of omitting a contributing Rule.
+
+Value evidence follows the check recorded in TestResult when its source
+exports can be identified. If check evidence is missing or ambiguous, the row
+labels the setting as global TestResult evidence whose use by that Rule is
+unverified; alternative checks may not have run. Rule refinements retain the
+requested selector, role, severity and weight alongside properties recorded in
+TestResult. Stock-unselected checks retain requested refinements and values,
+explicitly labeled as settings for checks that were not evaluated. Official
+DISA checklist severity stays unchanged. Provenance uses the tailored profile
+title from the hash-verified manifest. STIG-named intermediary profiles retain
+their customization directives above the source STIG ancestor.
+
+Summary verifies the scan plan's results hash before publishing tailored
+identity, even when checklist generation is disabled.
+
+`scan-plan.env` and `provenance.json` record the original file path, its SHA-256
+and the tailored profile id. `tailoring-meta.json` records the inherited base
+profile, source datastream hash, Rule/DISA reference inventory, deselections
+and value directives; its own hash binds it to the scan plan. Conversion checks
+that inventory against every rule in `results.xml` and refuses output if
+OpenSCAP did not apply a requested deselection. A known datastream still
+uses its pinned DISA release; stock profiles retain their exact selection
+checks. Each checklist row carries the tailoring hash, and affected rows list
+custom values alongside the values OpenSCAP resolved in `TestResult`. Scalar
+`set-value` and `refine-value` settings are recorded. Complex-value tailoring
+(`set-complex-value` or a complex refinement selector) is refused before
+evaluation: the pinned RPM OpenSCAP validates that XML but does not resolve
+vector settings reliably. Directives can target concrete item ids or
+`cluster-id` aliases. The orb expands aliases to concrete rules, groups or
+values in the XML passed to OpenSCAP, since the pinned RPM scanner ignores
+value-cluster aliases. Both original and evaluated XML hashes are recorded. A selected child cannot override a deselected ancestor group. Original
+scan gates, finding ignores and artifact publication policies continue to apply.
+
 Open `.cklb` in STIG Viewer 3, or use **Import V2 Checklist** for `.ckl`.
 STIG Manager imports either format. Verify the intended asset and STIG revision
 before merging reviews. STIG Viewer's optional loose Rule ID matching does not

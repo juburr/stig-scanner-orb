@@ -61,6 +61,13 @@ parameters:
       Host-local path to a datastream file. Bypasses the donor flow
       entirely. Use this for air-gapped consumers who mirror SCAP
       content via their own pipeline.
+  tailoring_file:
+    type: string
+    default: ""
+    description: >
+      Host-local XCCDF 1.2 tailoring XML (at most 16 MiB). Snapshotted
+      and hashed offline; profile_id must name a profile in this file
+      extending a profile from the scanned benchmark.
   profile_id:
     type: string
     default: ""
@@ -109,6 +116,7 @@ steps:
         PARAM_SCANNER_IMAGE: <<parameters.scanner_image>>
         PARAM_DATASTREAM_NAME: <<parameters.datastream_name>>
         PARAM_DATASTREAM_PATH: <<parameters.datastream_path>>
+        PARAM_TAILORING_FILE: <<parameters.tailoring_file>>
         PARAM_PROFILE_ID: <<parameters.profile_id>>
         PARAM_OUTPUT_DIR: <<parameters.output_dir>>
         PARAM_DONOR_IMAGE: <<parameters.donor_image>>
