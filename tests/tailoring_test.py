@@ -116,7 +116,8 @@ class TailoringTests(unittest.TestCase):
         self.tail_path.unlink()  # Conversion cannot reopen the caller's input.
         rc, result = self.generate(self.save_skeleton())
         self.assertEqual((rc, result["outcome"]), (0, "generated"), result)
-        self.assertEqual(result["tailoring"], meta)
+        self.assertEqual(result["tailoring"]["sha256"], meta["sha256"])
+        self.assertEqual(result["tailoring"]["metadata_sha256"], self.plan["tailoring_meta_sha256"])
         rows = {v["group_id"]: v for v in self.rows()}
         self.assertEqual(rows["V-1"]["status"], "not_a_finding")
         self.assertIn("'18' (resolved by OpenSCAP)", rows["V-1"]["finding_details"])
@@ -250,6 +251,94 @@ class TailoringTests(unittest.TestCase):
         self.assertIsNone(meta["values"][VALUE]["value"])
         self.assertEqual(meta["values"][VALUE]["operator"], "greater than or equal")
 
+    def test_selector_without_matching_value_uses_scalar_default(self):
+        ds = source()
+        ET.SubElement(ds.find(X + "Value"), X + "lower-bound", selector="bounded").text = "10"
+        root = tailoring()
+        prof = root.find(X + "Profile")
+        prof.remove(prof.find(X + "set-value"))
+        setting = ET.SubElement(prof, X + "refine-value", idref=VALUE, selector="bounded")
+        for selector in ("bounded", "unknown", ""):
+            setting.set("selector", selector)
+            meta = self.preflight(root, ds)
+            self.assertEqual(meta["values"][VALUE]["value"], "15")
+            self.assertEqual(meta["values"][VALUE]["selector"], selector)
+        value = ds.find(X + "Value")
+        value.remove(value.find(X + "value"))
+        variant = ET.SubElement(value, X + "complex-value")
+        ET.SubElement(variant, X + "item").text = "vector"
+        with self.assertRaisesRegex(ValueError, "complex-value refinements are not supported"):
+            self.preflight(root, ds)
+
+    def test_default_fallback_materializes_without_overriding_explicit_values(self):
+        root = tailoring()
+        prof = root.find(X + "Profile")
+        prof.remove(prof.find(X + "set-value"))
+        ET.SubElement(prof, X + "refine-value", idref=VALUE, selector="bounded")
+        self.preflight(root)
+        evaluated = self.out / "evaluated.xml"
+        meta = PRE["prepare"](str(self.tail_path), str(self.ds_path), CUSTOM, str(evaluated))
+        self.assertEqual(meta["value_fallbacks_materialized"], [VALUE])
+        self.assertEqual(ET.parse(evaluated).find(".//" + X + "set-value").text, "15")
+        self.assertNotEqual(meta["sha256"], meta["evaluated_sha256"])
+        for layer in ("local", "base"):
+            ds = source()
+            target = prof if layer == "local" else ds.find(X + "Profile")
+            setting = ET.SubElement(target, X + "set-value", idref=VALUE)
+            setting.text = "25"
+            self.assertEqual(self.preflight(root, ds)["value_fallbacks_materialized"], [])
+            target.remove(setting)
+
+    def test_large_tailoring_manifest_keeps_summary_metadata_compact(self):
+        _, meta = self.tailored()
+        # A large, valid directive history must stay in the separate manifest.
+        meta["values"][VALUE]["directives"][0]["value"] = "1" * (1 << 20)
+        self.save_meta(meta)
+        rc, result = self.generate(self.save_skeleton())
+        self.assertEqual((rc, result["outcome"]), (0, "generated"), result)
+        self.assertLess((self.out / "checklist-meta.json").stat().st_size, 1 << 20)
+        self.assertNotIn("values", result["tailoring"])
+        self.assertEqual(self.summary("require").returncode, 0)
+        # The real artifact guard must retain the valid generated files too.
+        env = dict(os.environ, PARAM_OUTPUT_DIR=str(self.out), PARAM_CHECKLIST_GUARD="true")
+        subprocess.run(["bash", str(common.ROOT / "src/scripts/checklist.sh")], env=env, check=True)
+        self.assertTrue((self.out / "checklist.cklb").exists())
+
+    def test_base_profile_and_item_group_defaults_constrain_requested_selections(self):
+        for layer in ("base", "ancestor", "item"):
+            with self.subTest(layer=layer):
+                ds, meta = self.tailored()
+                for ref in list(ds.iter(X + "Rule"))[1].findall(X + "reference"):
+                    ref.text = "SV-1r1_rule" if ref.get("href") == MOD["HREF_RULE"] else "V-1"
+                if layer == "item":
+                    ds.findall(X + "Group")[1].set("selected", "false")
+                else:
+                    base = ds.find(X + "Profile")
+                    if layer == "ancestor":
+                        ancestor = "xccdf_org.example_profile_baseline"
+                        base.set("extends", ancestor)
+                        base = ET.SubElement(ds, X + "Profile", id=ancestor)
+                    ET.SubElement(base, X + "select", idref="g-two", selected="false")
+                root = tailoring()
+                root.find(X + "Profile").find(X + "select").set("selected", "true")
+                meta = self.preflight(root, ds)
+                self.assertEqual(meta["deselected_rules"], ["two"])
+                meta["datastream_sha256"] = H
+                self.prepare(ds, register=False)
+                self.save_meta(meta)
+                rc, result = self.generate(self.save_skeleton())
+                self.assertEqual((rc, result["outcome"]), (0, "generated"), result)
+                self.assertEqual(self.rows()[0]["status"], "not_reviewed")
+                self.assertIn("one: pass", self.rows()[0]["finding_details"])
+                # An explicit group override can enable the requested child.
+                ET.SubElement(root.find(X + "Profile"), X + "select", idref="g-two", selected="true")
+                self.assertEqual(self.preflight(root, ds)["deselected_rules"], [])
+
+    def test_untouched_stock_deselections_are_not_tailoring_overrides(self):
+        ds = source()
+        ET.SubElement(ds.find(X + "Profile"), X + "select", idref="g-one", selected="false")
+        self.assertEqual(self.preflight(ds=ds)["deselected_rules"], ["two"])
+
     def test_unknown_profiles_cycles_shadowing_and_duplicate_ids(self):
         for change in ("missing", "cycle", "shadow", "duplicate"):
             root = tailoring()
@@ -266,7 +355,7 @@ class TailoringTests(unittest.TestCase):
                 self.preflight(root)
 
     def test_unknown_directives_and_duplicate_values_rejected(self):
-        for change in ("unknown_rule", "unknown_value", "selector", "duplicate", "flag"):
+        for change in ("unknown_rule", "unknown_value", "duplicate", "flag"):
             root = tailoring()
             prof = root.find(X + "Profile")
             if change == "unknown_rule":

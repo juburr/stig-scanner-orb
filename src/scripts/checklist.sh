@@ -2253,7 +2253,17 @@ def main():
                 "profile_id": res["profile_id"],
                 "outcome": "generated",
                 "host_name": host_name,
-                "tailoring": tailoring,
+                # The detailed manifest has a separate 16 MiB budget. Keep
+                # this summary within the guard/summarizer's 1 MiB contract.
+                "tailoring": ({
+                    "sha256": tailoring["sha256"],
+                    "evaluated_sha256": tailoring["evaluated_sha256"],
+                    "profile_id": tailoring["profile_id"],
+                    "datastream_sha256": tailoring["datastream_sha256"],
+                    "metadata_sha256": plan["tailoring_meta_sha256"],
+                    "deselected_rule_count": len(tailoring["deselected_rules"]),
+                    "value_count": len(tailoring["values"]),
+                } if tailoring else None),
                 "release_source": "skeleton" if a.stig_xccdf_path else "bundle" if baseline else "table",
                 "bundle": (
                     {

@@ -14,6 +14,7 @@ plan = dict(line.split("=", 1) for line in (out / "scan-plan.env").read_text().s
 assert tailoring["evaluated_sha256"] == plan["tailoring_evaluated_sha256"]
 assert tailoring["profile_id"] == plan["profile"] == plan["tailoring_profile"]
 assert tailoring["datastream_sha256"] == plan["datastream_sha256"]
+assert tailoring["metadata_sha256"] == plan["tailoring_meta_sha256"]
 assert plan["tailoring_meta_sha256"] == hashlib.sha256((out / "tailoring-meta.json").read_bytes()).hexdigest()
 assert meta["outcome"] == "generated" and meta["release_source"] == "bundle"
 rows = {r["group_id"]: r for r in json.loads((out / "checklist.cklb").read_text())["stigs"][0]["rules"]}

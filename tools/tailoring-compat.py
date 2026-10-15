@@ -26,7 +26,7 @@ RULES = ["xccdf_org.example_rule_one", "xccdf_org.example_rule_two"]
 ET.register_namespace("", X[1:-1])
 
 
-def benchmark():
+def benchmark(case):
     root = ET.Element(X + "Benchmark", id="xccdf_org.example_benchmark_compat")
     for tag, value in [("status", "draft"), ("title", "Compatibility"), ("version", "1")]:
         ET.SubElement(root, X + tag).text = value
@@ -44,19 +44,35 @@ def benchmark():
     for rid in RULES:
         rule = ET.SubElement(group, X + "Rule", id=rid, selected="true", severity="low", **{"cluster-id": "rules"})
         ET.SubElement(rule, X + "title").text = rid
+    if case == "base-group":
+        ET.SubElement(root.find(X + "Profile"), X + "select", idref=G, selected="false")
+    if case == "default-group":
+        group.set("selected", "false")
+    if case == "fallback":
+        p.remove(p.find(X + "set-value"))
+        value.set("type", "number")
+        value.find(X + "value").text = "15"
+        ET.SubElement(value, X + "lower-bound", selector="bounded").text = "10"
     return root
 
 
-def tailoring(group_case):
+def tailoring(case):
     root = ET.Element(X + "Tailoring", id="xccdf_org.example_tailoring_compat")
     ET.SubElement(root, X + "benchmark", href="benchmark.xml")
     ET.SubElement(root, X + "version", time="2026-10-15T00:00:00Z").text = "1"
     p = ET.SubElement(root, X + "Profile", id=CUSTOM, extends=MID)
     ET.SubElement(p, X + "title").text = "Custom"
-    ET.SubElement(p, X + "select", idref="groups" if group_case else "rules", selected="false")
-    if group_case:
-        ET.SubElement(p, X + "select", idref=RULES[0], selected="true")
-    ET.SubElement(p, X + "set-value", idref="settings").text = "custom"
+    if case in ("base-group", "default-group"):
+        for rid in RULES:
+            ET.SubElement(p, X + "select", idref=rid, selected="true")
+    else:
+        ET.SubElement(p, X + "select", idref="groups" if case == "group" else "rules", selected="false")
+        if case == "group":
+            ET.SubElement(p, X + "select", idref=RULES[0], selected="true")
+    if case == "fallback":
+        ET.SubElement(p, X + "refine-value", idref=V, selector="bounded")
+    else:
+        ET.SubElement(p, X + "set-value", idref="settings").text = "custom"
     return root
 
 
@@ -65,15 +81,17 @@ images = [
     for name in ("DEFAULT_RPM_SCANNER_IMAGE", "DEFAULT_CHAINGUARD_IMAGE")
 ]
 for image in images:
-    for group_case in (False, True):
+    for case in ("rule-cluster", "group", "base-group", "default-group", "fallback"):
         with tempfile.TemporaryDirectory(prefix="stig-tailoring-compat-") as directory:
             directory = Path(directory)
-            ET.ElementTree(benchmark()).write(directory / "benchmark.xml", encoding="utf-8", xml_declaration=True)
+            bench = benchmark(case)
+            for element in bench.iter():
+                for child in element:
+                    child.tail = "\n  "
+            ET.ElementTree(bench).write(directory / "benchmark.xml", encoding="utf-8", xml_declaration=True)
             # Deliberately compact: adjacent generated empty selectors exposed
             # a real skip in the pinned RPM XML reader without separators.
-            ET.ElementTree(tailoring(group_case)).write(
-                directory / "original.xml", encoding="utf-8", xml_declaration=True
-            )
+            ET.ElementTree(tailoring(case)).write(directory / "original.xml", encoding="utf-8", xml_declaration=True)
             meta = preflight["prepare"](
                 str(directory / "original.xml"),
                 str(directory / "benchmark.xml"),
@@ -112,5 +130,6 @@ for image in images:
             res = checklist["parse_results"](str(directory / "results.xml"), meta)
             checklist["validate_tailored_results"](res, meta)
             assert res["results"] == {rid: "notselected" for rid in RULES}, res["results"]
-            assert res["set_values"][V] == "custom", res["set_values"]
-        print(f"{image}: {'group hierarchy' if group_case else 'rule cluster'} and value-cluster settings applied")
+            expected = "15" if case == "fallback" else "custom"
+            assert res["set_values"][V] == expected, res["set_values"]
+        print(f"{image}: {case} selections and resolved values verified")

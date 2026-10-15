@@ -1004,7 +1004,15 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
     # own defaults so they are not mislabeled as tailoring overrides.
     anchor = next((i for i, pid in enumerate(ancestry) if re.search(r"_profile_stig(_gui)?$", pid)), 0)
     trace = chain + [original[pid] for pid in ancestry[:anchor]]
-    selected, refined = {}, {}
+    # Resolve stock selection state too, including item defaults and every
+    # benchmark ancestor. Only selections touched by customization become
+    # tailoring evidence; ordinary stock exclusions remain stock exclusions.
+    selected = {rid: item.get("selected", "true") in ("true", "1") for rid, item in {**groups, **rules}.items()}
+    for pid in reversed(ancestry):
+        for el in original[pid].findall(X + "select"):
+            for rid in resolve(el.get("idref"), {**rules, **groups}, "rule/group or cluster"):
+                selected[rid] = el.get("selected") in ("true", "1")
+    touched, refined = set(), {}
     has_clusters = False
     inherited = []
     for profile in reversed(trace):
@@ -1028,6 +1036,7 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
                     raise ValueError("invalid tailoring selected flag")
                 for rid in targets:
                     selected[rid] = flag in ("true", "1")
+                    touched.update([rid] if rid in rules else (r.get("id") for r in groups[rid].iter(X + "Rule")))
             elif tag in ("set-value", "refine-value"):
                 targets = resolve(ref, values, "value or value cluster")
                 for rid in targets:
@@ -1036,7 +1045,12 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
                     else:
                         choices = values[rid].findall(X + "value") + values[rid].findall(X + "complex-value")
                         matches = [v for v in choices if v.get("selector", "") == el.get("selector")]
-                        if el.get("selector") is not None and len(matches) != 1:
+                        # A selector applies independently to value, bounds,
+                        # choices, etc. If it has no value match, XCCDF uses
+                        # the default value rather than rejecting the selector.
+                        if el.get("selector") is not None and not matches:
+                            matches = [v for v in choices if not v.get("selector")]
+                        if len(matches) > 1:
                             raise ValueError("tailoring value selector does not resolve uniquely: " + str(rid))
                         if (matches and matches[0].tag == X + "complex-value") or (
                             el.get("selector") is None
@@ -1083,6 +1097,40 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
                 if el.tag in (X + "select", X + "set-value", X + "refine-value", X + "refine-rule")
             )
 
+    # The pinned RPM engine can resolve an unmatched value selector to an
+    # empty string. Materialize its scalar default as a set-value, preserving
+    # the refine-value's selection of bounds/choices. An explicit set-value
+    # anywhere in the inheritance chain remains authoritative.
+    explicit_values, selectors = set(), {}
+    for profile in [original[pid] for pid in reversed(ancestry)] + list(reversed(chain)):
+        for el in profile:
+            if el.tag not in (X + "set-value", X + "refine-value"):
+                continue
+            for rid in resolve(el.get("idref"), values, "value or value cluster"):
+                if el.tag == X + "set-value":
+                    explicit_values.add(rid)
+                elif el.get("selector") is not None:
+                    selectors[rid] = el.get("selector")
+    fallbacks = {}
+    for rid in sorted(set(refined) - explicit_values):
+        if rid not in selectors:
+            continue
+        choices = values[rid].findall(X + "value") + values[rid].findall(X + "complex-value")
+        if any(v.get("selector", "") == selectors[rid] for v in choices):
+            continue
+        defaults = [v for v in choices if not v.get("selector")]
+        if len(defaults) != 1 or defaults[0].tag != X + "value":
+            raise ValueError("tailoring value selector has no unique scalar default: " + rid)
+        fallbacks[rid] = "".join(defaults[0].itertext())
+    if fallbacks:
+        profile = chain[0]
+        index = next((i for i, el in enumerate(profile) if el.tag == X + "refine-value"), len(profile))
+        for rid, value in fallbacks.items():
+            el = ET.Element(X + "set-value", idref=rid)
+            el.text = value
+            profile.insert(index, el)
+            index += 1
+
     if inherited:
         # Materialize intermediary benchmark overrides into the oldest local
         # profile. This also makes inherited value-cluster aliases work on the
@@ -1099,7 +1147,7 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
         )
         oldest[:] = children[:index] + inherited + children[index:]
 
-    if has_clusters or inherited:
+    if has_clusters or inherited or fallbacks:
         # Expansion can produce overlapping concrete targets. Preserve the
         # last assignment per selector, merging partial refinement attributes
         # across inheritance layers instead of creating duplicate idrefs.
@@ -1122,14 +1170,18 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
     # aliases for the selected inheritance chain, retaining their original
     # references in metadata. Both original and evaluated bytes are hashed.
     ET.register_namespace("", X[1:-1])
-    if has_clusters or inherited:
+    if has_clusters or inherited or fallbacks:
         # The pinned RPM XML reader skips adjacent empty selector elements
         # without inter-element whitespace. Keep generated directives apart.
         for element in [tailoring] + list(local.values()):
             for child in element:
                 if not child.tail or not child.tail.strip():
                     child.tail = "\n  "
-    evaluated = ET.tostring(tailoring, encoding="utf-8", xml_declaration=True) if has_clusters or inherited else raw
+    evaluated = (
+        ET.tostring(tailoring, encoding="utf-8", xml_declaration=True)
+        if has_clusters or inherited or fallbacks
+        else raw
+    )
     if len(evaluated) > 16 << 20:
         raise ValueError("expanded tailoring XML exceeds 16 MiB")
     if evaluated_path:
@@ -1140,6 +1192,8 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
         # Group selection applies at its own level: selecting a child cannot
         # override a false ancestor. Conversely, selecting a Group does not
         # undo an explicit deselection on one of its children.
+        if rule.get("id") not in touched:
+            return False
         current = rule
         while current is not None:
             if selected.get(current.get("id")) is False:
@@ -1159,6 +1213,7 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
         "evaluated_sha256": hashlib.sha256(evaluated).hexdigest(),
         "clusters_expanded": has_clusters,
         "benchmark_overrides_materialized": bool(inherited),
+        "value_fallbacks_materialized": sorted(fallbacks),
         "datastream_sha256": hashlib.sha256(source).hexdigest(),
         "benchmark_id": bench.get("id"),
         "benchmark_version": bench.findtext(X + "version"),
