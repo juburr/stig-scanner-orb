@@ -1510,7 +1510,12 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
         # validated explicit deselections that map to this DISA reference,
         # while preserving selected-only coverage checks for unmatched V-IDs.
         tailored_deselections = set((res.get("tailoring") or {}).get("deselected_rules", []))
-        deselected_mapped = {vid for vid, rids in deselected.items() if set(rids) & tailored_deselections} & seen
+        all_unselected = (res.get("tailoring") and res["results"]
+                          and all(r == "notselected" for r in res["results"].values()))
+        deselected_mapped = {
+            vid for vid, rids in deselected.items()
+            if all_unselected or set(rids) & tailored_deselections
+        } & seen
         stig["selected_mapped_vids"] = len(selected_mapped)
         stig["mapped_vids"] = len(selected_mapped | deselected_mapped)
         stig["unpaired_refs"] = sorted(unpaired)
@@ -2328,6 +2333,9 @@ def main():
             mapped = missing + stig.get("selected_mapped_vids", stig["mapped_vids"])
             if not stig["mapped_vids"]:
                 raise ValueError("the DISA file shares no V-ID with selected or explicitly tailored-deselected scanner rules")
+            if tailoring and missing:
+                raise ValueError("the DISA reference cannot represent selected tailored V-IDs: " +
+                                 ", ".join(stig["unmatched_ssg_vids"][:10]))
             if missing > max(10, mapped // 20):
                 raise ValueError(
                     f"the DISA file lacks {missing} of the {mapped} V-IDs this scan maps: incomplete, or not this STIG"

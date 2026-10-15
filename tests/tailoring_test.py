@@ -344,6 +344,96 @@ class TailoringTests(unittest.TestCase):
         )
         self.assertEqual(summary.returncode, 0, summary.stderr)
 
+    def test_unused_profile_directives_are_validated_without_affecting_selected_metadata(self):
+        for change in ("rule", "value", "flag", "complex", "complex_selector", "scalar_child"):
+            with self.subTest(change=change):
+                ds = source()
+                root = tailoring()
+                other = ET.SubElement(root, X + "Profile", id="xccdf_org.example_profile_unused", extends=P)
+                ET.SubElement(other, X + "title").text = "Unused"
+                if change == "rule":
+                    ET.SubElement(other, X + "select", idref="unknown", selected="true")
+                elif change == "value":
+                    ET.SubElement(other, X + "set-value", idref="unknown").text = "20"
+                elif change == "flag":
+                    ET.SubElement(other, X + "select", idref="one", selected="invalid")
+                elif change == "complex":
+                    ET.SubElement(other, X + "set-complex-value", idref=VALUE)
+                elif change == "complex_selector":
+                    ET.SubElement(ds.find(X + "Value"), X + "complex-value", selector="vector")
+                    ET.SubElement(other, X + "refine-value", idref=VALUE, selector="vector")
+                else:
+                    ET.SubElement(ET.SubElement(other, X + "set-value", idref=VALUE), X + "remark")
+                with self.assertRaises(ValueError):
+                    self.preflight(root, ds)
+        root = tailoring()
+        other = ET.SubElement(root, X + "Profile", id="xccdf_org.example_profile_unused", extends=P)
+        ET.SubElement(other, X + "title").text = "Unused"
+        ET.SubElement(other, X + "select", idref="one", selected="false")
+        ET.SubElement(other, X + "set-value", idref=VALUE).text = "99"
+        meta = self.preflight(root)
+        self.assertEqual(meta["deselected_rules"], ["two"])
+        self.assertEqual(meta["values"][VALUE]["value"], "18")
+        self.assertTrue(all(d["profile_id"] == CUSTOM for d in meta["values"][VALUE]["directives"]))
+
+    def test_inherited_directives_precede_trailing_profile_metadata(self):
+        ds = source()
+        mid = "xccdf_org.example_profile_intermediary"
+        parent = ET.SubElement(ds, X + "Profile", id=mid, extends=P)
+        ET.SubElement(parent, X + "set-value", idref=VALUE).text = "20"
+        root = tailoring(base=mid)
+        prof = root.find(X + "Profile")
+        prof.remove(prof.find(X + "select"))
+        prof.remove(prof.find(X + "set-value"))
+        ET.SubElement(ET.SubElement(prof, X + "metadata"), "{urn:stig:compat}note").text = "Retained metadata"
+        self.preflight(root, ds)
+        evaluated = self.out / "evaluated.xml"
+        PRE["prepare"](str(self.tail_path), str(self.ds_path), CUSTOM, str(evaluated))
+        children = [e.tag for e in ET.parse(evaluated).find(X + "Profile")]
+        self.assertLess(children.index(X + "set-value"), children.index(X + "metadata"))
+
+    def test_tailored_selected_mapping_missing_from_disa_cannot_disappear(self):
+        ds, _ = self.tailored()
+        child = copy.deepcopy(next(ds.iter(X + "Rule")))
+        child.set("id", "added")
+        for ref in child.findall(X + "reference"):
+            ref.text = "SV-99r1_rule" if ref.get("href") == MOD["HREF_RULE"] else "V-99"
+        ds.find(X + "Group").append(child)
+        rr = ET.SubElement(ds.find(X + "TestResult"), X + "rule-result", idref="added")
+        ET.SubElement(rr, X + "result").text = "fail"
+        meta = self.preflight(ds=ds)
+        meta["datastream_sha256"] = H
+        self.prepare(ds, register=False)
+        self.save_meta(meta)
+        rc, result = self.generate(self.save_skeleton())
+        self.assertEqual((rc, result["outcome"]), (1, "failed"), result)
+        self.assertIn("V-99", result["reason"])
+        self.assertFalse((self.out / "checklist.ckl").exists())
+        self.assertFalse((self.out / "checklist.cklb").exists())
+
+    def test_fully_indirect_deselection_counts_real_result_mappings(self):
+        ds, _ = self.tailored()
+        group = ET.SubElement(ds, X + "Group", id="g-dependency")
+        ET.SubElement(group, X + "Rule", id="dependency")
+        for rule in ds.iter(X + "Rule"):
+            if rule.get("id") != "dependency":
+                ET.SubElement(rule, X + "requires", idref="dependency")
+        rr = ET.SubElement(ds.find(X + "TestResult"), X + "rule-result", idref="dependency")
+        ET.SubElement(rr, X + "result").text = "notselected"
+        for rr in ds.find(X + "TestResult").findall(X + "rule-result"):
+            rr.find(X + "result").text = "notselected"
+        root = tailoring()
+        root.find(X + "Profile").find(X + "select").set("idref", "dependency")
+        meta = self.preflight(root, ds)
+        self.assertEqual(meta["deselected_rules"], ["dependency"])
+        meta["datastream_sha256"] = H
+        self.prepare(ds, register=False)
+        self.save_meta(meta)
+        rc, result = self.generate(self.save_skeleton())
+        self.assertEqual((rc, result["outcome"]), (0, "generated"), result)
+        self.assertTrue(all(row["status"] == "not_reviewed" for row in self.rows()))
+        self.assertNotIn("Deselected by tailoring", self.rows()[0]["comments"])
+
     def test_ssg_only_omits_deselected_row(self):
         self.tailored()
         res = MOD["parse_results"](

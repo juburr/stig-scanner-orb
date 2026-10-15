@@ -1034,6 +1034,55 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
             raise ValueError("tailoring references an unknown " + what + ": " + str(ref))
         return targets
 
+    def inspect_directive(el):
+        tag = el.tag[len(X) :] if el.tag.startswith(X) else el.tag
+        if tag not in ("select", "set-value", "set-complex-value", "refine-value", "refine-rule"):
+            return None, [], {}
+        if tag == "set-complex-value":
+            raise ValueError("set-complex-value is not supported: this orb supports scalar tailoring values only")
+        ref = el.get("idref")
+        targets = resolve(
+            ref,
+            values if tag in ("set-value", "refine-value") else {**rules, **groups},
+            "value or value cluster" if tag in ("set-value", "refine-value") else "rule/group or cluster",
+        )
+        requested = {}
+        if tag == "select" and el.get("selected") not in ("true", "false", "1", "0"):
+            raise ValueError("invalid tailoring selected flag")
+        if tag == "set-value":
+            if len(el):
+                raise ValueError("set-value must contain scalar text only; child elements are not permitted")
+            requested = {rid: el.text or "" for rid in targets}
+        if tag == "refine-value":
+            for rid in targets:
+                choices = value_choices(rid)
+                matches = [v for v in choices if v.get("selector", "") == el.get("selector")]
+                if el.get("selector") is not None and not matches:
+                    matches = default_choices(choices)
+                if len(matches) > 1 or (el.get("selector") is not None and not matches):
+                    raise ValueError("tailoring value selector does not resolve uniquely: " + str(rid))
+                if (matches and matches[0].tag == X + "complex-value") or (
+                    el.get("selector") is None
+                    and default_choices(choices)
+                    and default_choices(choices)[0].tag == X + "complex-value"
+                ):
+                    raise ValueError("complex-value refinements are not supported: scalar tailoring values only")
+                requested[rid] = "".join(matches[0].itertext()) if matches else None
+        return tag, targets, requested
+
+    # Unused profiles are part of the validated document too. This pass is
+    # pure: only the selected profile/benchmark trace below contributes to
+    # effective settings or evidence.
+    has_repeated = False
+    for profile in local.values():
+        seen_directives = set()
+        for el in profile:
+            tag, _, _ = inspect_directive(el)
+            if tag:
+                key = (tag, el.get("idref"))
+                has_repeated = has_repeated or key in seen_directives
+                seen_directives.add(key)
+
     # Intermediate benchmark profiles are also customization layers. Keep
     # their selections and values in the evidence; exclude the STIG base's
     # own defaults so they are not mislabeled as tailoring overrides.
@@ -1048,58 +1097,28 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
             for rid in resolve(el.get("idref"), {**rules, **groups}, "rule/group or cluster"):
                 selected[rid] = el.get("selected") in ("true", "1")
     touched, refined, rule_refinements = set(), {}, {}
-    has_clusters = has_repeated = False
+    has_clusters = False
     inherited = []
     for profile in reversed(trace):
         duplicates = set()
         expanded = []
         for el in profile:
-            tag = el.tag[len(X) :] if el.tag.startswith(X) else el.tag
-            if tag not in ("select", "set-value", "set-complex-value", "refine-value", "refine-rule"):
+            tag, targets, requested = inspect_directive(el)
+            if tag is None:
                 expanded.append(el)
                 continue
-            if tag == "set-complex-value":
-                raise ValueError("set-complex-value is not supported: this orb supports scalar tailoring values only")
             ref = el.get("idref")
             if (tag, ref) in duplicates:
                 has_repeated = True
             duplicates.add((tag, ref))
             if tag == "select":
-                targets = resolve(ref, {**rules, **groups}, "rule/group or cluster")
                 flag = el.get("selected")
-                if flag not in ("true", "false", "1", "0"):
-                    raise ValueError("invalid tailoring selected flag")
                 for rid in targets:
                     selected[rid] = flag in ("true", "1")
                     touched.update([rid] if rid in rules else (r.get("id") for r in groups[rid].iter(X + "Rule")))
             elif tag in ("set-value", "refine-value"):
-                targets = resolve(ref, values, "value or value cluster")
                 for rid in targets:
-                    if tag == "set-value":
-                        if len(el):
-                            raise ValueError(
-                                "set-value must contain scalar text only; child elements are not permitted"
-                            )
-                        value = el.text or ""
-                    else:
-                        choices = value_choices(rid)
-                        matches = [v for v in choices if v.get("selector", "") == el.get("selector")]
-                        # A selector applies independently to value, bounds,
-                        # choices, etc. If it has no value match, XCCDF uses
-                        # the default value rather than rejecting the selector.
-                        if el.get("selector") is not None and not matches:
-                            matches = default_choices(choices)
-                        if len(matches) > 1:
-                            raise ValueError("tailoring value selector does not resolve uniquely: " + str(rid))
-                        if (matches and matches[0].tag == X + "complex-value") or (
-                            el.get("selector") is None
-                            and default_choices(choices)
-                            and default_choices(choices)[0].tag == X + "complex-value"
-                        ):
-                            raise ValueError(
-                                "complex-value refinements are not supported: scalar tailoring values only"
-                            )
-                        value = "".join(matches[0].itertext()) if matches else None
+                    value = requested[rid]
                     directives = refined.get(rid, {}).get("directives", []) + [
                         {
                             "profile_id": profile.get("id"),
@@ -1118,7 +1137,6 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
                         "directives": directives,
                     }
             else:
-                targets = resolve(ref, {**rules, **groups}, "rule/group or cluster")
                 for target in targets:
                     affected = [target] if target in rules else [r.get("id") for r in groups[target].iter(X + "Rule")]
                     directive = {
@@ -1211,7 +1229,15 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
             (
                 i
                 for i, el in enumerate(children)
-                if el.tag in (X + "select", X + "set-value", X + "refine-value", X + "refine-rule")
+                if el.tag
+                in (
+                    X + "select",
+                    X + "set-value",
+                    X + "refine-value",
+                    X + "refine-rule",
+                    X + "metadata",
+                    X + "signature",
+                )
             ),
             len(children),
         )

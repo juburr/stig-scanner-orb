@@ -390,10 +390,11 @@ STIG can generate a complete Not Reviewed checklist; the separate default
 `require_evaluated_rules` gate still fails a scan with zero evaluated Rules.
 Set that option to `false` only when intentionally creating such a checklist.
 If no platform evaluation was recorded, the checklist says applicability was
-not established and keeps every requirement Not Reviewed. Tailored generation requires a complete
-DISA reference (the pinned bundle, or `stig_xccdf_path`) because additions can
-fall outside a stock profile's verified release mapping. A tailored CIS or
-other non-STIG profile still skips checklist generation under `auto` and fails
+not established and keeps every requirement Not Reviewed. Tailored generation
+requires a complete DISA reference (the pinned bundle, or `stig_xccdf_path`) because additions can
+fall outside a stock profile's verified release mapping. Every selected mapped
+V-ID must exist in the DISA reference; any missing row fails generation. A
+tailored CIS or other non-STIG profile still skips checklist generation under `auto` and fails
 under `require`.
 
 Both scanners validate tailoring offline before evaluation. The orb snapshots
@@ -405,9 +406,10 @@ benchmark profile only when its `id` and `extends` both equal the benchmark
 profile's id. Unknown references, cycles, and invalid selectors are refused;
 repeated profile selectors apply in document order, including value overrides
 across selector types. Each tailoring profile must extend a source benchmark
-profile; local-to-local tailoring inheritance is refused. The benchmark `href` is
-recorded as a source label; the explicitly selected datastream is the input, and the orb
-never fetches that href. The tailoring file itself is never mounted into the
+profile; local-to-local tailoring inheritance is refused. Bases and directives
+are validated for unused profiles too; only the selected profile affects the
+scan. The benchmark `href` is recorded as a source label; the explicitly selected
+datastream is the input, and the orb never fetches that href. The tailoring file itself is never mounted into the
 target filesystem or reopened after the scan snapshot is made.
 
 Value evidence follows the check recorded in TestResult when its source

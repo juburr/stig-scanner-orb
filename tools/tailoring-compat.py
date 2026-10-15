@@ -94,6 +94,12 @@ def tailoring(case):
         ET.SubElement(
             p, X + "refine-rule", idref=RULES[0], role="unchecked", severity="high", weight="2.5", selector="alternate"
         )
+    if case == "inherited-metadata":
+        for element in list(p):
+            if element.tag in (X + "select", X + "set-value", X + "refine-value", X + "refine-rule"):
+                p.remove(element)
+        ET.SubElement(ET.SubElement(p, X + "metadata"), "{urn:stig:compat}note").text = "Retained metadata"
+        return root
     if case == "repeated":
         ET.SubElement(p, X + "select", idref=RULES[0], selected="true")
         ET.SubElement(p, X + "select", idref=RULES[0], selected="false")
@@ -141,6 +147,7 @@ for image in images:
         "conflicts",
         "repeated",
         "rule-refinement",
+        "inherited-metadata",
         "shadow",
     ):
         with tempfile.TemporaryDirectory(prefix="stig-tailoring-compat-") as directory:
@@ -164,7 +171,11 @@ for image in images:
             expected_deselected = (
                 [RULES[0]]
                 if case == "requires"
-                else [RULES[1]] if case == "rule-refinement" else [] if case == "conflicts" else RULES
+                else (
+                    [RULES[1]]
+                    if case == "rule-refinement"
+                    else [] if case in ("conflicts", "inherited-metadata") else RULES
+                )
             )
             assert meta["deselected_rules"] == expected_deselected, meta["deselected_rules"]
             if case == "inherited-value":
@@ -202,6 +213,8 @@ for image in images:
             expected_results = {rid: "notselected" for rid in RULES}
             if case in ("conflicts", "rule-refinement"):
                 expected_results[RULES[0]] = "notchecked"
+            if case == "inherited-metadata":
+                expected_results = {rid: "notchecked" for rid in RULES}
             assert res["results"] == expected_results, res["results"]
             expected = (
                 "15"
@@ -209,7 +222,11 @@ for image in images:
                 else (
                     "20"
                     if case in ("inherited-value", "refine-after-set")
-                    else "25" if case in ("set-after-refine", "partial-refine-last") else "custom"
+                    else (
+                        "25"
+                        if case in ("set-after-refine", "partial-refine-last")
+                        else "intermediary" if case == "inherited-metadata" else "custom"
+                    )
                 )
             )
             assert res["set_values"][V] == expected, res["set_values"]

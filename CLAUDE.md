@@ -142,64 +142,60 @@ wording review remain release acceptance tasks.
 
 ## Tailoring
 
-`scan.sh` snapshots `tailoring_file` through the root scanner, preflights bounded
-UTF-8 XCCDF 1.2 XML and validates its schema with the exact scanner. Use
-`--skip-schematron`: the pinned RPM scanner lacks tailoring schematron rules.
-The chosen profile must be defined in the file and extend a benchmark profile.
-Reject local-to-local tailoring inheritance (XCCDF forbids it), including unused
-local profiles with such references and extensions through another shadow.
-Only a shadow profile's own self-reference into the benchmark is exempt.
-Validate every local profile's source base and benchmark ancestry, including
-unused profiles. Reject child elements in scalar set-value;
-remarks are allowed on select/refine selectors, not on set-value.
-`tailoring-meta.json` is derived from the same snapshots used by evaluation;
-its SHA-256 and the original tailoring hash/profile are in scan-plan.env.
-Conversion validates the complete Rule/DISA reference inventory against the
-source snapshot rather than applying the stock selection fingerprint to a
-custom profile. It still gates on the inherited STIG profile and pinned
-benchmark/version. Tailored generation requires bundled or supplied DISA data:
-additions can select mappings outside the stock release verification.
-Requested selections resolve against item defaults and the complete benchmark
-profile ancestry, so a child request cannot bypass an unselected stock Group.
-Only customization-touched Rules enter the explicit deselection evidence.
-Shared V-IDs with any unselected contributor in a tailored TestResult are
-conservatively Not Reviewed, including requires/conflicts effects; label these
-as partial selection rather than claiming an explicit user deselection. Scalar
-value selectors fall back to the default value when they match only another property;
-complex defaults remain unsupported. Materialize unmatched scalar defaults in
-evaluated XML according to selector document order: a later refine-value
-selector replaces earlier set-value tailoring, while a later set-value wins.
-Materialize the resolved scalar after refinements to normalize the pinned RPM
-engine's cross-type precedence and empty-string fallback behavior.
-Resolve Value extends chains with append semantics before selecting properties;
-unknown/cyclic chains fail closed. Repeated selectors apply in document order
-and are normalized for the engines. Permit standard profile shadowing only
-when local id == extends == benchmark id, transitioning to the source profile.
-Checklist meta stores compact identity and the detailed manifest hash, keeping within the guard/summarizer's 1 MiB limit.
-Explicit tailoring deselections withhold the whole V-ID verdict even when
-another contributor ran. Preserve its evidence. Count matching, validated
-explicit deselections for complete tailored mapping eligibility so entirely
-Not Reviewed checklists can be generated; selected-rule mismatch coverage and
-the separate require_evaluated_rules gate remain unchanged. Refined values use check-export
-value ids and TestResult set-values. Match recorded TestResult checks to source
-checks by system and content references before associating value exports.
-Resolve Rule extends chains with check replacement keyed by system/selector;
-an inherited complex-check takes precedence over simple check alternatives.
-Exclude unselected alternatives when matching is complete; missing/ambiguous
-check evidence must label values as global settings with unverified Rule use.
-Retain refine-rule requests (including Group/cluster targets and remarks) and
-recorded TestResult role/severity/weight/check properties in finding details;
-keep official DISA severity unchanged and do not infer absent result fields.
-Summarize loads the bounded, hash-verified manifest title for external and
-shadowing profiles, replacing any same-named stock profile title. The caller's source is never reopened. Resolve `cluster-id` aliases by item type and expand them in the evaluated XML
-(the pinned RPM OpenSCAP ignores value aliases). Bind original and evaluated
-XML with separate hashes,
-reject complex-value tailoring before evaluation (the pinned RPM OpenSCAP
-cannot resolve it reliably), and follow benchmark profile ancestry to the
-verified STIG base. The results parser also retains complex TestResult values
-when supplied by other scan producers.
-`tests/tailoring_test.py` loads the exact scan preflight and checklist generator;
-`smoke-rhel9-tailoring` also feeds the consumer validators.
+`scan.sh` snapshots `tailoring_file` through the root scanner and preflights
+bounded UTF-8 XCCDF 1.2 XML. The exact scanner validates its schema offline;
+use `--skip-schematron` because the pinned RPM image lacks tailoring rules.
+Every local profile must extend a valid source benchmark profile and have
+valid directives, including unused profiles. Reject local-to-local extension,
+including references through another shadow; only a shadow's own same-name
+benchmark self-reference is exempt. Reject children in scalar set-value:
+remarks belong on select/refine selectors, not set-value. Complex tailoring
+values are unsupported because the pinned RPM engine cannot resolve them
+reliably; external TestResult complex values are retained by the parser.
+
+`tailoring-meta.json` derives from the same immutable snapshots as evaluation.
+Bind the original/evaluated XML and manifest hashes in scan-plan.env. Checklist
+meta stores compact identity and the manifest hash to stay below the guard and
+summarizer's 1 MiB limit. Conversion checks the complete Rule/DISA reference
+inventory instead of a stock selection fingerprint for tailored profiles, while
+stock scans keep exact selection checks. Tailored generation still requires a
+verified inherited STIG profile, benchmark/version, and bundled or supplied
+DISA data. Reject every selected mapped V-ID absent from that reference.
+
+Requested selections resolve against item defaults and the full benchmark
+profile ancestry. A child request cannot bypass an unselected Group. Only
+customization-touched Rules enter explicit deselection evidence. Shared V-IDs
+with any unselected contributor in a tailored TestResult are conservatively
+Not Reviewed, including requires/conflicts effects; distinguish partial
+selection from explicit user deselection and retain remaining evidence.
+Complete mapping eligibility counts matching explicit deselections and, for
+all-unselected profiles, indirect TestResult deselections too. All-unselected
+scans can generate complete Not Reviewed checklists; if no platform evaluation
+ran, state that applicability was not established. Keep the independent
+require_evaluated_rules gate and selected-rule mismatch checks intact.
+
+Resolve Value extends chains with append semantics before choosing selectors
+or defaults. A selector without a matching value falls back to the scalar
+default; complex defaults fail explicitly. Selector types apply in document
+order: a later refinement replaces an earlier set-value, and a later set-value
+wins. Normalize effective scalars after refinements to accommodate the pinned
+RPM engine's precedence and empty-string fallback behavior. Normalize repeated
+selectors and expand cluster IDs by item type in evaluated XML, retaining the
+original directive history. Insert inherited directives before trailing
+metadata/signatures. Never mix unused profiles into selected effective evidence.
+
+Record refine-rule requests, Group/cluster targets and remarks alongside each
+TestResult instance's role, severity, weight and check identity. Retain requests
+on stock-unselected Rules too. Preserve official DISA severity and do not infer
+missing properties or effective Group weight from Rule weight. Resolve Rule
+extends chains before matching value exports, using check replacement keyed by
+system/selector; inherited complex-check content takes precedence over simple
+checks. Omit unselected alternatives when recorded checks match completely;
+missing/ambiguous evidence labels values as global settings with unverified
+Rule use. Summarize verifies the bounded manifest hash/identity before using
+its profile title, including external profiles and same-name shadows.
+`tests/tailoring_test.py` exercises the production preflight and converter;
+`smoke-rhel9-tailoring` feeds both consumer validators and pinned-engine checks.
 
 ## Bundled DISA data
 
