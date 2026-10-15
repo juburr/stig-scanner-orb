@@ -216,7 +216,7 @@ class GposTests(unittest.TestCase):
                 self.assertEqual(meta['revision_drift'], {'unverified_revision': 2})
 
     def test_site_answers_preserve_vendor_evidence_and_scan_gate(self):
-        self.vendor()
+        self.vendor(vendor_fixture(('pass', 'notapplicable', 'fail')))
         _, meta = self.generate()
         answer = {'schema': MOD['ANSWER_SCHEMA'], 'stig': meta['stig'],
                   'answers': {'V-3': {'status': 'Not_Applicable', 'comments': 'Site reviewed.'}},
@@ -228,6 +228,7 @@ class GposTests(unittest.TestCase):
         rc, meta = self.generate('--checklist-answers=' + str(path))
         self.assertEqual(rc, 0, meta)
         self.assertEqual(self.rows()[2]['status'], 'not_applicable')
+        self.assertNotIn('Open', meta['status'])
         self.assertIn('Site deployment assessed.', self.rows()[1]['comments'])
         self.assertIn('Chainguard vendor rationale', self.rows()[1]['finding_details'])
         self.assertEqual(self.summary('require', 'true').returncode, 1)

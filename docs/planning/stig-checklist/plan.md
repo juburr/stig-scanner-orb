@@ -779,7 +779,9 @@ V3R2 reference output retains the same outcomes; a V3R4 reference produces 202
 rows, including 34 Not Reviewed (29 revision mismatches withheld; other rows
 lack matching vendor checks). All three CKL/CKLB pairs pass pinned STIG Manager
 identity/outcome validation and all CKLBs pass the pinned DISA schema checks.
-Packed generation/guard work via actual bash -c launches. Existing DISA bundle
+Packed generation/guard work via actual bash -c launches. The arm64 scanner
+variant ships byte-identical GPOS content (verified by streaming its registry
+layer), so the same exact-hash entry covers both runner architectures. Existing DISA bundle
 sources reproduce exactly. ShellCheck, YAML lint, orb packing (~0.83 MB) and
 the CI matrix adapter's equality checks pass. Manual STIG Viewer GUI import
 and customer ISSM wording acceptance remain release acceptance tasks.
