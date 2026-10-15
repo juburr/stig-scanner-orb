@@ -53,6 +53,10 @@ def benchmark(case):
         if case == "rule-reference-override":
             ET.SubElement(child, X + "reference", href=checklist["HREF_RULE"], override="true").text = "SV-2r1_rule"
             ET.SubElement(child, X + "reference", href=checklist["HREF_VULN"]).text = "V-2"
+    if case == "rule-platform-inheritance":
+        child, parent_rule = [el for el in group if el.tag == X + "Rule"]
+        child.set("extends", parent_rule.get("id"))
+        ET.SubElement(parent_rule, X + "platform", idref="cpe:/o:redhat:enterprise_linux:9")
     if case == "base-group":
         ET.SubElement(root.find(X + "Profile"), X + "select", idref=G, selected="false")
     if case == "default-group":
@@ -159,6 +163,7 @@ for image in images:
         "inherited-metadata",
         "rule-reference-inheritance",
         "rule-reference-override",
+        "rule-platform-inheritance",
         "shadow",
     ):
         with tempfile.TemporaryDirectory(prefix="stig-tailoring-compat-") as directory:
@@ -264,6 +269,8 @@ for image in images:
             if case in ("rule-reference-inheritance", "rule-reference-override"):
                 expected_vid = "2" if case == "rule-reference-override" else "1"
                 assert set(res["rules"][RULES[0]]["svs"]) == {expected_vid}
+            if case == "rule-platform-inheritance":
+                assert res["rules"][RULES[0]]["platform_levels"] == [["cpe:/o:redhat:enterprise_linux:9"]]
             if case == "rule-refinement":
                 actual = res["rule_properties"][RULES[0]][0]
                 assert actual["role"] == "unchecked" and actual["severity"] == "high", actual

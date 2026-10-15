@@ -183,8 +183,12 @@ def parse_results(source, tailoring=None):
             if base and base not in source_rules:
                 raise ValueError("unresolved Rule inheritance: " + base)
             current = source_rules.get(base) if base else None
-        checks, complex_check, references = {}, None, []
+        checks, complex_check, references, platforms = {}, None, [], []
         for ancestor in reversed(lineage):
+            own_platforms = ancestor.findall(X12 + "platform")
+            if any(platform.get("override") in ("true", "1") for platform in own_platforms):
+                platforms = []
+            platforms.extend(own_platforms)
             own_refs = ancestor.findall(X12 + "reference")
             if any(ref.get("override") in ("true", "1") for ref in own_refs):
                 references = []
@@ -196,12 +200,12 @@ def parse_results(source, tailoring=None):
             if ancestor.find(X12 + "complex-check") is not None:
                 complex_check = ancestor.find(X12 + "complex-check")
         effective = list(complex_check.iter(X12 + "check")) if complex_check is not None else [c for cs in checks.values() for c in cs]
-        return effective, references
+        return effective, references, platforms
 
     for r in bench.iter(X12 + "Rule"):
         if not r.get("id"):
             raise ValueError("results.xml defines a Rule without an id")
-        effective, references = effective_rule_properties(r)
+        effective, references, platforms = effective_rule_properties(r)
         refs = [(x.get("href") or "", (x.text or "").strip()) for x in references]
         ref = lambda pred: next((v for h, v in refs if pred(h, v)), None)
         sv_refs = sorted({v for h, v in refs if h == HREF_RULE})
@@ -231,7 +235,7 @@ def parse_results(source, tailoring=None):
             "stig_ids": [v for h, v in refs if "unix-linux" in h],
             "srg": ref(lambda h, v: v.startswith("SRG-")),
             "cce": next((text_of(i) for i in r.findall(X12 + "ident") if "cce" in (i.get("system") or "")), None),
-            "platform_levels": chain_platforms(r),
+            "platform_levels": ([[p.get("idref") for p in platforms]] if platforms else []) + chain_platforms(parent.get(r)),
             "value_ids": sorted({e.get("value-id") for check in effective for e in check.findall(X12 + "check-export") if e.get("value-id")}),
         }
 

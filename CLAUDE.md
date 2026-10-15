@@ -198,14 +198,17 @@ TestResult instance's role, severity, weight and check identity. Retain requests
 on stock-unselected Rules too. Preserve official DISA severity and do not infer
 missing properties or effective Group weight from Rule weight. Resolve Rule
 extends chains before matching value exports, using check replacement keyed by
-system/selector; inherited complex-check content takes precedence over simple
+system/selector. Rule platform inheritance uses append/override semantics and
+joins the child's physical Group/Benchmark gates for applicability and target
+architecture checks; source base-Rule containing Groups are not inherited.
+For checks, inherited complex-check content takes precedence over simple
 checks. Resolve references with append/override semantics in source inventory
 and result mapping. Both pinned engines can erase inherited references and
 extends; reject the inventory mismatch rather than dropping a failed contributor.
 Omit unselected alternatives when recorded checks match completely;
 missing/ambiguous evidence labels values as global settings with unverified
-Rule use. Summarize verifies the bounded manifest hash/identity and results hash before using
-its profile title, including external profiles and same-name shadows.
+Rule use. Summarize verifies the bounded manifest hash/identity and results
+hash before using its profile title, including external profiles and same-name shadows.
 `tests/tailoring_test.py` exercises the production preflight and converter;
 `smoke-rhel9-tailoring` feeds both consumer validators and pinned-engine checks.
 

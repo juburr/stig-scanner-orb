@@ -420,7 +420,9 @@ needed. Signed inputs requiring selector/cluster/value rewriting are rejected;
 the orb does not verify XML signatures. Signature presence and verification
 status are recorded in the tailoring manifest.
 
-Inherited Rule references are resolved for mapping and source verification.
+Inherited Rule platforms are resolved before applicability and target
+architecture decisions. Inherited references are resolved for mapping and
+source verification.
 Both pinned engines can drop inherited reference metadata when writing
 results; conversion then fails closed instead of omitting a contributing Rule.
 

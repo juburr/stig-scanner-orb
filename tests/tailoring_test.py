@@ -661,6 +661,45 @@ class TailoringTests(unittest.TestCase):
         self.assertTrue(meta["signature_present"])
         self.assertEqual(meta["signature_verification"], "not-performed")
 
+    def test_inherited_rule_platforms_recompute_target_architecture_without_hiding_errors(self):
+        for result, expected in (("pass", "not_applicable"), ("fail", "not_applicable"), ("error", "not_reviewed")):
+            with self.subTest(result=result):
+                ds, _ = self.tailored()
+                child, base = list(ds.iter(X + "Rule"))
+                child.set("extends", base.get("id"))
+                ET.SubElement(base, X + "platform", idref="#not_s390x_arch")
+                tr = ds.find(X + "TestResult")
+                ET.SubElement(tr, X + "platform", idref="#not_s390x_arch")
+                tr.find(X + "rule-result/" + X + "result").text = result
+                meta = self.preflight(ds=ds)
+                meta["datastream_sha256"] = H
+                self.plan["image_platform"] = "linux/s390x"
+                self.prepare(ds, register=False)
+                self.save_meta(meta)
+                rc, output = self.generate(self.save_skeleton())
+                self.assertEqual((rc, output["outcome"]), (0, "generated"), output)
+                self.assertEqual(self.rows()[0]["status"], expected)
+                if result == "error":
+                    self.assertIn("one: error", self.rows()[0]["finding_details"])
+                else:
+                    self.assertIn("notapplicable for the target (s390x)", self.rows()[0]["finding_details"])
+
+    def test_rule_platform_override_preserves_own_group_constraints(self):
+        for override in (False, True):
+            with self.subTest(override=override):
+                ds = source()
+                child, base = list(ds.iter(X + "Rule"))
+                child.set("extends", base.get("id"))
+                ET.SubElement(base, X + "platform", idref="#not_s390x_arch")
+                child_platform = ET.SubElement(child, X + "platform", idref="#aarch64_arch")
+                if override:
+                    child_platform.set("override", "true")
+                ET.SubElement(ds.findall(X + "Group")[0], X + "platform", idref="#package_pam")
+                ET.SubElement(ds.findall(X + "Group")[1], X + "platform", idref="#not_container")
+                parsed = MOD["parse_results"](io.BytesIO(ET.tostring(ds)))
+                expected = ["#aarch64_arch"] if override else ["#not_s390x_arch", "#aarch64_arch"]
+                self.assertEqual(parsed["rules"]["one"]["platform_levels"], [expected, ["#package_pam"]])
+
     def test_ssg_only_omits_deselected_row(self):
         self.tailored()
         res = MOD["parse_results"](
