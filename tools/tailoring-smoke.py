@@ -11,6 +11,7 @@ meta = json.loads((out / "checklist-meta.json").read_text())
 tailoring = meta["tailoring"]
 assert tailoring["sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
 plan = dict(line.split("=", 1) for line in (out / "scan-plan.env").read_text().splitlines() if "=" in line)
+assert tailoring["evaluated_sha256"] == plan["tailoring_evaluated_sha256"]
 assert tailoring["profile_id"] == plan["profile"] == plan["tailoring_profile"]
 assert tailoring["datastream_sha256"] == plan["datastream_sha256"]
 assert plan["tailoring_meta_sha256"] == hashlib.sha256((out / "tailoring-meta.json").read_bytes()).hexdigest()

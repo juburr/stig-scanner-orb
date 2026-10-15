@@ -667,7 +667,11 @@ replaces the stock selection fingerprint; stock profile checks are unchanged.
 Tailored generation requires bundled or supplied DISA metadata so additions
 cannot borrow the stock SSG-only release mapping. An explicit deselection of
 one contributor withholds the whole V-ID verdict, retaining the remaining
-automated evidence. CI covers real RHEL 9 tailoring and both consumer formats.
+automated evidence. CI covers real RHEL 9 tailoring and both consumer formats. Profile ancestry
+includes intermediary benchmark profiles; selectors resolve cluster aliases,
+and scalar requests and resolved values remain complete in evidence. Complex
+value tailoring is explicitly refused because the pinned RPM scanner does not
+resolve vector settings reliably.
 
 - **Parameter** `tailoring_file`: snapshotted and hashed like
   `datastream_path` and passed as `--tailoring-file`. `profile_id` must

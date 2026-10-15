@@ -432,6 +432,9 @@ workflows:
             - run:
                 name: Verify tailored selection, resolved values and source identity
                 command: python3 tools/tailoring-smoke.py build/stig tests/fixtures/rhel9-tailoring.xml
+            - run:
+                name: Verify cluster expansion and hierarchy with both pinned engines
+                command: python3 tools/tailoring-compat.py
             - assert-checklist:
                 outcome: generated
                 artifact_name: smoke-rhel9-tailoring

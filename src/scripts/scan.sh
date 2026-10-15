@@ -879,6 +879,7 @@ tailoring_mount_args=()
 TAILORING_PATH=""
 TAILORING_SHA256=""
 TAILORING_META_SHA256=""
+TAILORING_EVALUATED_SHA256=""
 if [ -n "${TAILORING_FILE}" ]; then
     [ -f "${TAILORING_FILE}" ] || { echo "ERROR: tailoring_file is not a regular file: ${TAILORING_FILE}" >&2; exit 2; }
     tailoring_src="$(cd "$(dirname "${TAILORING_FILE}")" && pwd)/$(basename "${TAILORING_FILE}")"
@@ -895,10 +896,11 @@ if [ -n "${TAILORING_FILE}" ]; then
             chown "${HOST_UID}:${HOST_GID}" /out/tailoring.xml
             chmod 0444 /out/tailoring.xml
         '
-    TAILORING_PATH="/tailoring/tailoring.xml"
+    TAILORING_PATH="/tailoring/evaluated.xml"
     tailoring_mount_args=( -v "${TAILORING_SNAP_DIR}:/tailoring:ro" )
     python3 - "${TAILORING_SNAP_DIR}/tailoring.xml" "${DATASTREAM_HOST_DIR}/${DATASTREAM}" \
-        "${PROFILE}" "${TAILORING_SNAP_DIR}/meta.json" <<'PY_TAILORING'
+        "${PROFILE}" "${TAILORING_SNAP_DIR}/meta.json" "${TAILORING_SNAP_DIR}/evaluated.xml" <<'PY_TAILORING'
+import copy
 import hashlib
 import json
 import re
@@ -936,7 +938,7 @@ def indexed(elements):
     return result
 
 
-def prepare(tailoring_path, datastream_path, profile_id):
+def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
     raw, tailoring = read_xml(tailoring_path, 16 << 20)
     source, ds = read_xml(datastream_path, 128 << 20)
     if tailoring.tag != X + "Tailoring":
@@ -980,54 +982,160 @@ def prepare(tailoring_path, datastream_path, profile_id):
     groups = indexed(bench.iter(X + "Group"))
     values = indexed(bench.iter(X + "Value"))
     parent = {child: element for element in bench.iter() for child in element}
+    items = {**groups, **rules, **values}
+    if len(items) != len(groups) + len(rules) + len(values):
+        raise ValueError("XCCDF item ids must be unique across groups, rules and values")
+    clusters = {}
+    for rid, item in items.items():
+        if item.get("cluster-id"):
+            clusters.setdefault(item.get("cluster-id"), []).append(rid)
+    if set(clusters) & set(items):
+        raise ValueError("cluster ids must not shadow concrete XCCDF item ids")
+
+    def resolve(ref, allowed, what):
+        targets = [ref] if ref in items else clusters.get(ref, [])
+        targets = sorted(rid for rid in targets if rid in allowed)
+        if not targets:
+            raise ValueError("tailoring references an unknown " + what + ": " + str(ref))
+        return targets
+
+    # Intermediate benchmark profiles are also customization layers. Keep
+    # their selections and values in the evidence; exclude the STIG base's
+    # own defaults so they are not mislabeled as tailoring overrides.
+    anchor = next((i for i, pid in enumerate(ancestry) if re.search(r"_profile_stig(_gui)?$", pid)), 0)
+    trace = chain + [original[pid] for pid in ancestry[:anchor]]
     selected, refined = {}, {}
-    for profile in reversed(chain):
+    has_clusters = False
+    inherited = []
+    for profile in reversed(trace):
         duplicates = set()
+        expanded = []
         for el in profile:
             tag = el.tag[len(X) :] if el.tag.startswith(X) else el.tag
-            if tag not in ("select", "set-value", "refine-value", "refine-rule"):
+            if tag not in ("select", "set-value", "set-complex-value", "refine-value", "refine-rule"):
+                expanded.append(el)
                 continue
-            rid = el.get("idref")
-            if (tag, rid) in duplicates:
-                raise ValueError("duplicate tailoring directive: " + str(rid))
-            duplicates.add((tag, rid))
+            if tag == "set-complex-value":
+                raise ValueError("set-complex-value is not supported: this orb supports scalar tailoring values only")
+            ref = el.get("idref")
+            if (tag, ref) in duplicates:
+                raise ValueError("duplicate tailoring directive: " + str(ref))
+            duplicates.add((tag, ref))
             if tag == "select":
-                if rid not in rules and rid not in groups:
-                    raise ValueError("tailoring selects an unknown rule/group: " + str(rid))
+                targets = resolve(ref, {**rules, **groups}, "rule/group or cluster")
                 flag = el.get("selected")
                 if flag not in ("true", "false", "1", "0"):
                     raise ValueError("invalid tailoring selected flag")
-                selected[rid] = flag in ("true", "1")
+                for rid in targets:
+                    selected[rid] = flag in ("true", "1")
             elif tag in ("set-value", "refine-value"):
-                if rid not in values:
-                    raise ValueError("tailoring refines an unknown value: " + str(rid))
-                if tag == "set-value":
-                    value = "".join(el.itertext())
-                else:
-                    matches = [
-                        v for v in values[rid].findall(X + "value") if v.get("selector", "") == el.get("selector")
+                targets = resolve(ref, values, "value or value cluster")
+                for rid in targets:
+                    if tag == "set-value":
+                        value = "".join(el.itertext())
+                    else:
+                        choices = values[rid].findall(X + "value") + values[rid].findall(X + "complex-value")
+                        matches = [v for v in choices if v.get("selector", "") == el.get("selector")]
+                        if el.get("selector") is not None and len(matches) != 1:
+                            raise ValueError("tailoring value selector does not resolve uniquely: " + str(rid))
+                        if (matches and matches[0].tag == X + "complex-value") or (
+                            el.get("selector") is None
+                            and not values[rid].findall(X + "value")
+                            and values[rid].findall(X + "complex-value")
+                        ):
+                            raise ValueError(
+                                "complex-value refinements are not supported: scalar tailoring values only"
+                            )
+                        value = "".join(matches[0].itertext()) if matches else None
+                    directives = refined.get(rid, {}).get("directives", []) + [
+                        {
+                            "profile_id": profile.get("id"),
+                            "directive": tag,
+                            "idref": ref,
+                            "value": value,
+                            "selector": el.get("selector"),
+                            "operator": el.get("operator"),
+                        }
                     ]
-                    if el.get("selector") is not None and len(matches) != 1:
-                        raise ValueError("tailoring value selector does not resolve uniquely: " + str(rid))
-                    value = "".join(matches[0].itertext()) if matches else None
-                directives = refined.get(rid, {}).get("directives", []) + [
-                    {
-                        "profile_id": profile.get("id"),
-                        "directive": tag,
+                    refined[rid] = {
                         "value": value,
+                        "directive": tag,
                         "selector": el.get("selector"),
                         "operator": el.get("operator"),
+                        "directives": directives,
                     }
-                ]
-                refined[rid] = {
-                    "value": value,
-                    "directive": tag,
-                    "selector": el.get("selector"),
-                    "operator": el.get("operator"),
-                    "directives": directives,
-                }
-            elif rid not in rules and rid not in groups:
-                raise ValueError("tailoring refines an unknown rule/group: " + str(rid))
+            else:
+                targets = resolve(ref, {**rules, **groups}, "rule/group or cluster")
+            if ref in clusters:
+                has_clusters = True
+                for rid in targets:
+                    concrete = copy.deepcopy(el)
+                    concrete.set("idref", rid)
+                    expanded.append(concrete)
+            else:
+                expanded.append(el)
+        if profile.get("id") in local:
+            profile[:] = expanded
+        else:
+            inherited.extend(
+                copy.deepcopy(el)
+                for el in expanded
+                if el.tag in (X + "select", X + "set-value", X + "refine-value", X + "refine-rule")
+            )
+
+    if inherited:
+        # Materialize intermediary benchmark overrides into the oldest local
+        # profile. This also makes inherited value-cluster aliases work on the
+        # pinned RPM engine without modifying the original datastream.
+        oldest = chain[-1]
+        children = list(oldest)
+        index = next(
+            (
+                i
+                for i, el in enumerate(children)
+                if el.tag in (X + "select", X + "set-value", X + "refine-value", X + "refine-rule")
+            ),
+            len(children),
+        )
+        oldest[:] = children[:index] + inherited + children[index:]
+
+    if has_clusters or inherited:
+        # Expansion can produce overlapping concrete targets. Preserve the
+        # last assignment per selector, merging partial refinement attributes
+        # across inheritance layers instead of creating duplicate idrefs.
+        for profile in local.values():
+            merged, positions = [], {}
+            for element in profile:
+                if element.tag in (X + "select", X + "set-value", X + "refine-value", X + "refine-rule"):
+                    key = (element.tag, element.get("idref"))
+                    if key in positions:
+                        previous = merged[positions[key]]
+                        if element.tag in (X + "refine-value", X + "refine-rule"):
+                            element = copy.deepcopy(element)
+                            element.attrib.update({**previous.attrib, **element.attrib})
+                        merged[positions[key]] = None
+                    positions[key] = len(merged)
+                merged.append(element)
+            profile[:] = [el for el in merged if el is not None]
+
+    # OpenSCAP 1.3.6 resolves rule clusters but not value clusters. Normalize
+    # aliases for the selected inheritance chain, retaining their original
+    # references in metadata. Both original and evaluated bytes are hashed.
+    ET.register_namespace("", X[1:-1])
+    if has_clusters or inherited:
+        # The pinned RPM XML reader skips adjacent empty selector elements
+        # without inter-element whitespace. Keep generated directives apart.
+        for element in [tailoring] + list(local.values()):
+            for child in element:
+                if not child.tail or not child.tail.strip():
+                    child.tail = "\n  "
+    evaluated = ET.tostring(tailoring, encoding="utf-8", xml_declaration=True) if has_clusters or inherited else raw
+    if len(evaluated) > 16 << 20:
+        raise ValueError("expanded tailoring XML exceeds 16 MiB")
+    if evaluated_path:
+        with open(evaluated_path, "xb") as f:
+            f.write(evaluated)
+
     def explicitly_deselected(rule):
         # Group selection applies at its own level: selecting a child cannot
         # override a false ancestor. Conversely, selecting a Group does not
@@ -1048,6 +1156,9 @@ def prepare(tailoring_path, datastream_path, profile_id):
     return {
         "schema": "stig-scanner-orb/tailoring/v1",
         "sha256": hashlib.sha256(raw).hexdigest(),
+        "evaluated_sha256": hashlib.sha256(evaluated).hexdigest(),
+        "clusters_expanded": has_clusters,
+        "benchmark_overrides_materialized": bool(inherited),
         "datastream_sha256": hashlib.sha256(source).hexdigest(),
         "benchmark_id": bench.get("id"),
         "benchmark_version": bench.findtext(X + "version"),
@@ -1068,7 +1179,7 @@ def prepare(tailoring_path, datastream_path, profile_id):
 
 if __name__ == "__main__":
     try:
-        meta = prepare(*sys.argv[1:4])
+        meta = prepare(*sys.argv[1:4], evaluated_path=sys.argv[5])
         encoded = (json.dumps(meta, indent=2, sort_keys=True) + "\n").encode("utf-8")
         if len(encoded) > 16 << 20:
             raise ValueError("derived tailoring metadata exceeds 16 MiB")
@@ -1083,6 +1194,7 @@ PY_TAILORING
     docker run --rm --network none -u 0:0 "${tailoring_mount_args[@]}" \
         --entrypoint oscap "${SCANNER_ID}" xccdf validate --skip-schematron "${TAILORING_PATH}"
     TAILORING_SHA256="$(sha256sum "${TAILORING_SNAP_DIR}/tailoring.xml" | awk '{print $1}')"
+    TAILORING_EVALUATED_SHA256="$(sha256sum "${TAILORING_SNAP_DIR}/evaluated.xml" | awk '{print $1}')"
     TAILORING_META_SHA256="$(sha256sum "${TAILORING_SNAP_DIR}/meta.json" | awk '{print $1}')"
 fi
 # ${a[@]+"${a[@]}"}: an empty array is an unbound variable under set -u
@@ -1230,6 +1342,7 @@ fi
         echo "tailoring_file=${TAILORING_FILE}"
         echo "tailoring_sha256=${TAILORING_SHA256}"
         echo "tailoring_profile=${PROFILE}"
+        echo "tailoring_evaluated_sha256=${TAILORING_EVALUATED_SHA256}"
         echo "tailoring_meta_sha256=${TAILORING_META_SHA256}"
     fi
     echo "family=${FAMILY}"

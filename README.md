@@ -345,7 +345,8 @@ reference separately from a supplied skeleton.
 
 Set `tailoring_file` to a local XCCDF 1.2 tailoring XML file and `profile_id`
 to a profile defined in that file. The profile must extend a profile in the
-scanned benchmark, directly or through other profiles in the tailoring file.
+scanned benchmark; inheritance can pass through intermediary profiles in
+either the benchmark or the tailoring file.
 Stage the file before the scan (use checkout or a pre-step). For example:
 
 ```yaml
@@ -400,10 +401,18 @@ target filesystem or reopened after the scan snapshot is made.
 and the tailored profile id. `tailoring-meta.json` records the inherited base
 profile, source datastream hash, Rule/DISA reference inventory, deselections
 and value directives; its own hash binds it to the scan plan. Conversion checks
-that inventory against every rule in `results.xml`. A known datastream still
+that inventory against every rule in `results.xml` and refuses output if
+OpenSCAP did not apply a requested deselection. A known datastream still
 uses its pinned DISA release; stock profiles retain their exact selection
 checks. Each checklist row carries the tailoring hash, and affected rows list
-custom values alongside the values OpenSCAP resolved in `TestResult`. Original
+custom values alongside the values OpenSCAP resolved in `TestResult`. Scalar
+`set-value` and `refine-value` settings are recorded. Complex-value tailoring
+(`set-complex-value` or a complex refinement selector) is refused before
+evaluation: the pinned RPM OpenSCAP validates that XML but does not resolve
+vector settings reliably. Directives can target concrete item ids or
+`cluster-id` aliases. The orb expands aliases to concrete rules, groups or
+values in the XML passed to OpenSCAP, since the pinned RPM scanner ignores
+value-cluster aliases. Both original and evaluated XML hashes are recorded. A selected child cannot override a deselected ancestor group. Original
 scan gates, finding ignores and artifact publication policies continue to apply.
 
 Open `.cklb` in STIG Viewer 3, or use **Import V2 Checklist** for `.ckl`.

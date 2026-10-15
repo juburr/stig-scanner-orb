@@ -67,6 +67,7 @@ class TailoringTests(unittest.TestCase):
             tailoring_file=str(self.tail_path),
             tailoring_sha256=meta["sha256"],
             tailoring_profile=CUSTOM,
+            tailoring_evaluated_sha256=meta["evaluated_sha256"],
             tailoring_meta_sha256=hashlib.sha256(raw).hexdigest(),
         )
         self.save_plan()
@@ -171,9 +172,19 @@ class TailoringTests(unittest.TestCase):
     def test_tailored_cis_cannot_claim_stig(self):
         _, meta = self.tailored()
         meta["base_profile_id"] = "xccdf_org.example_profile_cis"
+        meta["base_profile_ancestry"] = [meta["base_profile_id"]]
         self.save_meta(meta)
         rc, result = self.generate(self.save_skeleton())
         self.assertEqual((rc, result["outcome"]), (0, "skipped"))
+
+    def test_unapplied_deselections_cannot_publish_a_checklist(self):
+        ds, _ = self.tailored()
+        ds.find(X + "TestResult").findall(X + "rule-result")[1].find(X + "result").text = "pass"
+        self.prepare(ds, register=False)
+        rc, result = self.generate(self.save_skeleton())
+        self.assertEqual((rc, result["outcome"]), (1, "failed"))
+        self.assertIn("did not apply requested tailoring deselections", result["reason"])
+        self.assertFalse((self.out / "checklist.cklb").exists())
 
     def test_original_stock_selection_check_still_applies(self):
         ds = source()
@@ -276,6 +287,135 @@ class TailoringTests(unittest.TestCase):
         root = tailoring()
         root.find(X + "Profile").find(X + "select").set("idref", "g-two")
         self.assertEqual(self.preflight(root)["deselected_rules"], ["two"])
+
+    def test_cluster_select_and_rule_refinements_expand_concrete_targets(self):
+        ds = source()
+        for rule in ds.iter(X + "Rule"):
+            rule.set("cluster-id", "test_rules")
+        root = tailoring()
+        profile = root.find(X + "Profile")
+        profile.find(X + "select").set("idref", "test_rules")
+        ET.SubElement(profile, X + "refine-rule", idref="test_rules", role="unchecked")
+        self.assertEqual(self.preflight(root, ds)["deselected_rules"], ["one", "two"])
+        # Clusters can also contain Groups: selecting a child still cannot
+        # override an unselected ancestor reached through a cluster reference.
+        ds.find(X + "Group").set("cluster-id", "test_groups")
+        profile.find(X + "select").set("idref", "test_groups")
+        ET.SubElement(profile, X + "select", idref="one", selected="true")
+        self.assertEqual(self.preflight(root, ds)["deselected_rules"], ["one"])
+
+    def test_value_clusters_resolve_selectors_for_each_value(self):
+        ds = source()
+        ds.find(X + "Value").set("cluster-id", "test_values")
+        other = ET.SubElement(ds, X + "Value", id=VALUE + "_other", **{"cluster-id": "test_values"})
+        ET.SubElement(other, X + "value", selector="long").text = "30"
+        root = tailoring()
+        profile = root.find(X + "Profile")
+        profile.find(X + "set-value").set("idref", "test_values")
+        meta = self.preflight(root, ds)
+        self.assertEqual({v["value"] for v in meta["values"].values()}, {"18"})
+        profile.remove(profile.find(X + "set-value"))
+        ET.SubElement(profile, X + "refine-value", idref="test_values", selector="long")
+        meta = self.preflight(root, ds)
+        self.assertEqual(meta["values"][VALUE]["value"], "20")
+        self.assertEqual(meta["values"][VALUE + "_other"]["value"], "30")
+        self.assertEqual(meta["values"][VALUE]["directives"][0]["idref"], "test_values")
+
+    def test_benchmark_intermediary_overrides_are_in_tailoring_evidence(self):
+        ds, _ = self.tailored()
+        mid = "xccdf_org.example_profile_intermediary"
+        profile = ET.SubElement(ds, X + "Profile", id=mid, extends=P)
+        ET.SubElement(profile, X + "select", idref="two", selected="false")
+        ET.SubElement(profile, X + "set-value", idref=VALUE).text = "18"
+        root = tailoring(base=mid)
+        custom = root.find(X + "Profile")
+        custom.remove(custom.find(X + "select"))
+        custom.remove(custom.find(X + "set-value"))
+        meta = self.preflight(root, ds)
+        meta["datastream_sha256"] = H
+        self.assertEqual(meta["deselected_rules"], ["two"])
+        self.assertTrue(meta["benchmark_overrides_materialized"])
+        self.assertEqual(meta["values"][VALUE]["directives"][0]["profile_id"], mid)
+        self.prepare(ds, register=False)
+        self.save_meta(meta)
+        rc, result = self.generate(self.save_skeleton())
+        self.assertEqual(rc, 0, result)
+        self.assertEqual(result["not_reviewed_by_reason"]["tailoring_deselected"], 1)
+        self.assertIn("Tailored value", self.rows()[0]["finding_details"])
+
+    def test_cluster_expansion_binds_original_and_evaluated_bytes(self):
+        ds = source()
+        ds.find(X + "Value").set("cluster-id", "settings")
+        root = tailoring()
+        root.find(X + "Profile").find(X + "set-value").set("idref", "settings")
+        self.preflight(root, ds)
+        evaluated = self.out / "evaluated.xml"
+        original = self.tail_path.read_bytes()
+        meta = PRE["prepare"](str(self.tail_path), str(self.ds_path), CUSTOM, str(evaluated))
+        parsed = ET.parse(evaluated)
+        self.assertEqual(parsed.find(".//" + X + "set-value").get("idref"), VALUE)
+        self.assertEqual(meta["sha256"], hashlib.sha256(original).hexdigest())
+        self.assertEqual(meta["evaluated_sha256"], hashlib.sha256(evaluated.read_bytes()).hexdigest())
+        self.assertNotEqual(meta["sha256"], meta["evaluated_sha256"])
+        self.assertTrue(meta["clusters_expanded"])
+        self.assertEqual(self.tail_path.read_bytes(), original)
+        _, basic = self.tailored()
+        self.assertEqual(basic["sha256"], basic["evaluated_sha256"])
+
+    def test_complex_value_requests_are_rejected_before_scanning(self):
+        root = tailoring()
+        profile = root.find(X + "Profile")
+        setting = ET.SubElement(profile, X + "set-complex-value", idref=VALUE)
+        for value in ("one<&>", "two"):
+            ET.SubElement(setting, X + "item").text = value
+        with self.assertRaisesRegex(ValueError, "set-complex-value is not supported"):
+            self.preflight(root)
+
+    def test_complex_value_selectors_are_rejected_including_clusters(self):
+        ds = source()
+        value = ds.find(X + "Value")
+        value.set("cluster-id", "vector_values")
+        variant = ET.SubElement(value, X + "complex-value", selector="vector")
+        for item in ("10", "20"):
+            ET.SubElement(variant, X + "item").text = item
+        root = tailoring()
+        profile = root.find(X + "Profile")
+        profile.remove(profile.find(X + "set-value"))
+        refinement = ET.SubElement(profile, X + "refine-value", idref="vector_values", selector="vector")
+        with self.assertRaisesRegex(ValueError, "complex-value refinements are not supported"):
+            self.preflight(root, ds)
+        for el in list(value):
+            if el.tag == X + "value":
+                value.remove(el)
+        refinement.attrib.pop("selector")
+        with self.assertRaisesRegex(ValueError, "complex-value refinements are not supported"):
+            self.preflight(root, ds)
+
+    def test_duplicate_scalar_and_complex_results_are_rejected(self):
+        ds, _ = self.tailored()
+        setting = ET.SubElement(ds.find(X + "TestResult"), X + "set-complex-value", idref=VALUE)
+        ET.SubElement(setting, X + "item").text = "18"
+        self.prepare(ds, register=False)
+        rc, result = self.generate(self.save_skeleton())
+        self.assertEqual((rc, result["outcome"]), (1, "failed"))
+        self.assertIn("repeated set-value", result["reason"])
+
+    def test_benchmark_intermediary_profiles_retain_the_stig_base(self):
+        ds, _ = self.tailored()
+        mid = "xccdf_org.example_profile_intermediary"
+        ET.SubElement(ds, X + "Profile", id=mid, extends=P)
+        root = tailoring(base=mid)
+        meta = self.preflight(root, ds)
+        self.assertEqual(meta["base_profile_ancestry"], [mid, P])
+        meta["datastream_sha256"] = H
+        self.prepare(ds, register=False)
+        self.save_meta(meta)
+        rc, result = self.generate(self.save_skeleton())
+        self.assertEqual((rc, result["outcome"]), (0, "generated"), result)
+        self.plan["datastream_sha256"] = meta["datastream_sha256"] = "a" * 64
+        self.save_meta(meta)
+        rc, result = self.generate(self.save_skeleton(), register=False)
+        self.assertEqual((rc, result["outcome"]), (0, "generated"), result)
 
     def test_group_and_child_flags_preserve_ancestor_selection_semantics(self):
         root = tailoring()

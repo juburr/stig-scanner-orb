@@ -155,7 +155,13 @@ benchmark/version. Tailored generation requires bundled or supplied DISA data:
 additions can select mappings outside the stock release verification.
 Explicit tailoring deselections withhold the whole V-ID verdict even when
 another contributor ran. Preserve its evidence. Refined values use check-export
-value ids and TestResult set-values. The caller's source is never reopened.
+value ids and TestResult set-values. The caller's source is never reopened. Resolve `cluster-id` aliases by item type and expand them in the evaluated XML
+(the pinned RPM OpenSCAP ignores value aliases). Bind original and evaluated
+XML with separate hashes,
+reject complex-value tailoring before evaluation (the pinned RPM OpenSCAP
+cannot resolve it reliably), and follow benchmark profile ancestry to the
+verified STIG base. The results parser also retains complex TestResult values
+when supplied by other scan producers.
 `tests/tailoring_test.py` loads the exact scan preflight and checklist generator;
 `smoke-rhel9-tailoring` also feeds the consumer validators.
 

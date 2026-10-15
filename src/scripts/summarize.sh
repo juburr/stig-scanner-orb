@@ -299,6 +299,7 @@ provenance = {
         "sha256": plan.get("tailoring_sha256"),
         "profile_id": plan.get("tailoring_profile"),
         "metadata_sha256": plan.get("tailoring_meta_sha256"),
+        "evaluated_sha256": plan.get("tailoring_evaluated_sha256"),
     } if plan.get("tailoring_file") else None,
     "scanner": {
         "image": opt(plan.get("scanner")),
@@ -412,6 +413,7 @@ if plan:
         tailoring = provenance["tailoring"]
         lines.append(f"  tailoring-file:    {tailoring['path']}")
         lines.append(f"  tailoring-sha256:  {tailoring['sha256']}")
+        lines.append(f"  tailoring-eval-sha256: {tailoring['evaluated_sha256']}")
         lines.append(f"  tailored-profile:  {tailoring['profile_id']}")
     lines.append(f"  datastream-source: {ds['source'] or ''}")
     lines.append(f"  datastream-sha256: {ds['sha256'] or 'unavailable'}")
