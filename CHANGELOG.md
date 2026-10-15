@@ -9,6 +9,20 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 
 ### Added
 
+- Generated, source-hash-verified checklist entry point that stays below Linux's
+  single-argument limit when CircleCI launches the packed generator and guard.
+  Maintainer checks enforce source equality and command-size headroom.
+
+- Release-bound `checklist_answers` JSON for explicit site status/comments and
+  appended evidence, plus literal N/A category wording overrides. Exact snapshot
+  hashes, original verdicts/comments and decision history travel with both
+  checklist formats; scan findings and gates remain independent. Strict bounded
+  validation and pre-cleanup source protection reject unsafe or stale inputs.
+- Opt-in `checklist_default_answers: container-host`, reviewed and hash-pinned
+  for the RHEL 9 V2R9 manual entropy-gatherer requirement. User answers can
+  supersede it while preserving both decisions; other releases and filesystem
+  scans require explicit site answers.
+
 - Offline `tailoring_file` support for both scanner paths, with profile
   validation, bounded immutable snapshots and hash-bound provenance. Complete
   DISA checklists retain explicitly deselected requirements as Not Reviewed,

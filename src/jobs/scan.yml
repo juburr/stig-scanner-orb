@@ -18,6 +18,19 @@ parameters:
     type: string
     default: "ckl,cklb"
     description: Comma-separated ckl and/or cklb, case-insensitive.
+  checklist_answers:
+    type: string
+    default: ""
+    description: >
+      Runner-readable release-bound site answers JSON (at most 1 MiB), outside
+      output_dir. Applied only to checklists; automated scan gates are unchanged.
+  checklist_default_answers:
+    type: enum
+    enum: ["none", "container-host"]
+    default: "none"
+    description: >
+      Opt-in reviewed manual host answers for RHEL 9 V2R9 container images.
+      The caller must establish that the image uses its runtime host's kernel.
   stig_xccdf_path:
     type: string
     default: ""
@@ -126,6 +139,7 @@ steps:
       environment:
         PARAM_OUTPUT_DIR: <<parameters.output_dir>>
         PARAM_ROOTFS_PATH: <<parameters.rootfs_path>>
+        PARAM_CHECKLIST_ANSWERS: <<parameters.checklist_answers>>
       command: <<include(scripts/reserve-output.sh)>>
   - load_image:
       image_tarball: <<parameters.image_tarball>>
@@ -137,6 +151,7 @@ steps:
       datastream_name: <<parameters.datastream_name>>
       datastream_path: <<parameters.datastream_path>>
       tailoring_file: <<parameters.tailoring_file>>
+      checklist_answers: <<parameters.checklist_answers>>
       profile_id: <<parameters.profile_id>>
       output_dir: <<parameters.output_dir>>
       donor_image: <<parameters.donor_image>>
@@ -145,6 +160,8 @@ steps:
       output_dir: <<parameters.output_dir>>
       checklist: <<parameters.checklist>>
       checklist_formats: <<parameters.checklist_formats>>
+      checklist_answers: <<parameters.checklist_answers>>
+      checklist_default_answers: <<parameters.checklist_default_answers>>
       stig_xccdf_path: <<parameters.stig_xccdf_path>>
       checklist_asset_name: <<parameters.checklist_asset_name>>
   - summarize:
@@ -191,7 +208,7 @@ steps:
         PARAM_OUTPUT_DIR: <<parameters.output_dir>>
         PARAM_ROOTFS_PATH: <<parameters.rootfs_path>>
         PARAM_CHECKLIST_GUARD: "true"
-      command: <<include(scripts/checklist.sh)>>
+      command: <<include(scripts/checklist-packed.sh)>>
   - store_artifacts:
       path: <<parameters.output_dir>>/checklist.ckl
       destination: stig/checklist.ckl

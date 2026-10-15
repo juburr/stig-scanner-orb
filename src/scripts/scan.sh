@@ -156,6 +156,27 @@ reject_source_output_collision() {
 reject_source_output_collision "${TAILORING_FILE}" tailoring_file
 reject_source_output_collision "${DATASTREAM_PATH_OVERRIDE}" datastream_path
 
+# Answers are read later by checklist; protect them before any output cleanup.
+CHECKLIST_ANSWERS="$(subst "${PARAM_CHECKLIST_ANSWERS:-}")"
+if [ -n "${CHECKLIST_ANSWERS}" ]; then
+    python3 - "${CHECKLIST_ANSWERS}" "${OUTPUT_DIR}" <<'PY_ANSWER_INPUT'
+import os
+import sys
+source, out = map(os.path.realpath, sys.argv[1:])
+names = ["results.xml", "report.html", "scan-plan.env", "summary.txt", "provenance.json",
+         "tailoring-meta.json", "summary.txt.exit-code", "checklist-meta.json", "checklist-meta.json.partial",
+         "checklist.ckl", "checklist.cklb", "checklist.ckl.partial", "checklist.cklb.partial"]
+collision = os.path.commonpath((source, out)) == out
+for name in names:
+    try:
+        collision = os.path.samefile(sys.argv[1], os.path.join(sys.argv[2], name)) or collision
+    except FileNotFoundError:
+        pass
+if collision:
+    sys.exit("ERROR: checklist_answers must be outside output_dir and cannot alias generated outputs")
+PY_ANSWER_INPUT
+fi
+
 # This must follow the physical overlap check: never clean the caller's tree.
 rm -f -- "${OUTPUT_DIR}/checklist-meta.json"
 rm -f -- "${OUTPUT_DIR}/summary.txt.exit-code"

@@ -211,6 +211,8 @@ The checklist output explains N/A conditions without deselecting host rules. Tai
 | `ignore_findings` | string | `""` | Comma-separated rule IDs to subtract from the fail/error/unknown gate count. |
 | `checklist` | enum | `auto` (job/checklist); `none` (summarize) | `auto` allows documented skips and fails generation errors; `require` also fails skips; `none` disables generation and enforcement. |
 | `checklist_formats` | string | `ckl,cklb` | One or both formats; trimmed, case-insensitive, comma-separated. Empty or unknown formats are errors. |
+| `checklist_answers` | string | `""` | Release-bound site answers JSON, at most 1 MiB. Keep outside output_dir. Overrides checklist decisions and wording, retaining automated evidence. |
+| `checklist_default_answers` | enum | `none` | `container-host` opts into reviewed manual host answers for RHEL 9 V2R9 container images. Site answers take precedence. |
 | `stig_xccdf_path` | string | `""` | Runner-readable DISA manual XCCDF file or ZIP, at most 16 MiB. Supplies official text, CCIs, all rows, and the checklist release. |
 | `checklist_asset_name` | string | `""` | Stable unique asset name; defaults to the image reference. Required for rootfs checklists. XML-safe, trimmed, capped at 255 characters. |
 | `output_dir` | string | `build/stig` | Where reports and summary land. In `rootfs_path` mode it must not overlap the scanned tree; that is checked by physical path (symlinks resolved), so don't point it at a bind-mount alias of the tree either. |
@@ -340,6 +342,103 @@ generation. Each row carries the skeleton release, source path, XCCDF hash and
 ZIP hash/member where applicable; `checklist-meta.json` and `provenance.json`
 also record them. The `bundle` metadata block identifies the content-matched
 reference separately from a supplied skeleton.
+
+### Site answer files
+
+Set `checklist_answers` to a runner-readable JSON file staged before the scan.
+Keep it outside `output_dir`, including through symlinks or hard links to generated
+outputs. The job protects it before cleanup, then checklist generation reads one
+bounded snapshot (UTF-8, at most 1 MiB) and hashes the exact bytes. No network
+access or third-party tooling is needed.
+
+```yaml
+- stig-scanner-orb/scan:
+    image: registry.access.redhat.com/ubi9/ubi:latest
+    target_base: rhel9
+    checklist: require
+    checklist_answers: security/rhel9-answers.json
+```
+
+An answer file names the **exact checklist release**, including its canonical
+benchmark date. Copy these fields from `checklist-meta.json` → `stig`; they refer
+to the supplied DISA skeleton's release when one is used.
+
+```json
+{
+  "schema": "stig-scanner-orb/checklist-answers/v1",
+  "stig": {
+    "benchmark_id": "RHEL_9_STIG",
+    "version": "2",
+    "releaseinfo": "Release: 9 Benchmark Date: 01 Jul 2026"
+  },
+  "answers": {
+    "V-257782": {
+      "status": "Not_Applicable",
+      "comments": "Assessor decision: this container shares its host kernel. Assess the entropy gatherer on that host.",
+      "finding_details_append": "Assessment record: SITE-123, reviewed by the site assessor."
+    }
+  },
+  "category_comments": {
+    "host": "Site-approved host-control wording; assess the recorded condition on the runtime platform."
+  }
+}
+```
+
+`answers` is keyed by V-ID. Each entry may replace `comments`, append
+`finding_details_append`, and/or set `status` to `Open`, `NotAFinding`,
+`Not_Applicable` or `Not_Reviewed` (case-sensitive CKL spellings). A status
+requires nonempty comments explaining the decision. Each entry must have at
+least one field. Empty text, non-string values, unknown fields, duplicate JSON
+keys, non-JSON numeric constants, invalid XML characters, text longer than
+16,384 characters, release mismatches and V-IDs absent from the generated
+checklist fail conversion and remove stale checklists. This format is inspired
+by Evaluate-STIG answer files; it is a separate schema.
+
+`category_comments` replaces comments on automatically N/A rows in the named
+categories: `host`, `gui`, `package`, `arch`, `platform`, `check`. The text is
+literal; no interpolation or code runs. Categories change wording only. A row
+combining several categories requires wording for all of them; their comments
+are joined in category order. Individual V-ID answers take precedence over
+category wording. Unused categories are allowed. At least one of `answers` or
+`category_comments` must contain an entry.
+
+Answers run after applicability, architecture, tailoring and revision checks.
+They may explicitly assess manual-only, deselected or revision-mismatched rows;
+this is a site decision, not an automated compliance claim. The original status,
+comments, scanner evidence and every applied decision remain in `FINDING_DETAILS`
+in both formats. Every row names the answer snapshot's SHA-256, including rows
+without overrides. `checklist-meta.json` and the checklist block in
+`provenance.json` / `summary.txt` record the file path/hash, applied row counts,
+automatic status counts and final checklist counts. Keep the original JSON in
+your assessment records to reproduce an answer snapshot; the orb does not
+upload it separately.
+
+**Answers do not change `results.xml`, scan provenance, finding ignores, or any
+scan gate.** `fail_on_finding` still uses the automated scan results even if an
+answer changes a checklist row from Open to N/A. `checklist: none` skips reading
+and applying answers. Failed conversions remain enforced by `summarize` under
+`auto` and `require`, with the existing atomic publication and upload guard.
+Standalone command users must pass `checklist_answers` to both `scan` (protects
+the input from cleanup) and `checklist` (applies it).
+
+#### Opt-in container host answers
+
+`checklist_default_answers: container-host` explicitly selects a small curated
+answer set. It currently covers **only RHEL 9 V2R9 V-257782**, the manual hardware
+entropy-gatherer requirement. It marks that requirement N/A for a container image
+sharing its runtime host's kernel and directs assessment to the host. Select it
+only after establishing that relationship; it does not verify the host or assert
+RMF control inheritance. It is disabled by default and refused for `rootfs_path`
+scans, other releases, changed requirement text, or a requirement that now has a
+scanner contributor. The exact reviewed DISA row is hash-pinned; content refreshes
+require a new review. A same-release supplied skeleton must retain the reviewed
+row byte-for-byte at the parsed-field level.
+
+Curated answers apply first, then category wording, then the supplied answer
+file's V-ID decisions. A supplied answer may supersede the curated result, and
+both decisions remain in the evidence. The curated set has its own deterministic
+SHA-256 recorded in metadata and affected rows. Default answers are intentionally
+narrow; assess other manual-only requirements individually.
 
 ### XCCDF tailoring
 
@@ -536,6 +635,14 @@ Docker resolves the digest and ignores the tag, which is kept so a reader can se
 Cite `repo_digests` as the image digest, together with `platform`: the pinned Chainguard digest is a multi-platform index, which names the amd64 and arm64 builds at once, and the platform says which of its manifests ran (`summary.txt` prints it in brackets after each digest). `image_id` is store-dependent: on Docker's classic image store it is the config digest, on the containerd store it is the manifest or index digest. Every helper and scanner container runs from the resolved image id, so the recorded image is the one that ran even if a tag moved mid-scan.
 
 A donated or `datastream_path` datastream is copied into a private per-scan snapshot directory (as root inside a container, so a `datastream_path` only root can read works, as it does for the root-run scan), and both the hash and the scan read that snapshot, so `datastream.sha256` is the hash of the bytes `oscap` evaluated even if the original file changes mid-scan. Donated datastreams are not cached between scans: a reused file could be stale or modified and still be attributed to the pinned donor. Bundled datastreams are read from inside the digest-pinned scanner image.
+
+### Updating the checklist generator
+
+Edit the readable `src/scripts/checklist.sh`, then run
+`python3 tools/pack-checklist.py` to refresh its compact CircleCI entry point.
+`tests/checklist_test.sh` verifies that the entry decodes to the exact source
+and fits the runner's command-size limit. Commit both files together. This is
+also required after refreshing release tables during a scanner pin update.
 
 ### Updating the pinned images
 

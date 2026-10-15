@@ -137,7 +137,7 @@ Rule ID revision becomes Not_Reviewed, retaining automated evidence. Known
 release inventories and internal profile inventories are separate checks;
 unknown releases report self-consistency only. Skeletons never waive scan
 provenance, selected mapping, inventory or architecture checks. Without a
-skeleton, SSG-only limits still apply. Answer files are not implemented. Manual STIG Viewer 3 import and ISSM
+skeleton, SSG-only limits still apply. Answer files are implemented as described below. Manual STIG Viewer 3 import and ISSM
 wording review remain release acceptance tasks.
 
 ## Tailoring
@@ -243,3 +243,35 @@ is equal after removing the checkout preparation. The full packed smoke scans
 without checkout, then checks out only for post-step assertions. All scan paths and both skeleton jobs still feed consumer validation.
 Do not duplicate product implementation in the CI adapter or omit the full-orb
 smoke. Every matrix job must checkout before bundle staging.
+
+## Checklist answers
+
+`checklist_answers` is a runner-readable UTF-8 JSON file outside output_dir,
+bounded to 1 MiB and snapshotted once by checklist. The strict v1 schema binds
+benchmark_id/version/releaseinfo; rejects duplicate/unknown keys, malformed text,
+unknown V-IDs and invalid statuses. Text is literal (no templating). A status
+requires comments. `scan` and reserve-output protect it before cleanup, including
+hard links. Standalone callers pass the path to scan and checklist.
+`apply_answers` runs after all automatic model/eligibility checks. Preserve original
+verdict/comments/evidence and hash-bound decisions in both formats. Order: opt-in
+curated default, category wording, explicit row answer. Category wording changes
+only N/A comments and must cover every category of a mixed row. Metadata records
+automatic and final counts; summarize's scan gates still read results.xml.
+`checklist_default_answers: container-host` is opt-in, image-only, exact RHEL 9
+V2R9/manual-only V-257782. Its complete parsed DISA row is hash-pinned; refreshes
+require reviewing both scope and source text, never silently accepting a new
+release. Do not broaden it to automatic/deselected checks or rootfs assumptions.
+`tests/answers_test.py` covers decisions, validation, snapshots, output collisions,
+publication, default pins and gate independence. `smoke-rhel9-answers` verifies
+real output and feeds the existing STIG Manager and DISA schema validators.
+
+CircleCI's bash -c launch is limited to one argument below 128 KiB.
+`src/scripts/checklist-packed.sh` is a generated, compressed entry for the
+readable checklist.sh (currently larger than that limit). It decodes and
+hash-checks the exact script, then executes it using bash's eval builtin;
+caller inputs never enter that payload. Both generation and the packed guard
+include this entry. After ANY checklist.sh edit, run
+`python3 tools/pack-checklist.py`; tests run `--check` and enforce a <120000-byte
+entry. The CI matrix guard still runs the identical readable source. Do not
+pass the decoded script through an external bash -c argument. The packing
+regression launches the actual entry via bash -c to catch this limit.
