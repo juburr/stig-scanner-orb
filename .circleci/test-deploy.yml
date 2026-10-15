@@ -430,6 +430,7 @@ workflows:
             - assert-checklist:
                 outcome: generated
                 artifact_name: smoke-rhel9-answers
+          filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-rhel9-tailoring
           image: registry.access.redhat.com/ubi9/ubi:latest

@@ -3,6 +3,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -299,6 +300,16 @@ class AnswerTests(unittest.TestCase):
         self.assertIn('Deselected by tailoring', row['finding_details'])
         self.assertIn('result before answer: Not_Reviewed', row['finding_details'])
         self.assertTrue(meta['tailoring'])
+
+    def test_answer_smoke_runs_on_tags_and_gates_validation_and_publishing(self):
+        config = (ROOT / '.circleci/test-deploy.yml').read_text()
+        block = re.search(r"      - stig-scanner-orb/scan:\n          name: smoke-rhel9-answers\n"
+                          r"(?:(?!      - ).*\n)*", config).group(0)
+        self.assertIn('filters: *filters', block)
+        for name in ('checklist-validator', 'orb-tools/publish'):
+            invocation = re.split(r'^      - ', config.split('      - ' + name + ':', 1)[1],
+                                  maxsplit=1, flags=re.M)[0]
+            self.assertIn('            - smoke-rhel9-answers', invocation)
 
     def test_packed_entry_point_verifies_source_and_fits_linux_argument_limit(self):
         import runpy

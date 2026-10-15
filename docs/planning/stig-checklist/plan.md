@@ -713,7 +713,7 @@ answers; all decisions remain visible. New releases require fresh review.
   (e.g. RHEL 9 V-257782, hardware RNG entropy gatherer). This is the one
   hand-maintained "container STIG" artefact that earns its keep.
 
-Validation: all script suites and 145 checklist tests (18 answer-file tests) pass,
+Validation: all script suites and 146 checklist tests (19 answer-file tests) pass,
 including Python 3.8 coverage. A real pinned RHEL 9 scan yields 445 rows;
 curated/site precedence, all 366 N/A category replacements, retained evidence
 and the independent fail-on-finding gate pass. Both formats import through the
