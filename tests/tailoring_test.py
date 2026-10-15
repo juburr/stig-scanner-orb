@@ -297,6 +297,10 @@ class TailoringTests(unittest.TestCase):
                     href="checks.xml",
                     name="replacement" if case == "replaced" else "inherited",
                 )
+                if case not in ("cycle", "missing"):
+                    meta = self.preflight(ds=ds)
+                    meta["datastream_sha256"] = H
+                    self.save_meta(meta)
                 self.prepare(ds, register=False)
                 rc, result = self.generate(self.save_skeleton())
                 if case in ("cycle", "missing"):
@@ -433,6 +437,90 @@ class TailoringTests(unittest.TestCase):
         self.assertEqual((rc, result["outcome"]), (0, "generated"), result)
         self.assertTrue(all(row["status"] == "not_reviewed" for row in self.rows()))
         self.assertNotIn("Deselected by tailoring", self.rows()[0]["comments"])
+
+    def test_inherited_disa_references_keep_derived_failures_visible(self):
+        for mode in ("inherit", "append", "override"):
+            with self.subTest(mode=mode):
+                ds, _ = self.tailored()
+                derived = ET.SubElement(
+                    ds.find(X + "Group"), X + "Rule", id="derived", extends="one", severity="medium"
+                )
+                ET.SubElement(derived, X + "title").text = "Derived check"
+                check = ET.SubElement(derived, X + "check", system="test")
+                ET.SubElement(check, X + "check-content-ref", href="checks.xml", name="failing-derived")
+                if mode != "inherit":
+                    ref = ET.SubElement(derived, X + "reference", href=MOD["HREF_RULE"])
+                    ref.text = "SV-2r1_rule"
+                    if mode == "override":
+                        ref.set("override", "true")
+                    ET.SubElement(derived, X + "reference", href=MOD["HREF_VULN"]).text = "V-2"
+                rr = ET.SubElement(ds.find(X + "TestResult"), X + "rule-result", idref="derived")
+                ET.SubElement(rr, X + "result").text = "fail"
+                meta = self.preflight(ds=ds)
+                meta["datastream_sha256"] = H
+                self.prepare(ds, register=False)
+                self.save_meta(meta)
+                rc, result = self.generate(self.save_skeleton())
+                self.assertEqual((rc, result["outcome"]), (0, "generated"), result)
+                parsed = MOD["parse_results"](str(self.out / "results.xml"), meta)
+                expected = {"1"} if mode == "inherit" else {"2"} if mode == "override" else {"1", "2"}
+                self.assertEqual(set(parsed["rules"]["derived"]["svs"]), expected)
+                rows = {row["group_id"]: row for row in self.rows()}
+                if mode != "override":
+                    self.assertEqual(rows["V-1"]["status"], "open")
+                    self.assertIn("derived: fail", rows["V-1"]["finding_details"])
+                else:
+                    self.assertEqual(rows["V-1"]["status"], "not_a_finding")
+                    self.assertIn("derived: fail", rows["V-2"]["finding_details"])
+
+    def test_tailoring_output_collisions_preserve_input_and_existing_evidence(self):
+        bindir = self.out / "bin"
+        bindir.mkdir()
+        fake = bindir / "docker"
+        fake.write_text('#!/bin/sh\nprintf called > "$DOCKER_CALLED"\nexit 99\n')
+        fake.chmod(0o755)
+        called = self.out / "docker-called"
+        raw = ET.tostring(tailoring())
+        for case in ("direct", "dot", "directory_alias", "file_alias", "hardlink", "later_output"):
+            with self.subTest(case=case):
+                directory = self.out / case
+                directory.mkdir()
+                output = directory / "out"
+                output.mkdir()
+                artifact = output / ("results.xml" if case == "later_output" else "tailoring-meta.json")
+                artifact.write_bytes(raw)
+                evidence = output / "checklist-meta.json"
+                evidence.write_text("prior evidence")
+                source = artifact
+                output_param = str(output)
+                cwd = self.out
+                if case == "dot":
+                    cwd, source, output_param = output, Path("tailoring-meta.json"), "."
+                elif case == "directory_alias":
+                    alias = directory / "output-alias"
+                    alias.symlink_to(output, target_is_directory=True)
+                    output_param = str(alias)
+                elif case == "file_alias":
+                    source = directory / "source.xml"
+                    source.symlink_to(artifact)
+                elif case == "hardlink":
+                    source = directory / "source.xml"
+                    os.link(artifact, source)
+                env = dict(
+                    os.environ,
+                    PATH=str(bindir) + os.pathsep + os.environ["PATH"],
+                    DOCKER_CALLED=str(called),
+                    PARAM_IMAGE="unused:test",
+                    PARAM_OUTPUT_DIR=output_param,
+                    PARAM_PROFILE_ID=CUSTOM,
+                    PARAM_TAILORING_FILE=str(source),
+                )
+                run = subprocess.run(["bash", str(SCAN)], env=env, cwd=str(cwd), capture_output=True, text=True)
+                self.assertEqual(run.returncode, 2, run.stderr)
+                self.assertIn("collides with generated output", run.stderr)
+                self.assertEqual(artifact.read_bytes(), raw)
+                self.assertEqual(evidence.read_text(), "prior evidence")
+                self.assertFalse(called.exists())
 
     def test_ssg_only_omits_deselected_row(self):
         self.tailored()

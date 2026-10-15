@@ -410,7 +410,12 @@ profile; local-to-local tailoring inheritance is refused. Bases and directives
 are validated for unused profiles too; only the selected profile affects the
 scan. The benchmark `href` is recorded as a source label; the explicitly selected
 datastream is the input, and the orb never fetches that href. The tailoring file itself is never mounted into the
-target filesystem or reopened after the scan snapshot is made.
+target filesystem or reopened after the scan snapshot is made. Its path must
+not collide with a generated artifact; such collisions are rejected before cleanup.
+
+Inherited Rule references are resolved for mapping and source verification.
+Both pinned engines can drop inherited reference metadata when writing
+results; conversion then fails closed instead of omitting a contributing Rule.
 
 Value evidence follows the check recorded in TestResult when its source
 exports can be identified. If check evidence is missing or ambiguous, the row

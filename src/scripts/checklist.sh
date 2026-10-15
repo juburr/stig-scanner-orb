@@ -167,7 +167,7 @@ def parse_results(source, tailoring=None):
             f"results.xml defines {len(dup_ids)} Rule id(s) more than once (e.g. {', '.join(dup_ids[:5])})"
         )
     source_rules = {r.get("id"): r for r in bench.iter(X12 + "Rule")}
-    def effective_checks(rule):
+    def effective_rule_properties(rule):
         # check properties replace inherited checks with the same system and
         # selector; distinct alternatives are inherited. complex-check is a
         # separate replace property and takes precedence over simple checks.
@@ -183,27 +183,32 @@ def parse_results(source, tailoring=None):
             if base and base not in source_rules:
                 raise ValueError("unresolved Rule inheritance: " + base)
             current = source_rules.get(base) if base else None
-        checks, complex_check = {}, None
+        checks, complex_check, references = {}, None, []
         for ancestor in reversed(lineage):
+            own_refs = ancestor.findall(X12 + "reference")
+            if any(ref.get("override") in ("true", "1") for ref in own_refs):
+                references = []
+            references.extend(own_refs)
             own = collections.defaultdict(list)
             for check in ancestor.findall(X12 + "check"):
                 own[(check.get("system"), check.get("selector", ""))].append(check)
             checks.update(own)
             if ancestor.find(X12 + "complex-check") is not None:
                 complex_check = ancestor.find(X12 + "complex-check")
-        return list(complex_check.iter(X12 + "check")) if complex_check is not None else [c for cs in checks.values() for c in cs]
+        effective = list(complex_check.iter(X12 + "check")) if complex_check is not None else [c for cs in checks.values() for c in cs]
+        return effective, references
 
     for r in bench.iter(X12 + "Rule"):
         if not r.get("id"):
             raise ValueError("results.xml defines a Rule without an id")
-        refs = [(x.get("href") or "", (x.text or "").strip()) for x in r.findall(X12 + "reference")]
+        effective, references = effective_rule_properties(r)
+        refs = [(x.get("href") or "", (x.text or "").strip()) for x in references]
         ref = lambda pred: next((v for h, v in refs if pred(h, v)), None)
         sv_refs = sorted({v for h, v in refs if h == HREF_RULE})
         svs = collections.defaultdict(list)
         for v in sv_refs:
             if SV_RE.fullmatch(v):
                 svs[SV_RE.fullmatch(v).group(1)].append(v)
-        effective = effective_checks(r)
         check_exports[r.get("id")] = [
             (check_key(check), {e.get("value-id") for e in check.findall(X12 + "check-export") if e.get("value-id")})
             for check in effective

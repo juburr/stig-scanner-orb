@@ -1,6 +1,7 @@
 """CI-only interoperability checks against both exact pinned OpenSCAP engines."""
 
 import os
+import hashlib
 from pathlib import Path
 import re
 import subprocess
@@ -44,6 +45,14 @@ def benchmark(case):
     for rid in RULES:
         rule = ET.SubElement(group, X + "Rule", id=rid, selected="true", severity="low", **{"cluster-id": "rules"})
         ET.SubElement(rule, X + "title").text = rid
+    if case in ("rule-reference-inheritance", "rule-reference-override"):
+        child, parent_rule = [el for el in group if el.tag == X + "Rule"]
+        child.set("extends", parent_rule.get("id"))
+        ET.SubElement(parent_rule, X + "reference", href=checklist["HREF_RULE"]).text = "SV-1r1_rule"
+        ET.SubElement(parent_rule, X + "reference", href=checklist["HREF_VULN"]).text = "V-1"
+        if case == "rule-reference-override":
+            ET.SubElement(child, X + "reference", href=checklist["HREF_RULE"], override="true").text = "SV-2r1_rule"
+            ET.SubElement(child, X + "reference", href=checklist["HREF_VULN"]).text = "V-2"
     if case == "base-group":
         ET.SubElement(root.find(X + "Profile"), X + "select", idref=G, selected="false")
     if case == "default-group":
@@ -148,6 +157,8 @@ for image in images:
         "repeated",
         "rule-refinement",
         "inherited-metadata",
+        "rule-reference-inheritance",
+        "rule-reference-override",
         "shadow",
     ):
         with tempfile.TemporaryDirectory(prefix="stig-tailoring-compat-") as directory:
@@ -209,6 +220,26 @@ for image in images:
                 stdout=subprocess.DEVNULL,
             )
             res = checklist["parse_results"](str(directory / "results.xml"), meta)
+            reference_case = case in ("rule-reference-inheritance", "rule-reference-override")
+            if reference_case:
+                expected_vid = "2" if case == "rule-reference-override" else "1"
+                lines = [
+                    RULES[0] + "\tSV-" + expected_vid + "r1_rule\tV-" + expected_vid,
+                    RULES[1] + "\tSV-1r1_rule\tV-1",
+                ]
+                assert meta["references_sha256"] == hashlib.sha256("\n".join(lines).encode()).hexdigest()
+                if set(res["rules"][RULES[0]]["svs"]) != {expected_vid}:
+                    # The pinned RPM engine drops inherited references and
+                    # removes extends. The source inventory must prevent a
+                    # partial mapping from being published as a checklist.
+                    try:
+                        checklist["validate_tailored_results"](res, meta)
+                    except ValueError as error:
+                        assert "reference inventory differs" in str(error), error
+                    else:
+                        raise AssertionError("lost inherited references were accepted")
+                    print(f"{image}: {case} lost scanner references rejected by source inventory")
+                    continue
             checklist["validate_tailored_results"](res, meta)
             expected_results = {rid: "notselected" for rid in RULES}
             if case in ("conflicts", "rule-refinement"):
@@ -230,6 +261,9 @@ for image in images:
                 )
             )
             assert res["set_values"][V] == expected, res["set_values"]
+            if case in ("rule-reference-inheritance", "rule-reference-override"):
+                expected_vid = "2" if case == "rule-reference-override" else "1"
+                assert set(res["rules"][RULES[0]]["svs"]) == {expected_vid}
             if case == "rule-refinement":
                 actual = res["rule_properties"][RULES[0]][0]
                 assert actual["role"] == "unchecked" and actual["severity"] == "high", actual

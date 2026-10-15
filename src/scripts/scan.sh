@@ -134,6 +134,23 @@ if [ -n "${ROOTFS_PATH}" ] && [ -d "${ROOTFS_PATH}" ] \
     exit 2
 fi
 
+# Refuse source/output collisions before invalidating any prior evidence.
+# Physical paths catch directory aliases; -ef also catches final symlinks and
+# hard links, including root-owned inputs readable only by the scanner.
+if [ -n "${TAILORING_FILE}" ]; then
+    tailoring_phys="$(phys_path "${TAILORING_FILE}")"
+    output_phys="$(phys_path "${OUTPUT_DIR}")"
+    for artifact in tailoring-meta.json checklist-meta.json summary.txt.exit-code \
+            checklist.ckl checklist.cklb checklist.ckl.partial checklist.cklb.partial \
+            checklist-meta.json.partial results.xml report.html scan-plan.env summary.txt provenance.json; do
+        if [ "${tailoring_phys}" = "${output_phys%/}/${artifact}" ] \
+                || [ "${TAILORING_FILE}" -ef "${OUTPUT_DIR}/${artifact}" ]; then
+            echo "ERROR: tailoring_file collides with generated output '${OUTPUT_DIR}/${artifact}'." >&2
+            exit 2
+        fi
+    done
+fi
+
 # This must follow the physical overlap check: never clean the caller's tree.
 rm -f -- "${OUTPUT_DIR}/checklist-meta.json"
 rm -f -- "${OUTPUT_DIR}/summary.txt.exit-code"
@@ -1016,6 +1033,29 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
         # XCCDF uses the first property if no empty-selector value exists.
         return defaults or choices[:1]
 
+    def rule_references(rule):
+        lineage, seen = [], set()
+        current = rule
+        while current is not None:
+            rid = current.get("id")
+            if rid in seen:
+                raise ValueError("cyclic Rule inheritance: " + str(rid))
+            seen.add(rid)
+            lineage.append(current)
+            base = current.get("extends")
+            if base and base not in rules:
+                raise ValueError("unresolved Rule inheritance: " + base)
+            current = rules.get(base) if base else None
+        references = []
+        for ancestor in reversed(lineage):
+            own = ancestor.findall(X + "reference")
+            # XCCDF Table 33: reference uses append unless the child
+            # explicitly replaces inherited references with override=true.
+            if any(r.get("override") in ("true", "1") for r in own):
+                references = []
+            references.extend(own)
+        return references
+
     parent = {child: element for element in bench.iter() for child in element}
     items = {**groups, **rules, **values}
     if len(items) != len(groups) + len(rules) + len(values):
@@ -1299,7 +1339,7 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
 
     lines = []
     for rid in sorted(rules):
-        refs = rules[rid].findall(X + "reference")
+        refs = rule_references(rules[rid])
         svs = sorted({(r.text or "").strip() for r in refs if r.get("href") == HREF_RULE})
         vids = sorted({(r.text or "").strip() for r in refs if r.get("href") == HREF_VULN})
         lines.append(rid + "\t" + " ".join(svs) + "\t" + " ".join(vids))

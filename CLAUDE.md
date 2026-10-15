@@ -154,7 +154,9 @@ values are unsupported because the pinned RPM engine cannot resolve them
 reliably; external TestResult complex values are retained by the parser.
 
 `tailoring-meta.json` derives from the same immutable snapshots as evaluation.
-Bind the original/evaluated XML and manifest hashes in scan-plan.env. Checklist
+Reject tailoring-file collisions with any generated output before cleanup,
+including directory aliases, final symlinks and hard links. Bind the
+original/evaluated XML and manifest hashes in scan-plan.env. Checklist
 meta stores compact identity and the manifest hash to stay below the guard and
 summarizer's 1 MiB limit. Conversion checks the complete Rule/DISA reference
 inventory instead of a stock selection fingerprint for tailored profiles, while
@@ -190,7 +192,10 @@ on stock-unselected Rules too. Preserve official DISA severity and do not infer
 missing properties or effective Group weight from Rule weight. Resolve Rule
 extends chains before matching value exports, using check replacement keyed by
 system/selector; inherited complex-check content takes precedence over simple
-checks. Omit unselected alternatives when recorded checks match completely;
+checks. Resolve references with append/override semantics in source inventory
+and result mapping. Both pinned engines can erase inherited references and
+extends; reject the inventory mismatch rather than dropping a failed contributor.
+Omit unselected alternatives when recorded checks match completely;
 missing/ambiguous evidence labels values as global settings with unverified
 Rule use. Summarize verifies the bounded manifest hash/identity before using
 its profile title, including external profiles and same-name shadows.
