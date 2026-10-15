@@ -212,11 +212,14 @@ for el in root.iter():
         notchecked_rules.append(record)
 
 plan = {}
+duplicate_plan_keys = set()
 if os.path.isfile(plan_path):
     with open(plan_path, encoding="utf-8") as plan_file:
         for line in plan_file:
-            if "=" in line:
-                k, v = line.strip().split("=", 1)
+            k, sep, v = line.rstrip("\n").partition("=")
+            if sep:
+                if k in plan:
+                    duplicate_plan_keys.add(k)
                 plan[k] = v
 
 actionable = [rec for name in GATED_RESULTS for rec in gated[name] if not rec["ignored"]]
@@ -254,7 +257,16 @@ for el in root.iter():
         break
 # External and shadowing profiles take their identity from the scan's exact,
 # hash-bound tailoring snapshot, never a same-named stock Profile definition.
-if plan.get("tailoring_file"):
+tailoring_keys = ("tailoring_file", "tailoring_sha256", "tailoring_profile", "tailoring_meta_sha256", "tailoring_evaluated_sha256")
+if any(plan.get(key) for key in tailoring_keys):
+    # Stock standalone summaries retain legacy appended-field behavior.
+    # Hash-bound tailoring identity requires one unambiguous scan plan.
+    if duplicate_plan_keys:
+        raise ValueError("the scan plan repeats " + ", ".join(sorted(duplicate_plan_keys)))
+    if not all(plan.get(key) for key in tailoring_keys):
+        raise ValueError("the scan plan has incomplete tailoring provenance")
+    if plan.get("results_sha256") != results_sha:
+        raise ValueError("tailored results hash differs from the scan plan")
     for key in ("tailoring_sha256", "tailoring_meta_sha256", "tailoring_evaluated_sha256", "datastream_sha256"):
         if not re.fullmatch(r"[0-9a-f]{64}", plan.get(key, "")):
             raise ValueError("invalid or missing tailoring provenance hash: " + key)
@@ -273,6 +285,7 @@ if plan.get("tailoring_file"):
     if (not isinstance(tailoring_identity, dict) or tailoring_identity.get("schema") != "stig-scanner-orb/tailoring/v1"
             or tailoring_identity.get("profile_id") != profile_id
             or profile_id != plan.get("tailoring_profile")
+            or profile_id != plan.get("profile")
             or tailoring_identity.get("sha256") != plan.get("tailoring_sha256")
             or tailoring_identity.get("evaluated_sha256") != plan.get("tailoring_evaluated_sha256")
             or tailoring_identity.get("datastream_sha256") != plan.get("datastream_sha256")

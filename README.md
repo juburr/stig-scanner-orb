@@ -415,6 +415,11 @@ not collide with a generated artifact; such collisions are rejected before clean
 After path safety checks, old scan evidence is removed before preflight, so a
 failed new tailoring cannot republish a preceding scan's results or provenance.
 
+Signed tailoring is passed through unchanged only when no normalization is
+needed. Signed inputs requiring selector/cluster/value rewriting are rejected;
+the orb does not verify XML signatures. Signature presence and verification
+status are recorded in the tailoring manifest.
+
 Inherited Rule references are resolved for mapping and source verification.
 Both pinned engines can drop inherited reference metadata when writing
 results; conversion then fails closed instead of omitting a contributing Rule.
@@ -426,6 +431,9 @@ unverified; alternative checks may not have run. Rule refinements retain the
 requested selector, role, severity and weight alongside properties recorded in
 TestResult. Official DISA checklist severity stays unchanged. Provenance uses
 the tailored profile title from the hash-verified manifest.
+
+Summary verifies the scan plan's results hash before publishing tailored
+identity, even when checklist generation is disabled.
 
 `scan-plan.env` and `provenance.json` record the original file path, its SHA-256
 and the tailored profile id. `tailoring-meta.json` records the inherited base

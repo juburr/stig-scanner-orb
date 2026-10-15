@@ -969,6 +969,9 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
     source, ds = read_xml(datastream_path, 128 << 20)
     if tailoring.tag != X + "Tailoring":
         raise ValueError("expected an XCCDF 1.2 Tailoring document")
+    signature_present = any(
+        el.tag in (X + "signature", "{http://www.w3.org/2000/09/xmldsig#}Signature") for el in tailoring.iter()
+    )
     benches = list(ds.iter(X + "Benchmark"))
     if len(benches) != 1:
         raise ValueError("tailoring requires a datastream with exactly one Benchmark")
@@ -1292,7 +1295,12 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
         )
         oldest[:] = children[:index] + inherited + children[index:]
 
-    if has_clusters or has_repeated or inherited or materialized_values:
+    needs_normalization = bool(has_clusters or has_repeated or inherited or materialized_values)
+    if needs_normalization and signature_present:
+        raise ValueError(
+            "signed tailoring cannot be normalized; use an unsigned equivalent or avoid rewriting selectors"
+        )
+    if needs_normalization:
         # Expansion can produce overlapping concrete targets. Preserve the
         # last assignment per selector, merging partial refinement attributes
         # across inheritance layers instead of creating duplicate idrefs.
@@ -1315,18 +1323,14 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
     # aliases for the selected inheritance chain, retaining their original
     # references in metadata. Both original and evaluated bytes are hashed.
     ET.register_namespace("", X[1:-1])
-    if has_clusters or has_repeated or inherited or materialized_values:
+    if needs_normalization:
         # The pinned RPM XML reader skips adjacent empty selector elements
         # without inter-element whitespace. Keep generated directives apart.
         for element in [tailoring] + list(local.values()):
             for child in element:
                 if not child.tail or not child.tail.strip():
                     child.tail = "\n  "
-    evaluated = (
-        ET.tostring(tailoring, encoding="utf-8", xml_declaration=True)
-        if has_clusters or has_repeated or inherited or materialized_values
-        else raw
-    )
+    evaluated = ET.tostring(tailoring, encoding="utf-8", xml_declaration=True) if needs_normalization else raw
     if len(evaluated) > 16 << 20:
         raise ValueError("expanded tailoring XML exceeds 16 MiB")
     if evaluated_path:
@@ -1353,6 +1357,8 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
     return {
         "schema": "stig-scanner-orb/tailoring/v1",
         "sha256": hashlib.sha256(raw).hexdigest(),
+        "signature_present": signature_present,
+        "signature_verification": "not-performed" if signature_present else "not-present",
         "evaluated_sha256": hashlib.sha256(evaluated).hexdigest(),
         "clusters_expanded": has_clusters,
         "repeated_selectors_normalized": has_repeated,

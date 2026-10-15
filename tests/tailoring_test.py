@@ -588,6 +588,79 @@ class TailoringTests(unittest.TestCase):
         for filename in artifacts:
             self.assertFalse((self.out / filename).exists(), filename)
 
+    def test_standalone_summary_binds_results_and_complete_unambiguous_plan(self):
+        for change in ("results", "missing_hash", "partial", "duplicate"):
+            with self.subTest(change=change):
+                ds, _ = self.tailored()
+                if change == "results":
+                    ds.find(X + "TestResult/" + X + "rule-result/" + X + "result").text = "fail"
+                    (self.out / "results.xml").write_bytes(ET.tostring(ds))
+                elif change == "missing_hash":
+                    del self.plan["results_sha256"]
+                    self.save_plan()
+                elif change == "partial":
+                    del self.plan["tailoring_file"]
+                    self.save_plan()
+                else:
+                    with (self.out / "scan-plan.env").open("a") as f:
+                        f.write("results_sha256=" + self.plan["results_sha256"] + "\n")
+                result = self.summary("none")
+                self.assertNotEqual(result.returncode, 0)
+                expected = (
+                    "incomplete tailoring provenance"
+                    if change == "partial"
+                    else "repeats results_sha256" if change == "duplicate" else "results hash differs"
+                )
+                self.assertIn(expected, result.stderr)
+                self.assertFalse((self.out / "provenance.json").exists())
+                self.assertFalse((self.out / "summary.txt").exists())
+        self.tailored()
+        result = self.summary("none")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        provenance = json.loads((self.out / "provenance.json").read_text())
+        self.assertEqual(provenance["profile"]["id"], CUSTOM)
+        self.assertEqual(provenance["tailoring"]["metadata_sha256"], self.plan["tailoring_meta_sha256"])
+
+    def test_signed_tailoring_is_never_rewritten(self):
+        for location in ("Tailoring", "Profile"):
+            for reason in ("cluster", "repeat", "inherited", "fallback"):
+                with self.subTest(location=location, reason=reason):
+                    ds, root = source(), tailoring()
+                    prof = root.find(X + "Profile")
+                    ET.SubElement(root if location == "Tailoring" else prof, X + "signature")
+                    if reason == "cluster":
+                        ds.find(X + "Value").set("cluster-id", "settings")
+                        prof.find(X + "set-value").set("idref", "settings")
+                    elif reason == "repeat":
+                        ET.SubElement(prof, X + "select", idref="two", selected="true")
+                    elif reason == "inherited":
+                        mid = "xccdf_org.example_profile_intermediary"
+                        inherited = ET.SubElement(ds, X + "Profile", id=mid, extends=P)
+                        ET.SubElement(inherited, X + "set-value", idref=VALUE).text = "25"
+                        prof.set("extends", mid)
+                    else:
+                        prof.remove(prof.find(X + "set-value"))
+                        ET.SubElement(prof, X + "refine-value", idref=VALUE, selector="unmatched")
+                    input_path, ds_path = self.out / "signed.xml", self.out / "source.xml"
+                    original = ET.tostring(root)
+                    input_path.write_bytes(original)
+                    ds_path.write_bytes(ET.tostring(ds))
+                    evaluated = self.out / (location + "-" + reason + ".xml")
+                    with self.assertRaisesRegex(ValueError, "signed tailoring cannot be normalized"):
+                        PRE["prepare"](str(input_path), str(ds_path), CUSTOM, str(evaluated))
+                    self.assertEqual(input_path.read_bytes(), original)
+                    self.assertFalse(evaluated.exists())
+        # Exercise only byte preservation/detection, without claiming that a
+        # placeholder signature has passed native schema or crypto validation.
+        root = tailoring()
+        ET.SubElement(root, X + "signature")
+        meta = self.preflight(root)
+        evaluated = self.out / "signed-pass-through.xml"
+        meta = PRE["prepare"](str(self.tail_path), str(self.ds_path), CUSTOM, str(evaluated))
+        self.assertEqual(evaluated.read_bytes(), self.tail_path.read_bytes())
+        self.assertTrue(meta["signature_present"])
+        self.assertEqual(meta["signature_verification"], "not-performed")
+
     def test_ssg_only_omits_deselected_row(self):
         self.tailored()
         res = MOD["parse_results"](

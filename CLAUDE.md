@@ -188,7 +188,10 @@ wins. Normalize effective scalars after refinements to accommodate the pinned
 RPM engine's precedence and empty-string fallback behavior. Normalize repeated
 selectors and expand cluster IDs by item type in evaluated XML, retaining the
 original directive history. Insert inherited directives before trailing
-metadata/signatures. Never mix unused profiles into selected effective evidence.
+metadata/signatures. Signed inputs requiring any normalization are rejected;
+pass-through bytes stay exact and the manifest states that signature
+verification is not performed. Never mix unused profiles into selected
+effective evidence.
 
 Record refine-rule requests, Group/cluster targets and remarks alongside each
 TestResult instance's role, severity, weight and check identity. Retain requests
@@ -201,7 +204,7 @@ and result mapping. Both pinned engines can erase inherited references and
 extends; reject the inventory mismatch rather than dropping a failed contributor.
 Omit unselected alternatives when recorded checks match completely;
 missing/ambiguous evidence labels values as global settings with unverified
-Rule use. Summarize verifies the bounded manifest hash/identity before using
+Rule use. Summarize verifies the bounded manifest hash/identity and results hash before using
 its profile title, including external profiles and same-name shadows.
 `tests/tailoring_test.py` exercises the production preflight and converter;
 `smoke-rhel9-tailoring` feeds both consumer validators and pinned-engine checks.
