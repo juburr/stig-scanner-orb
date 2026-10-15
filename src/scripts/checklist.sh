@@ -254,6 +254,8 @@ def parse_results(source, tailoring=None):
             continue
         if not el.get("idref") or el.get("idref") in set_values:
             raise ValueError("results.xml has a missing or repeated set-value idref")
+        if el.tag == X12 + "set-value" and len(el):
+            raise ValueError("TestResult set-value must contain scalar text only")
         set_values[el.get("idref")] = (
             ["".join(v.itertext()) for v in el.findall(X12 + "item")]
             if el.tag == X12 + "set-complex-value" else "".join(el.itertext())

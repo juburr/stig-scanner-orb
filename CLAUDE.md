@@ -146,6 +146,9 @@ wording review remain release acceptance tasks.
 UTF-8 XCCDF 1.2 XML and validates its schema with the exact scanner. Use
 `--skip-schematron`: the pinned RPM scanner lacks tailoring schematron rules.
 The chosen profile must be defined in the file and extend a benchmark profile.
+Reject local-to-local tailoring inheritance (XCCDF forbids it), including unused
+local profiles with such references. Reject child elements in scalar set-value;
+remarks are allowed on select/refine selectors, not on set-value.
 `tailoring-meta.json` is derived from the same snapshots used by evaluation;
 its SHA-256 and the original tailoring hash/profile are in scan-plan.env.
 Conversion validates the complete Rule/DISA reference inventory against the
@@ -161,8 +164,10 @@ conservatively Not Reviewed, including requires/conflicts effects; label these
 as partial selection rather than claiming an explicit user deselection. Scalar
 value selectors fall back to the default value when they match only another property;
 complex defaults remain unsupported. Materialize unmatched scalar defaults in
-evaluated XML only when no explicit inherited/local set-value takes precedence;
-this avoids the pinned RPM engine resolving unmatched selectors to an empty string.
+evaluated XML according to selector document order: a later refine-value
+selector replaces earlier set-value tailoring, while a later set-value wins.
+Materialize the resolved scalar after refinements to normalize the pinned RPM
+engine's cross-type precedence and empty-string fallback behavior.
 Resolve Value extends chains with append semantics before selecting properties;
 unknown/cyclic chains fail closed. Repeated selectors apply in document order
 and are normalized for the engines. Permit standard profile shadowing only

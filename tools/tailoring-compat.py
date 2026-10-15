@@ -59,11 +59,16 @@ def benchmark(case):
         ET.SubElement(list(group)[2], X + "requires", idref=RULES[0])
     if case == "conflicts":
         ET.SubElement(list(group)[2], X + "conflicts", idref=RULES[0])
-    if case == "fallback":
-        p.remove(p.find(X + "set-value"))
+    if case in ("fallback", "fallback-base-set", "fallback-local-set", "set-after-refine"):
+        if case != "fallback-base-set":
+            p.remove(p.find(X + "set-value"))
+        else:
+            p.find(X + "set-value").text = "25"
         value.set("type", "number")
         value.find(X + "value").text = "15"
         ET.SubElement(value, X + "lower-bound", selector="bounded").text = "10"
+    if case in ("refine-after-set", "partial-refine-last"):
+        ET.SubElement(value, X + "value", selector="high").text = "20"
     return root
 
 
@@ -88,8 +93,23 @@ def tailoring(case):
         ET.SubElement(p, X + "select", idref=RULES[0], selected="true")
         ET.SubElement(p, X + "select", idref=RULES[0], selected="false")
         ET.SubElement(p, X + "set-value", idref=V).text = "first"
-    if case in ("fallback", "inherited-value"):
-        ET.SubElement(p, X + "refine-value", idref=V, selector="bounded" if case == "fallback" else "high")
+    if case in ("fallback-local-set", "refine-after-set"):
+        ET.SubElement(p, X + "set-value", idref=V).text = "25"
+    if case in (
+        "fallback",
+        "fallback-base-set",
+        "fallback-local-set",
+        "set-after-refine",
+        "inherited-value",
+        "refine-after-set",
+        "partial-refine-last",
+    ):
+        selector = "high" if case in ("inherited-value", "refine-after-set", "partial-refine-last") else "bounded"
+        ET.SubElement(p, X + "refine-value", idref=V, selector=selector)
+        if case in ("set-after-refine", "partial-refine-last"):
+            ET.SubElement(p, X + "set-value", idref=V).text = "25"
+        if case == "partial-refine-last":
+            ET.SubElement(p, X + "refine-value", idref=V, operator="equals")
     else:
         ET.SubElement(p, X + "set-value", idref="settings").text = "custom"
     return root
@@ -106,6 +126,11 @@ for image in images:
         "base-group",
         "default-group",
         "fallback",
+        "fallback-base-set",
+        "fallback-local-set",
+        "refine-after-set",
+        "set-after-refine",
+        "partial-refine-last",
         "inherited-value",
         "requires",
         "conflicts",
@@ -168,6 +193,14 @@ for image in images:
             if case == "conflicts":
                 expected_results[RULES[0]] = "notchecked"
             assert res["results"] == expected_results, res["results"]
-            expected = "15" if case == "fallback" else "20" if case == "inherited-value" else "custom"
+            expected = (
+                "15"
+                if case in ("fallback", "fallback-base-set", "fallback-local-set")
+                else (
+                    "20"
+                    if case in ("inherited-value", "refine-after-set")
+                    else "25" if case in ("set-after-refine", "partial-refine-last") else "custom"
+                )
+            )
             assert res["set_values"][V] == expected, res["set_values"]
         print(f"{image}: {case} selections and resolved values verified")

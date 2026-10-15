@@ -269,7 +269,8 @@ class TailoringTests(unittest.TestCase):
                 rc, result = self.generate()
                 self.assertEqual((rc, result["outcome"]), (1, "failed"), result)
 
-    def test_refine_value_and_nested_profile_inheritance(self):
+    def test_refine_value_and_nested_benchmark_profile_inheritance(self):
+        ds = source()
         root = tailoring()
         profile = root.find(X + "Profile")
         profile.set("id", "xccdf_org.example_profile_parent")
@@ -277,10 +278,12 @@ class TailoringTests(unittest.TestCase):
         ET.SubElement(profile, X + "refine-value", idref=VALUE, selector="long")
         child = ET.SubElement(root, X + "Profile", id=CUSTOM, extends=profile.get("id"))
         ET.SubElement(child, X + "select", idref="two", selected="true")
-        meta = self.preflight(root)
+        root.remove(profile)
+        ds.append(profile)
+        meta = self.preflight(root, ds)
         self.assertEqual(meta["values"][VALUE]["value"], "20")
         self.assertEqual(meta["deselected_rules"], [])
-        self.assertEqual(meta["base_profile_id"], P)
+        self.assertEqual(meta["base_profile_id"], profile.get("id"))
 
     def test_refinement_without_selector_and_coexisting_set_value(self):
         root = tailoring()
@@ -326,8 +329,65 @@ class TailoringTests(unittest.TestCase):
             target = prof if layer == "local" else ds.find(X + "Profile")
             setting = ET.SubElement(target, X + "set-value", idref=VALUE)
             setting.text = "25"
-            self.assertEqual(self.preflight(root, ds)["value_fallbacks_materialized"], [])
+            expected = [] if layer == "local" else [VALUE]
+            self.assertEqual(self.preflight(root, ds)["value_fallbacks_materialized"], expected)
             target.remove(setting)
+
+    def test_cross_type_value_selector_order_controls_materialized_values(self):
+        for case, selector, expected in (
+            ("base-set-first", "missing", "15"),
+            ("local-set-first", "missing", "15"),
+            ("local-set-first", "long", "20"),
+            ("local-set-last", "missing", "25"),
+            ("partial-refine-last", "long", "25"),
+        ):
+            with self.subTest(case=case, selector=selector):
+                ds = source()
+                root = tailoring()
+                prof = root.find(X + "Profile")
+                prof.remove(prof.find(X + "set-value"))
+                first = ds.find(X + "Profile") if case == "base-set-first" else prof
+                if case not in ("local-set-last", "partial-refine-last"):
+                    ET.SubElement(first, X + "set-value", idref=VALUE).text = "25"
+                ET.SubElement(prof, X + "refine-value", idref=VALUE, selector=selector)
+                if case in ("local-set-last", "partial-refine-last"):
+                    ET.SubElement(prof, X + "set-value", idref=VALUE).text = "25"
+                if case == "partial-refine-last":
+                    ET.SubElement(prof, X + "refine-value", idref=VALUE, operator="greater than")
+                self.preflight(root, ds)
+                evaluated = self.out / "evaluated.xml"
+                if evaluated.exists():
+                    evaluated.unlink()
+                meta = PRE["prepare"](str(self.tail_path), str(self.ds_path), CUSTOM, str(evaluated))
+                result = ET.parse(evaluated).find(".//" + X + "Profile")
+                self.assertEqual(result.find(X + "set-value").text, expected)
+                self.assertEqual(meta["value_overrides_materialized"], [VALUE])
+                self.assertEqual(
+                    meta["value_fallbacks_materialized"],
+                    [VALUE] if selector == "missing" and case != "local-set-last" else [],
+                )
+
+    def test_local_profile_inheritance_is_rejected_before_evaluation(self):
+        root = tailoring()
+        parent = root.find(X + "Profile")
+        parent.set("id", "xccdf_org.example_profile_parent")
+        child = ET.SubElement(root, X + "Profile", id=CUSTOM, extends=parent.get("id"))
+        with self.assertRaisesRegex(ValueError, "cannot extend other tailoring profiles"):
+            self.preflight(root)
+        child.set("extends", P)
+        self.assertEqual(self.preflight(root)["base_profile_id"], P)
+
+    def test_scalar_set_value_children_are_invalid_not_requested_text(self):
+        root = tailoring()
+        ET.SubElement(root.find(".//" + X + "set-value"), X + "remark").text = "site minimum"
+        with self.assertRaisesRegex(ValueError, "scalar text only"):
+            self.preflight(root)
+        ds, _ = self.tailored()
+        ET.SubElement(ds.find(".//" + X + "TestResult/" + X + "set-value"), X + "remark").text = "not a scalar"
+        self.prepare(ds, register=False)
+        rc, result = self.generate(self.save_skeleton())
+        self.assertEqual((rc, result["outcome"]), (1, "failed"), result)
+        self.assertIn("scalar text only", result["reason"])
 
     def test_large_tailoring_manifest_keeps_summary_metadata_compact(self):
         _, meta = self.tailored()
@@ -425,7 +485,7 @@ class TailoringTests(unittest.TestCase):
         result = ET.parse(evaluated).find(".//" + X + "Profile")
         self.assertEqual(len(result.findall(X + "select")), 1)
         self.assertEqual(result.find(X + "select").get("selected"), "true")
-        self.assertEqual(result.find(X + "set-value").text, "25")
+        self.assertEqual(result.find(X + "set-value").text, "20")
         self.assertEqual(result.find(X + "refine-value").get("selector"), "long")
         self.assertEqual(result.find(X + "refine-value").get("operator"), "greater than")
 

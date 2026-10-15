@@ -956,22 +956,22 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
     # datastream is authoritative, and every idref below must resolve in it.
     local = indexed(tailoring.findall(X + "Profile"))
     original = indexed(bench.findall(X + "Profile"))
+    for profile in local.values():
+        if profile.get("extends") in local and profile.get("extends") not in original:
+            raise ValueError("tailoring profiles cannot extend other tailoring profiles; extend a benchmark profile")
     for pid in set(local) & set(original):
         if local[pid].get("extends") != pid:
             raise ValueError("a shadowing tailoring profile must extend its same-named benchmark profile")
     if profile_id not in local:
         raise ValueError("profile_id must name a profile in the tailoring file")
-    chain, seen = [], set()
-    current = profile_id
-    while current in local:
-        if current in seen:
-            raise ValueError("cyclic tailoring profile inheritance")
-        seen.add(current)
-        chain.append(local[current])
-        extended = local[current].get("extends")
-        if extended == current and current in original:
-            break  # XCCDF shadowing transitions to the benchmark definition.
-        current = extended
+    # Tailoring profiles may extend source Benchmark profiles, including
+    # same-name shadowing, but XCCDF does not permit extending another local
+    # tailoring profile. Do not forward a structure that only some engines
+    # happen to accept.
+    chain = [local[profile_id]]
+    current = chain[0].get("extends")
+    if current in local and current not in original:
+        raise ValueError("tailoring profiles cannot extend other tailoring profiles; extend a benchmark profile")
     if current not in original:
         raise ValueError("tailored profile must extend an existing benchmark profile")
     base_profile = current
@@ -1064,7 +1064,11 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
                 targets = resolve(ref, values, "value or value cluster")
                 for rid in targets:
                     if tag == "set-value":
-                        value = "".join(el.itertext())
+                        if len(el):
+                            raise ValueError(
+                                "set-value must contain scalar text only; child elements are not permitted"
+                            )
+                        value = el.text or ""
                     else:
                         choices = value_choices(rid)
                         matches = [v for v in choices if v.get("selector", "") == el.get("selector")]
@@ -1120,35 +1124,52 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
                 if el.tag in (X + "select", X + "set-value", X + "refine-value", X + "refine-rule")
             )
 
-    # The pinned RPM engine can resolve an unmatched value selector to an
-    # empty string. Materialize its scalar default as a set-value, preserving
-    # the refine-value's selection of bounds/choices. An explicit set-value
-    # anywhere in the inheritance chain remains authoritative.
-    explicit_values, selectors = set(), {}
+    # Selector types override one another in document order. The pinned RPM
+    # engine instead retains an earlier set-value and can resolve unmatched
+    # refinements to an empty string. Materialize the final scalar whenever
+    # either behavior would change XCCDF's effective value; preserve refine
+    # selectors for the independently selected bounds/choices/operator.
+    effective_values, saw_set, saw_refine = {}, set(), set()
     for profile in [original[pid] for pid in reversed(ancestry)] + list(reversed(chain)):
         for el in profile:
             if el.tag not in (X + "set-value", X + "refine-value"):
                 continue
             for rid in resolve(el.get("idref"), values, "value or value cluster"):
                 if el.tag == X + "set-value":
-                    explicit_values.add(rid)
+                    saw_set.add(rid)
+                    effective_values[rid] = ("set", el.text or "")
                 elif el.get("selector") is not None:
-                    selectors[rid] = el.get("selector")
-    fallbacks = {}
-    for rid in sorted(set(refined) - explicit_values):
-        if rid not in selectors:
+                    saw_refine.add(rid)
+                    effective_values[rid] = ("refine", el.get("selector"))
+    fallbacks, materialized_values = {}, {}
+    for rid in sorted(refined):
+        kind, selector = effective_values.get(rid, (None, None))
+        if kind == "set" and rid in saw_refine:
+            # Refinement deduplication can move inherited selector attributes
+            # after this assignment. Reassert the final scalar after that
+            # normalization so cross-type document order stays unchanged.
+            materialized_values[rid] = selector
+            continue
+        if kind != "refine":
             continue
         choices = value_choices(rid)
-        if any(v.get("selector", "") == selectors[rid] for v in choices):
-            continue
-        defaults = default_choices(choices)
-        if len(defaults) != 1 or defaults[0].tag != X + "value":
-            raise ValueError("tailoring value selector has no unique scalar default: " + rid)
-        fallbacks[rid] = "".join(defaults[0].itertext())
-    if fallbacks:
+        matches = [v for v in choices if v.get("selector", "") == selector]
+        unmatched = not matches
+        resolved = matches or default_choices(choices)
+        if len(resolved) != 1 or resolved[0].tag != X + "value":
+            raise ValueError("tailoring value selector has no unique scalar value: " + rid)
+        value = "".join(resolved[0].itertext())
+        if unmatched:
+            fallbacks[rid] = value
+        if unmatched or rid in saw_set:
+            materialized_values[rid] = value
+    if materialized_values:
         profile = chain[0]
-        index = next((i for i, el in enumerate(profile) if el.tag == X + "refine-value"), len(profile))
-        for rid, value in fallbacks.items():
+        # Put effective assignments after all source selectors and before
+        # trailing metadata/signatures. Deduplication below removes earlier
+        # local assignments without overriding a later refinement's value.
+        index = next((i for i, el in enumerate(profile) if el.tag in (X + "metadata", X + "signature")), len(profile))
+        for rid, value in materialized_values.items():
             el = ET.Element(X + "set-value", idref=rid)
             el.text = value
             profile.insert(index, el)
@@ -1170,7 +1191,7 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
         )
         oldest[:] = children[:index] + inherited + children[index:]
 
-    if has_clusters or has_repeated or inherited or fallbacks:
+    if has_clusters or has_repeated or inherited or materialized_values:
         # Expansion can produce overlapping concrete targets. Preserve the
         # last assignment per selector, merging partial refinement attributes
         # across inheritance layers instead of creating duplicate idrefs.
@@ -1193,7 +1214,7 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
     # aliases for the selected inheritance chain, retaining their original
     # references in metadata. Both original and evaluated bytes are hashed.
     ET.register_namespace("", X[1:-1])
-    if has_clusters or has_repeated or inherited or fallbacks:
+    if has_clusters or has_repeated or inherited or materialized_values:
         # The pinned RPM XML reader skips adjacent empty selector elements
         # without inter-element whitespace. Keep generated directives apart.
         for element in [tailoring] + list(local.values()):
@@ -1202,7 +1223,7 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
                     child.tail = "\n  "
     evaluated = (
         ET.tostring(tailoring, encoding="utf-8", xml_declaration=True)
-        if has_clusters or has_repeated or inherited or fallbacks
+        if has_clusters or has_repeated or inherited or materialized_values
         else raw
     )
     if len(evaluated) > 16 << 20:
@@ -1238,6 +1259,7 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
         "repeated_selectors_normalized": has_repeated,
         "benchmark_overrides_materialized": bool(inherited),
         "value_fallbacks_materialized": sorted(fallbacks),
+        "value_overrides_materialized": sorted(materialized_values),
         "datastream_sha256": hashlib.sha256(source).hexdigest(),
         "benchmark_id": bench.get("id"),
         "benchmark_version": bench.findtext(X + "version"),

@@ -397,7 +397,9 @@ declarations, against a datastream containing exactly one Benchmark. Profile
 ids must be unique within the tailoring file. A tailoring profile may shadow a
 benchmark profile only when its `id` and `extends` both equal the benchmark
 profile's id. Unknown references, cycles, and invalid selectors are refused;
-repeated profile selectors apply in document order. The benchmark `href` is
+repeated profile selectors apply in document order, including value overrides
+across selector types. Each tailoring profile must extend a source benchmark
+profile; local-to-local tailoring inheritance is refused. The benchmark `href` is
 recorded as a source label; the explicitly selected datastream is the input, and the orb
 never fetches that href. The tailoring file itself is never mounted into the
 target filesystem or reopened after the scan snapshot is made.
