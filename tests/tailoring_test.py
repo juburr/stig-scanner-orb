@@ -129,6 +129,8 @@ class TailoringTests(unittest.TestCase):
         prov = json.loads((self.out / "provenance.json").read_text())
         self.assertEqual(prov["tailoring"]["sha256"], meta["sha256"])
         self.assertEqual(prov["tailoring"]["profile_id"], CUSTOM)
+        self.assertEqual(prov["profile"]["title"], meta["profile_title"])
+        self.assertEqual(prov["tailoring"]["profile_title"], meta["profile_title"])
         self.assertIn("tailoring-sha256:", (self.out / "summary.txt").read_text())
         ckl = ET.parse(self.out / "checklist.ckl")
         self.assertIn("Tailored value", ckl.find(".//FINDING_DETAILS").text)
@@ -172,6 +174,81 @@ class TailoringTests(unittest.TestCase):
                         self.assertNotIn("Export declared by recorded check", details)
                     else:
                         self.assertIn("Export declared by recorded check(s): one", details)
+
+    def test_rule_refinement_requests_and_actual_result_properties_are_retained(self):
+        ds, _ = self.tailored()
+        root = tailoring()
+        prof = root.find(X + "Profile")
+        request = ET.SubElement(prof, X + "refine-rule", idref="one", role="unchecked", selector="alternate")
+        ET.SubElement(request, X + "remark").text = "Site decision"
+        ET.SubElement(prof, X + "refine-rule", idref="one", severity="low", weight="2.5")
+        meta = self.preflight(root, ds)
+        self.assertEqual(len(meta["rule_refinements"]["one"]["directives"]), 2)
+        self.assertEqual(meta["rule_refinements"]["one"]["directives"][0]["remarks"], ["Site decision"])
+        meta["datastream_sha256"] = H
+        rr = ds.find(X + "TestResult/" + X + "rule-result")
+        rr.set("role", "unchecked")
+        rr.set("severity", "low")
+        rr.set("weight", "2.5")
+        rr.find(X + "result").text = "notchecked"
+        check = ET.SubElement(rr, X + "check", system="test", selector="alternate")
+        ET.SubElement(check, X + "check-content-ref", href="checks.xml", name="alternate")
+        self.prepare(ds, register=False)
+        self.save_meta(meta)
+        rc, result = self.generate(self.save_skeleton())
+        self.assertEqual((rc, result["outcome"]), (0, "generated"), result)
+        row = self.rows()[0]
+        self.assertEqual(row["status"], "not_reviewed")
+        self.assertEqual(row["severity"], "high")  # Official DISA metadata is preserved.
+        for evidence in (
+            "Requested refine-rule",
+            '"role": "unchecked"',
+            '"severity": "low"',
+            '"weight": "2.5"',
+            '"selector": "alternate"',
+            "Recorded TestResult properties",
+        ):
+            self.assertIn(evidence, row["finding_details"])
+
+    def test_refinements_on_stock_unselected_rules_remain_in_complete_checklists(self):
+        ds, _ = self.tailored()
+        ET.SubElement(ds.find(X + "Profile"), X + "select", idref="two", selected="false")
+        root = tailoring()
+        prof = root.find(X + "Profile")
+        prof.remove(prof.find(X + "select"))
+        ET.SubElement(prof, X + "refine-rule", idref="two", severity="low")
+        meta = self.preflight(root, ds)
+        self.assertEqual(meta["deselected_rules"], [])
+        meta["datastream_sha256"] = H
+        self.prepare(ds, register=False)
+        self.save_meta(meta)
+        rc, result = self.generate(self.save_skeleton())
+        self.assertEqual((rc, result["outcome"]), (0, "generated"), result)
+        row = self.rows()[1]
+        self.assertEqual(row["status"], "not_reviewed")
+        self.assertIn("Requested refine-rule", row["finding_details"])
+        self.assertIn("checks were not evaluated", row["finding_details"])
+
+    def test_group_cluster_refinements_are_bound_to_each_descendant_rule(self):
+        ds = source()
+        for group in ds.findall(X + "Group"):
+            group.set("cluster-id", "all_groups")
+        root = tailoring()
+        ET.SubElement(root.find(X + "Profile"), X + "refine-rule", idref="all_groups", weight="2")
+        meta = self.preflight(root, ds)
+        self.assertEqual(set(meta["rule_refinements"]), {"one", "two"})
+        for rid in ("one", "two"):
+            directive = meta["rule_refinements"][rid]["directives"][0]
+            self.assertEqual(directive["target_id"], "g-" + rid)
+            self.assertEqual(directive["target_type"], "Group")
+            self.assertEqual(directive["attributes"], {"weight": "2"})
+
+    def test_summary_rejects_unverified_tailoring_identity_even_without_checklists(self):
+        self.tailored()
+        (self.out / "tailoring-meta.json").write_text('{"profile_title":"incorrect"}')
+        result = self.summary("none")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("tailoring metadata hash/size", result.stderr)
 
     def test_ssg_only_omits_deselected_row(self):
         self.tailored()
@@ -505,9 +582,14 @@ class TailoringTests(unittest.TestCase):
         self.save_meta(meta)
         rc, result = self.generate(self.save_skeleton())
         self.assertEqual((rc, result["outcome"]), (0, "generated"), result)
+        self.assertEqual(self.summary("require").returncode, 0)
+        provenance = json.loads((self.out / "provenance.json").read_text())
+        self.assertEqual(provenance["profile"]["title"], meta["profile_title"])
+        self.assertNotEqual(provenance["profile"]["title"], ds.find(X + "Profile/" + X + "title").text)
         child = ET.SubElement(root, X + "Profile", id=CUSTOM, extends=P)
         ET.SubElement(child, X + "select", idref="two", selected="true")
-        self.assertEqual(self.preflight(root)["deselected_rules"], [])
+        with self.assertRaisesRegex(ValueError, "cannot extend other tailoring profiles"):
+            self.preflight(root)
 
     def test_indirect_or_stock_partial_selection_withholds_shared_requirement(self):
         for cause in ("requires", "conflicts", "stock"):

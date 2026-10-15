@@ -252,6 +252,34 @@ for el in root.iter():
     if local(el.tag) == "Profile" and el.get("id") == profile_id:
         profile_title = child_text(el, "title") or None
         break
+# External and shadowing profiles take their identity from the scan's exact,
+# hash-bound tailoring snapshot, never a same-named stock Profile definition.
+if plan.get("tailoring_file"):
+    for key in ("tailoring_sha256", "tailoring_meta_sha256", "tailoring_evaluated_sha256", "datastream_sha256"):
+        if not re.fullmatch(r"[0-9a-f]{64}", plan.get(key, "")):
+            raise ValueError("invalid or missing tailoring provenance hash: " + key)
+    with open(os.path.join(os.path.dirname(plan_path), "tailoring-meta.json"), "rb") as fh:
+        tailoring_raw = fh.read((16 << 20) + 1)
+    if len(tailoring_raw) > 16 << 20 or hashlib.sha256(tailoring_raw).hexdigest() != plan.get("tailoring_meta_sha256"):
+        raise ValueError("tailoring metadata hash/size differs from the scan plan")
+    def unique_tailoring(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("tailoring metadata repeats " + key)
+            result[key] = value
+        return result
+    tailoring_identity = json.loads(tailoring_raw, object_pairs_hook=unique_tailoring)
+    if (not isinstance(tailoring_identity, dict) or tailoring_identity.get("schema") != "stig-scanner-orb/tailoring/v1"
+            or tailoring_identity.get("profile_id") != profile_id
+            or profile_id != plan.get("tailoring_profile")
+            or tailoring_identity.get("sha256") != plan.get("tailoring_sha256")
+            or tailoring_identity.get("evaluated_sha256") != plan.get("tailoring_evaluated_sha256")
+            or tailoring_identity.get("datastream_sha256") != plan.get("datastream_sha256")
+            or not isinstance(tailoring_identity.get("profile_title"), str)
+            or not tailoring_identity["profile_title"]):
+        raise ValueError("tailoring metadata identity differs from the scan plan/results")
+    profile_title = tailoring_identity["profile_title"]
 # Only ComplianceAsCode-built benchmarks carry an SSG release number; the
 # Wolfi GPOS datastream, for one, is not SSG content.
 ssg_version = bench_version if bench_update and "ComplianceAsCode" in bench_update else None
@@ -298,6 +326,7 @@ provenance = {
         "path": plan.get("tailoring_file"),
         "sha256": plan.get("tailoring_sha256"),
         "profile_id": plan.get("tailoring_profile"),
+        "profile_title": profile_title,
         "metadata_sha256": plan.get("tailoring_meta_sha256"),
         "evaluated_sha256": plan.get("tailoring_evaluated_sha256"),
     } if plan.get("tailoring_file") else None,

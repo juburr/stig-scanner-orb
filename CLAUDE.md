@@ -147,7 +147,8 @@ UTF-8 XCCDF 1.2 XML and validates its schema with the exact scanner. Use
 `--skip-schematron`: the pinned RPM scanner lacks tailoring schematron rules.
 The chosen profile must be defined in the file and extend a benchmark profile.
 Reject local-to-local tailoring inheritance (XCCDF forbids it), including unused
-local profiles with such references. Reject child elements in scalar set-value;
+local profiles with such references and extensions through another shadow.
+Only a shadow profile's own self-reference into the benchmark is exempt. Reject child elements in scalar set-value;
 remarks are allowed on select/refine selectors, not on set-value.
 `tailoring-meta.json` is derived from the same snapshots used by evaluation;
 its SHA-256 and the original tailoring hash/profile are in scan-plan.env.
@@ -178,7 +179,12 @@ another contributor ran. Preserve its evidence. Refined values use check-export
 value ids and TestResult set-values. Match recorded TestResult checks to source
 checks by system and content references before associating value exports.
 Exclude unselected alternatives when matching is complete; missing/ambiguous
-check evidence must label values as global settings with unverified Rule use. The caller's source is never reopened. Resolve `cluster-id` aliases by item type and expand them in the evaluated XML
+check evidence must label values as global settings with unverified Rule use.
+Retain refine-rule requests (including Group/cluster targets and remarks) and
+recorded TestResult role/severity/weight/check properties in finding details;
+keep official DISA severity unchanged and do not infer absent result fields.
+Summarize loads the bounded, hash-verified manifest title for external and
+shadowing profiles, replacing any same-named stock profile title. The caller's source is never reopened. Resolve `cluster-id` aliases by item type and expand them in the evaluated XML
 (the pinned RPM OpenSCAP ignores value aliases). Bind original and evaluated
 XML with separate hashes,
 reject complex-value tailoring before evaluation (the pinned RPM OpenSCAP

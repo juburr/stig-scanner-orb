@@ -216,6 +216,7 @@ def parse_results(source, tailoring=None):
     instances = collections.defaultdict(list)
     executed_values = collections.defaultdict(set)
     checks_complete = {}
+    rule_properties = collections.defaultdict(list)
     for rr in tr.findall(X12 + "rule-result"):
         # Exactly one result per rule-result: with <result>pass</result>
         # <result>fail</result>, findtext would read only the pass.
@@ -226,6 +227,16 @@ def parse_results(source, tailoring=None):
         rid = rr.get("idref")
         instances[rid].append(r if r in XCCDF_RESULTS else "unknown")
         recorded = list(rr.iter(X12 + "check"))
+        rule_properties[rid].append({
+            "result": r,
+            "role": rr.get("role"),
+            "severity": rr.get("severity"),
+            "weight": rr.get("weight"),
+            "checks": [{
+                "system": check.get("system"), "selector": check.get("selector"),
+                "content_refs": [dict(e.attrib) for e in check.findall(X12 + "check-content-ref")],
+            } for check in recorded],
+        })
         checks_complete[rid] = checks_complete.get(rid, True) and bool(recorded)
         for check in recorded:
             key = check_key(check)
@@ -264,7 +275,7 @@ def parse_results(source, tailoring=None):
         "benchmark_id": bench.get("id"),
         "benchmark_version": bench.findtext(X12 + "version"),
         "profile_id": profile_id,
-        "profile_title": text_of(profile.find(X12 + "title")) if profile is not None else tailoring["profile_title"],
+        "profile_title": tailoring["profile_title"] if tailoring else text_of(profile.find(X12 + "title")),
         "set_values": set_values,
         "tailoring": tailoring,
         "bench_platforms": [p.get("idref") for p in bench.findall(X12 + "platform")],
@@ -272,6 +283,7 @@ def parse_results(source, tailoring=None):
         "rules": rules,
         "results": results,
         "instances": {rid: rs for rid, rs in instances.items() if len(rs) > 1},
+        "rule_properties": dict(rule_properties),
         "start": tr.get("start-time"),
         "end": tr.get("end-time"),
         "test_system": tr.get("test-system"),
@@ -671,7 +683,9 @@ def read_tailoring(plan, plan_path):
             or meta.get("profile_id") != plan["tailoring_profile"]
             or meta.get("profile_id") != plan.get("profile")):
         raise ValueError("tailoring metadata identity differs from the scan plan")
-    if (not isinstance(meta.get("values"), dict) or not isinstance(meta.get("deselected_rules"), list)
+    if (not isinstance(meta.get("values"), dict) or not isinstance(meta.get("rule_refinements", {}), dict)
+            or not isinstance(meta.get("profile_title"), str) or not meta["profile_title"]
+            or not isinstance(meta.get("deselected_rules"), list)
             or not isinstance(meta.get("base_profile_ancestry"), list)
             or not meta.get("base_profile_id")
             or not meta["base_profile_ancestry"]
@@ -697,6 +711,11 @@ def validate_tailored_results(res, tailoring):
     unapplied = sorted(rid for rid in tailoring["deselected_rules"] if res["results"].get(rid) != "notselected")
     if unapplied:
         raise ValueError("OpenSCAP did not apply requested tailoring deselections: " + ", ".join(unapplied[:5]))
+    for rid, refinement in tailoring.get("rule_refinements", {}).items():
+        if (rid not in res["rules"] or not isinstance(refinement, dict)
+                or not isinstance(refinement.get("directives"), list)
+                or not all(isinstance(d, dict) for d in refinement["directives"])):
+            raise ValueError("invalid tailoring Rule refinement metadata")
     def valid_value(value):
         return value is None or isinstance(value, str) or (
             isinstance(value, list) and all(isinstance(v, str) for v in value)
@@ -1224,10 +1243,22 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
     prov_txt = "\n".join(prov)
     arch_note = f"[architecture gate evaluated on the scanning host ({runner_arch}); target architecture {target_arch or 'unknown'}]"
 
-    def tailoring_value_notes(rids):
+    def tailoring_notes(rids):
         notes = []
         if not res.get("tailoring"):
             return notes
+        for rid in sorted(rids):
+            refinement = res["tailoring"].get("rule_refinements", {}).get(rid)
+            if not refinement:
+                continue
+            notes.append("Tailored Rule " + rid + ":")
+            for directive in refinement["directives"]:
+                notes.append("  Requested refine-rule " + json.dumps(directive, sort_keys=True, ensure_ascii=False))
+            notes.append("  Recorded TestResult properties: " +
+                         json.dumps(res["rule_properties"].get(rid, []), sort_keys=True, ensure_ascii=False))
+            notes.append("  Null properties were not recorded. Group refinements affect only Group weight; "
+                         "TestResult Rule properties do not establish effective Group weight. "
+                         "Official DISA checklist severity remains unchanged.")
         value_ids = sorted({
             value_id for rid in rids
             for value_id in res["rules"][rid]["executed_value_ids" if res["rules"][rid]["check_exports_complete"] else "value_ids"]
@@ -1304,7 +1335,7 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
                     line += " -> not reviewed " + arch_note
             effective.append((rid, eff))
             details.append(line)
-            details.extend(tailoring_value_notes([rid]))
+            details.extend(tailoring_notes([rid]))
         status = aggregate(effective)
         if status == "Not_Applicable":
             comments = [justification(c, list(g), rootfs=bool(plan.get("rootfs_path"))) for c, g in sorted(na_cats)]
@@ -1542,6 +1573,13 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
             stig["mapped_vids"] = len(vulns)
         else:
             for v in vulns:
+                # A refinement may target a stock-unselected Rule without
+                # any explicit select action. Retain that request too, while
+                # keeping its ordinary selection reason and verdict.
+                unnoted = ((set(deselected.get(v["vid"], [])) & set(t.get("rule_refinements", {})))
+                           - set(affected.get(v["vid"], [])))
+                if unnoted:
+                    v["finding_details"] += "\nUnselected checks' requested settings (checks were not evaluated):\n" + "\n".join(tailoring_notes(unnoted))
                 if v["vid"] not in affected:
                     continue
                 direct = set(affected[v["vid"]]) & explicit
@@ -1553,7 +1591,7 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
                     notes.append(f"Not selected under tailored profile {t['profile_id']}: {', '.join(sorted(indirect))}.")
                 note = " ".join(notes)
                 v["finding_details"] += "\n" + note + " Remaining automated evidence does not assess the complete requirement."
-                values = tailoring_value_notes(affected[v["vid"]])
+                values = tailoring_notes(affected[v["vid"]])
                 if values:
                     v["finding_details"] += "\nDeselected checks' settings (checks were not evaluated):\n" + "\n".join(values)
                 v["comments"] = note + " Manual review required."

@@ -89,6 +89,11 @@ def tailoring(case):
         ET.SubElement(p, X + "select", idref="groups" if case == "group" else "rules", selected="false")
         if case == "group":
             ET.SubElement(p, X + "select", idref=RULES[0], selected="true")
+    if case == "rule-refinement":
+        ET.SubElement(p, X + "select", idref=RULES[0], selected="true")
+        ET.SubElement(
+            p, X + "refine-rule", idref=RULES[0], role="unchecked", severity="high", weight="2.5", selector="alternate"
+        )
     if case == "repeated":
         ET.SubElement(p, X + "select", idref=RULES[0], selected="true")
         ET.SubElement(p, X + "select", idref=RULES[0], selected="false")
@@ -135,6 +140,7 @@ for image in images:
         "requires",
         "conflicts",
         "repeated",
+        "rule-refinement",
         "shadow",
     ):
         with tempfile.TemporaryDirectory(prefix="stig-tailoring-compat-") as directory:
@@ -155,7 +161,11 @@ for image in images:
                 str(directory / "evaluated.xml"),
             )
             assert meta["base_profile_ancestry"] == ([P] if case == "shadow" else [MID, P])
-            expected_deselected = [RULES[0]] if case == "requires" else [] if case == "conflicts" else RULES
+            expected_deselected = (
+                [RULES[0]]
+                if case == "requires"
+                else [RULES[1]] if case == "rule-refinement" else [] if case == "conflicts" else RULES
+            )
             assert meta["deselected_rules"] == expected_deselected, meta["deselected_rules"]
             if case == "inherited-value":
                 assert not meta["value_fallbacks_materialized"]
@@ -190,7 +200,7 @@ for image in images:
             res = checklist["parse_results"](str(directory / "results.xml"), meta)
             checklist["validate_tailored_results"](res, meta)
             expected_results = {rid: "notselected" for rid in RULES}
-            if case == "conflicts":
+            if case in ("conflicts", "rule-refinement"):
                 expected_results[RULES[0]] = "notchecked"
             assert res["results"] == expected_results, res["results"]
             expected = (
@@ -203,4 +213,10 @@ for image in images:
                 )
             )
             assert res["set_values"][V] == expected, res["set_values"]
+            if case == "rule-refinement":
+                actual = res["rule_properties"][RULES[0]][0]
+                assert actual["role"] == "unchecked" and actual["severity"] == "high", actual
+                assert float(actual["weight"]) == 2.5, actual
+                request = meta["rule_refinements"][RULES[0]]["directives"][0]
+                assert request["attributes"]["selector"] == "alternate", request
         print(f"{image}: {case} selections and resolved values verified")

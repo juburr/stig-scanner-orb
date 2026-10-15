@@ -345,8 +345,9 @@ reference separately from a supplied skeleton.
 
 Set `tailoring_file` to a local XCCDF 1.2 tailoring XML file and `profile_id`
 to a profile defined in that file. The profile must extend a profile in the
-scanned benchmark; inheritance can pass through intermediary profiles in
-either the benchmark or the tailoring file.
+scanned benchmark; inheritance can pass through intermediary profiles in the
+benchmark. Profiles in the tailoring file cannot extend other tailoring profiles,
+including another profile that shadows a benchmark profile.
 Stage the file before the scan (use checkout or a pre-step). For example:
 
 ```yaml
@@ -407,7 +408,10 @@ target filesystem or reopened after the scan snapshot is made.
 Value evidence follows the check recorded in TestResult when its source
 exports can be identified. If check evidence is missing or ambiguous, the row
 labels the setting as global TestResult evidence whose use by that Rule is
-unverified; alternative checks may not have run.
+unverified; alternative checks may not have run. Rule refinements retain the
+requested selector, role, severity and weight alongside properties recorded in
+TestResult. Official DISA checklist severity stays unchanged. Provenance uses
+the tailored profile title from the hash-verified manifest.
 
 `scan-plan.env` and `provenance.json` record the original file path, its SHA-256
 and the tailored profile id. `tailoring-meta.json` records the inherited base

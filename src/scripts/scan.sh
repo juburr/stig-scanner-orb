@@ -957,7 +957,9 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
     local = indexed(tailoring.findall(X + "Profile"))
     original = indexed(bench.findall(X + "Profile"))
     for profile in local.values():
-        if profile.get("extends") in local and profile.get("extends") not in original:
+        if profile.get("extends") in local and not (
+            profile.get("id") == profile.get("extends") and profile.get("id") in original
+        ):
             raise ValueError("tailoring profiles cannot extend other tailoring profiles; extend a benchmark profile")
     for pid in set(local) & set(original):
         if local[pid].get("extends") != pid:
@@ -970,8 +972,6 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
     # happen to accept.
     chain = [local[profile_id]]
     current = chain[0].get("extends")
-    if current in local and current not in original:
-        raise ValueError("tailoring profiles cannot extend other tailoring profiles; extend a benchmark profile")
     if current not in original:
         raise ValueError("tailored profile must extend an existing benchmark profile")
     base_profile = current
@@ -1035,7 +1035,7 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
         for el in original[pid].findall(X + "select"):
             for rid in resolve(el.get("idref"), {**rules, **groups}, "rule/group or cluster"):
                 selected[rid] = el.get("selected") in ("true", "1")
-    touched, refined = set(), {}
+    touched, refined, rule_refinements = set(), {}, {}
     has_clusters = has_repeated = False
     inherited = []
     for profile in reversed(trace):
@@ -1107,6 +1107,20 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
                     }
             else:
                 targets = resolve(ref, {**rules, **groups}, "rule/group or cluster")
+                for target in targets:
+                    affected = [target] if target in rules else [r.get("id") for r in groups[target].iter(X + "Rule")]
+                    directive = {
+                        "profile_id": profile.get("id"),
+                        "idref": ref,
+                        "target_id": target,
+                        "target_type": "Rule" if target in rules else "Group",
+                        "attributes": {
+                            k: el.get(k) for k in ("selector", "role", "severity", "weight") if el.get(k) is not None
+                        },
+                        "remarks": [" ".join("".join(r.itertext()).split()) for r in el.findall(X + "remark")],
+                    }
+                    for rid in affected:
+                        rule_refinements.setdefault(rid, {"directives": []})["directives"].append(directive)
             if ref in clusters:
                 has_clusters = True
                 for rid in targets:
@@ -1268,13 +1282,15 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
         "profile_title": (
             " ".join("".join(local[profile_id].find(X + "title").itertext()).split())
             if local[profile_id].find(X + "title") is not None
-            else profile_id
-        ),
+            else ""
+        )
+        or profile_id,
         "base_profile_id": base_profile,
         "base_profile_ancestry": ancestry,
         "references_sha256": hashlib.sha256("\n".join(lines).encode()).hexdigest(),
         "deselected_rules": sorted(rid for rid, rule in rules.items() if explicitly_deselected(rule)),
         "values": refined,
+        "rule_refinements": rule_refinements,
     }
 
 
