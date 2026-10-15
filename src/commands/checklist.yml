@@ -19,6 +19,19 @@ parameters:
     type: string
     default: "ckl,cklb"
     description: Comma-separated ckl and/or cklb, case-insensitive.
+  checklist_answers:
+    type: string
+    default: ""
+    description: >
+      Runner-readable release-bound site answers JSON (at most 1 MiB), outside
+      output_dir. Applied only to checklists; automated scan gates are unchanged.
+  checklist_default_answers:
+    type: enum
+    enum: ["none", "container-host"]
+    default: "none"
+    description: >
+      Opt-in reviewed manual host answers for RHEL 9 V2R9 container images.
+      The caller must establish that the image uses its runtime host's kernel.
   stig_xccdf_path:
     type: string
     default: ""
@@ -59,6 +72,8 @@ steps:
         PARAM_OUTPUT_DIR: <<parameters.output_dir>>
         PARAM_CHECKLIST: <<parameters.checklist>>
         PARAM_CHECKLIST_FORMATS: <<parameters.checklist_formats>>
+        PARAM_CHECKLIST_ANSWERS: <<parameters.checklist_answers>>
+        PARAM_CHECKLIST_DEFAULT_ANSWERS: <<parameters.checklist_default_answers>>
         PARAM_STIG_XCCDF_PATH: <<parameters.stig_xccdf_path>>
         PARAM_CHECKLIST_ASSET_NAME: <<parameters.checklist_asset_name>>
       command: <<include(scripts/checklist.sh)>>

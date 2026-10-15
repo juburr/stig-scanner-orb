@@ -416,6 +416,21 @@ workflows:
                 artifact_name: smoke-rhel9
           filters: *filters
       - stig-scanner-orb/scan:
+          name: smoke-rhel9-answers
+          image: registry.access.redhat.com/ubi9/ubi:latest
+          target_base: rhel9
+          checklist_answers: tests/fixtures/rhel9-answers.json
+          checklist_default_answers: container-host
+          checklist: require
+          checkout: true
+          post-steps:
+            - run:
+                name: Verify answer decisions, provenance and independent finding gate
+                command: python3 tools/answers-smoke.py build/stig tests/fixtures/rhel9-answers.json
+            - assert-checklist:
+                outcome: generated
+                artifact_name: smoke-rhel9-answers
+      - stig-scanner-orb/scan:
           name: smoke-rhel9-tailoring
           image: registry.access.redhat.com/ubi9/ubi:latest
           target_base: rhel9
@@ -862,7 +877,16 @@ workflows:
                 artifact_name: smoke-rootfs-checklist
           filters: *filters
       - checklist-validator:
-          requires: [smoke-rhel9-tailoring, smoke-rhel9-skeleton-matched, smoke-rhel9-skeleton-drift, smoke-ubuntu2204, smoke-rhel9, smoke-rhel8-auto, smoke-rhel10-auto, smoke-rootfs-checklist]
+          requires:
+            - smoke-rhel9-answers
+            - smoke-rhel9-tailoring
+            - smoke-rhel9-skeleton-matched
+            - smoke-rhel9-skeleton-drift
+            - smoke-ubuntu2204
+            - smoke-rhel9
+            - smoke-rhel8-auto
+            - smoke-rhel10-auto
+            - smoke-rootfs-checklist
           filters: *filters
       - orb-tools/pack:
           filters: *release-filters
@@ -882,6 +906,7 @@ workflows:
             - smoke-rhel8-auto
             - smoke-rhel9
             - smoke-rhel9-tailoring
+            - smoke-rhel9-answers
             - smoke-rhel9-skeleton-matched
             - smoke-rhel9-skeleton-drift
             - smoke-rhel9-cis

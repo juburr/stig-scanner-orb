@@ -1,0 +1,23 @@
+{
+  "schema": "stig-scanner-orb/checklist-answers/v1",
+  "stig": {
+    "benchmark_id": "RHEL_9_STIG",
+    "version": "2",
+    "releaseinfo": "Release: 9 Benchmark Date: 01 Jul 2026"
+  },
+  "answers": {
+    "V-257782": {
+      "status": "Open",
+      "comments": "CI fixture: site policy requires a manual entropy-service assessment before acceptance.",
+      "finding_details_append": "This test answer supersedes the opt-in container-host default; it does not assess the runtime host."
+    }
+  },
+  "category_comments": {
+    "host": "CI site wording: assess this host requirement on the runtime platform; control inheritance is not established.",
+    "gui": "CI site wording: review the recorded graphical-component applicability evidence.",
+    "package": "CI site wording: review the recorded package applicability evidence.",
+    "arch": "CI site wording: review the recorded target-architecture applicability evidence.",
+    "platform": "CI site wording: review the recorded platform applicability evidence.",
+    "check": "CI site wording: the recorded automated check reported notapplicable."
+  }
+}

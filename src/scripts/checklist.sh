@@ -13,6 +13,8 @@ CHECKLIST="$(subst "${PARAM_CHECKLIST:-auto}")"
 FORMATS="$(subst "${PARAM_CHECKLIST_FORMATS-ckl,cklb}")"
 ASSET_NAME="$(subst "${PARAM_CHECKLIST_ASSET_NAME:-}")"
 GUARD="$(subst "${PARAM_CHECKLIST_GUARD:-false}")"
+ANSWERS="$(subst "${PARAM_CHECKLIST_ANSWERS:-}")"
+DEFAULT_ANSWERS="$(subst "${PARAM_CHECKLIST_DEFAULT_ANSWERS:-none}")"
 STIG_XCCDF_PATH="$(subst "${PARAM_STIG_XCCDF_PATH:-}")"
 # Included CircleCI commands can run from stdin, without BASH_SOURCE.
 # Packaged commands use staged payloads; sibling scripts are a local fallback.
@@ -26,6 +28,7 @@ if [ "${GUARD}" = "true" ]; then
     args=(--guard "${args[@]}" "--rootfs-path=${ROOTFS_PATH}")
 else
     args+=("--plan=${OUTPUT_DIR}/scan-plan.env" "--mode=${CHECKLIST}"
+           "--checklist-answers=${ANSWERS}" "--default-answers=${DEFAULT_ANSWERS}"
            "--host-name=${ASSET_NAME}" "--formats=${FORMATS}" "--stig-xccdf-path=${STIG_XCCDF_PATH}" "--bundle-dir=${BUNDLE_DIR}")
 fi
 # Conversion errors are recorded in meta; do not suppress summarize.
@@ -54,7 +57,7 @@ HREF_VULN = "https://www.cyber.mil/stigs/srg-stig-tools#vulnerability_id"
 # and write it as the row's Rule_ID.
 SV_RE = re.compile(r"SV-([0-9]+)r[0-9]+_rule")  # ASCII digits only (\d matches any Unicode digit)
 # Bound untrusted XML before parsing: real results.xml is about 15–20 MiB.
-GENERATOR_VERSION = "1.2.0"
+GENERATOR_VERSION = "1.3.0"
 MAX_RESULTS_BYTES = 128 << 20
 MAX_DISA_BYTES = 16 << 20
 X11 = "{http://checklists.nist.gov/xccdf/1.1}"
@@ -1697,6 +1700,194 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
     return stig, vulns
 
 
+# ------------------------------------------------------------- answer files
+
+ANSWER_SCHEMA = "stig-scanner-orb/checklist-answers/v1"
+MAX_ANSWER_BYTES = 1 << 20
+ANSWER_STATUSES = {"Open", "NotAFinding", "Not_Applicable", "Not_Reviewed"}
+ANSWER_CATEGORIES = {"host", "gui", "package", "arch", "platform", "check"}
+# Reviewed against the bundled RHEL 9 V2R9 requirement, not an inferred list of
+# host controls. Any source-text edit requires another review of this entry.
+DEFAULT_HOST_ANSWER = {
+    "benchmark_id": "RHEL_9_STIG", "version": "2",
+    "releaseinfo": "Release: 9 Benchmark Date: 01 Jul 2026",
+    "vid": "V-257782", "rule_id": "SV-257782r991589_rule",
+    "row_sha256": "3024a1d50f9bb841da3bd81a8e6677219ee363e8f040d0366cf741f1fce7bbb2",
+    "comments": (
+        "Site-selected container-host answer: rngd feeds the host kernel's random device "
+        "from hardware entropy sources. This container image shares its runtime host's "
+        "kernel; assess the rngd requirement on that host. This answer does not verify "
+        "the host's configuration or establish control inheritance."
+    ),
+}
+
+
+def answer_input_collision(path, out_dir, stem="checklist"):
+    """Reject an input that cleanup/publication could overwrite, including aliases.
+    Keep answer files outside output_dir; ordinary scan outputs are cleaned earlier.
+    """
+    if not path:
+        return False
+    source, out = os.path.realpath(path), os.path.realpath(out_dir)
+    if os.path.commonpath((source, out)) == out:
+        return True
+    names = ["results.xml", "report.html", "scan-plan.env", "summary.txt", "provenance.json",
+             "tailoring-meta.json", "summary.txt.exit-code", stem + "-meta.json", stem + "-meta.json.partial"]
+    names += [stem + "." + ext + suffix for ext in ("ckl", "cklb") for suffix in ("", ".partial")]
+    for name in names:
+        try:
+            if os.path.samefile(path, os.path.join(out_dir, name)):
+                return True
+        except FileNotFoundError:
+            pass
+    return False
+
+
+def read_answers(path):
+    """One bounded, nonblocking regular-file snapshot; JSON is data, never a template."""
+    import stat
+
+    def unique(pairs):
+        obj = {}
+        for key, value in pairs:
+            if key in obj:
+                raise ValueError("answer file repeats key: " + key[:100])
+            obj[key] = value
+        return obj
+
+    def invalid_constant(value):
+        raise ValueError("answer file contains non-JSON constant: " + value)
+
+    def obj(value, allowed, required, label):
+        if not isinstance(value, dict) or set(value) - allowed or not required <= set(value):
+            raise ValueError("invalid answer file " + label + ": missing or unknown fields")
+
+    def text(value):
+        if not isinstance(value, str) or not value.strip() or len(value) > 16384:
+            raise ValueError("answer text must be nonempty and at most 16384 characters")
+        if any(not (c in "\t\n\r" or 0x20 <= ord(c) <= 0xD7FF or 0xE000 <= ord(c) <= 0xFFFD
+                    or 0x10000 <= ord(c) <= 0x10FFFF) for c in value):
+            raise ValueError("answer text contains a character invalid in XML 1.0")
+
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            raise ValueError("answer file must be a regular file")
+        raw = fh.read(MAX_ANSWER_BYTES + 1)
+    if len(raw) > MAX_ANSWER_BYTES:
+        raise ValueError("answer file exceeds 1 MiB")
+    data = json.loads(raw.decode("utf-8"), object_pairs_hook=unique, parse_constant=invalid_constant)
+    obj(data, {"schema", "stig", "answers", "category_comments"}, {"schema", "stig"}, "document")
+    if data["schema"] != ANSWER_SCHEMA:
+        raise ValueError("unsupported answer file schema")
+    obj(data["stig"], {"benchmark_id", "version", "releaseinfo"},
+        {"benchmark_id", "version", "releaseinfo"}, "STIG identity")
+    for value in data["stig"].values():
+        text(value)
+    answers, categories = data.get("answers", {}), data.get("category_comments", {})
+    if not isinstance(answers, dict) or not isinstance(categories, dict) or not (answers or categories):
+        raise ValueError("answer file must contain answers or category_comments objects with at least one entry")
+    if set(categories) - ANSWER_CATEGORIES:
+        raise ValueError("unknown answer category")
+    for value in categories.values():
+        text(value)
+    for vid, answer in answers.items():
+        if not re.fullmatch(r"V-[1-9][0-9]*", vid):
+            raise ValueError("invalid answer V-ID: " + vid[:100])
+        obj(answer, {"status", "comments", "finding_details_append"}, set(), vid)
+        if not answer:
+            raise ValueError("empty answer for " + vid)
+        for value in answer.values():
+            text(value)
+        if "status" in answer and answer["status"] not in ANSWER_STATUSES:
+            raise ValueError("invalid answer status for " + vid)
+        if "status" in answer and "comments" not in answer:
+            raise ValueError("a status answer requires comments explaining the decision: " + vid)
+    return {"data": data, "sha256": hashlib.sha256(raw).hexdigest(), "path": path}
+
+
+def apply_answers(stig, vulns, plan, answers=None, default="none", baseline=None):
+    """Apply site decisions only after the automatic model and eligibility checks.
+    Each changed row keeps the automatic status, comments and evidence. A later
+    user answer can supersede a curated answer; both decisions remain recorded.
+    """
+    if default not in ("none", "container-host"):
+        raise ValueError("checklist_default_answers must be none or container-host")
+    identity = {k: stig[k] for k in ("benchmark_id", "version", "releaseinfo")}
+    by_vid = {v["vid"]: v for v in vulns}
+    automatic = collections.Counter(v["status"] for v in vulns)
+    info = {"file": None, "default_set": None, "automatic_status": automatic,
+            "file_rows": 0, "category_rows": 0, "default_rows": 0}
+
+    def change(row, source, answer):
+        before = row["status"]
+        original_comments = row["comments"]
+        after = answer.get("status", before)
+        row["finding_details"] += (
+            f"\n\nAnswer decision ({source}): result before answer: {before}; final result: {after}."
+            + ("\nOriginal comments:\n" + original_comments if original_comments else "\nOriginal comments: (empty)")
+        )
+        if "comments" in answer:
+            row["comments"] = answer["comments"]
+            row["finding_details"] += "\nAnswer comments:\n" + answer["comments"]
+        if "finding_details_append" in answer:
+            row["finding_details"] += "\nAnswer finding details:\n" + answer["finding_details_append"]
+        row["status"] = after
+        if after != before:
+            row["na_category"] = "answer" if after == "Not_Applicable" else None
+            row["nr_reason"] = "answer" if after == "Not_Reviewed" else None
+
+    if default != "none":
+        pin = DEFAULT_HOST_ANSWER
+        if identity != {k: pin[k] for k in identity} or not baseline:
+            raise ValueError("container-host defaults are reviewed only for bundled RHEL 9 V2R9")
+        if plan.get("rootfs_path") or not (plan.get("image_id") or plan.get("image_repo_digests")):
+            raise ValueError("container-host defaults require an explicitly selected container image scan")
+        row = by_vid.get(pin["vid"])
+        reference = next((g for g in baseline["groups"] if g["vid"] == pin["vid"]), None)
+        digest = lambda g: hashlib.sha256(json.dumps(g, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        # Supplied same-release skeleton text must match too, not just its ID.
+        source_keys = set(reference) if reference else set()
+        actual = {k: row[k] for k in source_keys} if row else None
+        if (not reference or digest(reference) != pin["row_sha256"] or actual != reference
+                or row["rule_id"] != pin["rule_id"] or row["nr_reason"] != "no_scanner_rule"):
+            raise ValueError("container-host default requirement changed or is no longer manual-only; review required")
+        payload = {"schema": ANSWER_SCHEMA, "stig": identity, "answers": {
+            pin["vid"]: {"status": "Not_Applicable", "comments": pin["comments"]}}}
+        default_hash = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        info["default_set"] = {"name": default, "sha256": default_hash, "vid": pin["vid"]}
+        change(row, "curated container-host sha256:" + default_hash, payload["answers"][pin["vid"]])
+        info["default_rows"] = 1
+    if answers:
+        data = answers["data"]
+        if data["stig"] != identity:
+            raise ValueError("answer file STIG identity does not match the checklist release")
+        unknown = set(data.get("answers", {})) - set(by_vid)
+        if unknown:
+            raise ValueError("answer V-IDs are absent from this checklist: " + ", ".join(sorted(unknown)[:10]))
+        info["file"] = {"path": answers["path"], "sha256": answers["sha256"], "schema": ANSWER_SCHEMA}
+        source = "answer file sha256:" + answers["sha256"]
+        categories = data.get("category_comments", {})
+        for row in vulns:
+            # Record the exact snapshot on every row, including unchanged rows,
+            # so the source identity travels when the checklist leaves its meta.
+            row["finding_details"] += "\nAnswer file considered: sha256:" + answers["sha256"]
+            parts = (row.get("na_category") or "").split("+")
+            matched = [cat for cat in parts if cat in categories]
+            if row["status"] == "Not_Applicable" and matched:
+                # A mixed category must be completely covered: replacing its
+                # prose with only one reason would silently omit other gates.
+                if len(matched) != len(parts):
+                    raise ValueError("category_comments must cover every category of mixed row " + row["vid"])
+                change(row, source + "; categories " + ", ".join(matched),
+                       {"comments": "\n".join(categories[cat] for cat in matched)})
+                info["category_rows"] += 1
+            if row["vid"] in data.get("answers", {}):
+                change(row, source, data["answers"][row["vid"]])
+                info["file_rows"] += 1
+    return info if answers or default != "none" else None
+
+
 # ------------------------------------------------------------- writers
 
 CKL_ATTRS = [
@@ -1997,11 +2188,21 @@ def main():
     ap.add_argument("--host-name", default="")
     ap.add_argument("--stig-xccdf-path", default="", help="DISA manual XCCDF or ZIP, read offline")
     ap.add_argument("--out-dir", required=True)
+    ap.add_argument("--checklist-answers", default="", help="release-bound site answers JSON, read offline")
+    ap.add_argument("--default-answers", default="none", help="opt-in reviewed answer set: none or container-host")
     ap.add_argument("--bundle-dir", default="", help="local generated bundle scripts; CircleCI uses staged payloads")
     ap.add_argument("--stem", default="checklist")
     ap.add_argument("--mode", default="auto")
     ap.add_argument("--formats", default="ckl,cklb", help="comma-separated: ckl, cklb")
     a = ap.parse_args()
+
+    try:
+        if answer_input_collision(a.checklist_answers, a.out_dir, a.stem):
+            print("ERROR: checklist_answers must be outside output_dir and cannot alias generated outputs", file=sys.stderr)
+            return 2
+    except OSError as exc:
+        print("ERROR: cannot check checklist_answers input/output isolation: " + str(exc), file=sys.stderr)
+        return 2
 
     # Python's default SIGTERM/SIGHUP handling exits without unwinding, so a
     # termination between the two publishing renames would skip cleanup and
@@ -2083,6 +2284,10 @@ def main():
             raise ValueError(f"checklist must be auto, require, or none; got {a.mode!r}")
         if a.mode == "none":
             return emit({"outcome": "skipped", "reason": "checklist generation disabled (checklist: none)"}, 0)
+
+        answers = read_answers(a.checklist_answers) if a.checklist_answers else None
+        if a.default_answers not in ("none", "container-host"):
+            raise ValueError("checklist_default_answers must be none or container-host")
 
         # Only known tokens; an empty or unknown selection is a config error, not
         # a silently empty "generated" checklist (D8).
@@ -2413,6 +2618,7 @@ def main():
                 },
                 0,
             )
+        answer_meta = apply_answers(stig, vulns, plan, answers, a.default_answers, baseline)
         asset = {
             "ROLE": "None",
             "ASSET_TYPE": "Computing",
@@ -2458,6 +2664,7 @@ def main():
                 "profile_id": res["profile_id"],
                 "outcome": "generated",
                 "host_name": host_name,
+                "answers": answer_meta,
                 # The detailed manifest has a separate 16 MiB budget. Keep
                 # this summary within the guard/summarizer's 1 MiB contract.
                 "tailoring": ({
@@ -2533,6 +2740,10 @@ PY_CHECKLIST
 then
     :
 else
+    checklist_rc=$?
+    if [ "${checklist_rc}" -eq 2 ]; then
+        exit 2
+    fi
     if [ "${GUARD}" = "true" ]; then
         echo "ERROR: checklist artifact guard could not complete cleanup." >&2
         exit 1

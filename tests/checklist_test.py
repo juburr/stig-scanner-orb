@@ -476,11 +476,12 @@ os.replace = killed
 main()
 """
         driver = driver.replace("ENTRY", repr(self.entry)).replace("HASH", repr(H))
+        driver_path = self.out / "kill-driver.py"
+        driver_path.write_text(driver)
         result = subprocess.run(
             [
                 sys.executable,
-                "-c",
-                driver,
+                str(driver_path),
                 "--results",
                 str(self.out / "results.xml"),
                 "--plan",

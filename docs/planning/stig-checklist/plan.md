@@ -1,6 +1,6 @@
 # Plan: STIG Viewer checklists with container N/A justifications
 
-Status: **PR 1 merged (#9); PR 2 merged (#10); PR 3 merged (#11); PR 4 implemented, pending review/merge**, 2026-10-15. Owner: TBD. Done: the independent
+Status: **PR 1 merged (#9); PR 2 merged (#10); PR 3 merged (#11); PR 4 merged (#12); PR 5 implemented and locally validated, pending review/merge**, 2026-10-15. Owner: TBD. Done: the independent
 `smoke-rhel10` item (as `smoke-rhel10-auto`).
 
 Inputs:
@@ -685,6 +685,20 @@ resolve vector settings reliably.
 
 ### PR 5: answer file (M)
 
+Implementation: strict `stig-scanner-orb/checklist-answers/v1` JSON bound to the
+exact checklist STIG identity. Snapshot ≤1 MiB, no duplicate/unknown keys,
+nonempty XML-safe literal text ≤16,384 characters per field, and no unknown
+V-IDs. Status decisions require comments. Cleanup protects source paths and
+hard links before scanning; standalone scan/checklist both accept the path.
+Apply after automatic eligibility/model checks, preserving original verdicts,
+comments and decision history in both formats. Categories replace N/A wording
+only; row answers win. Metadata carries automatic/final counts and source hashes;
+scan gates remain based on automated results. `container-host` defaults are
+explicitly opt-in and initially cover only RHEL 9 V2R9 V-257782, with the complete
+reviewed DISA row hash-pinned and image/manual-only guards. Defaults precede site
+answers; all decisions remain visible. New releases require fresh review.
+
+
 - **Parameter** `checklist_answers`: JSON, snapshotted and hashed. It
   holds per-row overrides keyed by V-ID (`status`, `comments`,
   `finding_details_append`) and category text overrides (e.g. a site whose
@@ -698,6 +712,15 @@ resolve vector settings reliably.
   manual-only Vulns that are plainly host-level in the bundled releases
   (e.g. RHEL 9 V-257782, hardware RNG entropy gatherer). This is the one
   hand-maintained "container STIG" artefact that earns its keep.
+
+Validation: all script suites and 144 checklist tests (17 answer-file tests) pass,
+including Python 3.8 coverage. A real pinned RHEL 9 scan yields 445 rows;
+curated/site precedence, all 366 N/A category replacements, retained evidence
+and the independent fail-on-finding gate pass. Both formats import through the
+pinned STIG Manager consumers; CKLB passes the pinned DISA schema. ShellCheck,
+YAML lint, packing and the adapted CircleCI integration config validation pass.
+The new CI smoke feeds consumer validation and gates publishing. Manual STIG
+Viewer GUI import and ISSM wording acceptance remain release acceptance tasks.
 
 ### PR 6: Wolfi / Chainguard GPOS SRG checklist (S–M)
 

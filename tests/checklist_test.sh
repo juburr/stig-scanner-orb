@@ -6,3 +6,4 @@ python3 tests/checklist_test.py
 python3 tests/skeleton_test.py
 python3 tests/bundle_test.py
 python3 tests/tailoring_test.py
+python3 tests/answers_test.py
