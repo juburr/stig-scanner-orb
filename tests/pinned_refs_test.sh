@@ -72,7 +72,8 @@ code = script.read_text().split("<<'PY_CHECKLIST'\n", 1)[1].split('\nPY_CHECKLIS
 gen = {'__name__': 'pins'}
 exec(compile(code, str(script), 'exec'), gen)
 sources = json.loads((root / 'tools/stig-sources.json').read_text())
-assert set(gen['BUNDLE_TABLE']) == set(gen['RELEASE_TABLE']), 'bundle/datastream pin sets differ'
+expected = {sha for sha, entry in gen['RELEASE_TABLE'].items() if entry[4].get('kind') != 'vendor-srg'}
+assert set(gen['BUNDLE_TABLE']) == expected, 'bundle/datastream pin sets differ'
 for sha, descriptor in gen['BUNDLE_TABLE'].items():
     data = gen['load_bundle'](sha, str(root / 'src/scripts/stig-data'))
     assert (data['version'], data['releaseinfo']) == gen['RELEASE_TABLE'][sha][3]
@@ -80,5 +81,15 @@ for sha, descriptor in gen['BUNDLE_TABLE'].items():
     assert data['source_sha256'] == source['sha256']
     assert data['source_path'] == source['url']
     assert data['credits'] == source['credits']
-print('bundled DISA pins ok: every datastream release and source ZIP hash matches')
+for sha, entry in gen['RELEASE_TABLE'].items():
+    if entry[4].get('kind') == 'vendor-srg':
+        assert gen['load_bundle'](sha, str(root / 'src/scripts/stig-data')) is None
+        assert entry[:2] == (gen['GPOS_BENCHMARK'], '3.2.17')
+        assert set(entry[2]) == {gen['GPOS_PROFILE']}
+        identity = (gen['GPOS_STIG'][0], entry[3][0], entry[3][1].split()[1])
+        count, inventory, releaseinfo = gen['STIG_INVENTORY'][identity]
+        assert (count, inventory, releaseinfo) == (
+            entry[4]['profiles'][gen['GPOS_PROFILE']]['vids'],
+            entry[4]['reference']['inventory_sha256'], entry[3][1])
+print('DISA pins ok: bundled releases/source ZIPs and native vendor reference inventory agree')
 PY_BUNDLE_PINS

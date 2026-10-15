@@ -1,4 +1,4 @@
-"""Which DISA release does a pinned datastream's STIG profile match?
+"""Which DISA release does a pinned STIG or Chainguard GPOS SRG profile match?
 
     fingerprint-stig.py <results.xml> '<DISA manual xccdf glob>' [--allow-unmapped rule[,rule...]]
 
@@ -25,6 +25,8 @@ import glob
 import hashlib
 import os
 import re
+from pathlib import Path
+import io
 import sys
 import xml.etree.ElementTree as ET
 
@@ -69,8 +71,20 @@ undefined = sorted(rid for rid in sel if rid not in rules)
 # And the other way: OpenSCAP writes a rule-result for every Rule, notselected
 # included, so a Rule without one means a truncated selection.
 unresulted = sorted(set(rules) - {rr.get("idref") for rr in tr.findall(X + "rule-result")})
+vendor = bench.get("id") == "xccdf_org.open-scap.sce-community-content_benchmark_all"
+
+def references(rule, href):
+    if vendor and href == HREF:
+        rid = rule.get("id", "")
+        prefix = "xccdf_mil.disa.stig_rule_"
+        value = rid[len(prefix):] if rid.startswith(prefix) else ""
+        if not SV_RE.fullmatch(value):
+            sys.exit("invalid Chainguard GPOS Rule id: " + rid)
+        return {value}
+    return {(x.text or "").strip() for x in rule.findall(X + "reference") if x.get("href") == href}
+
 svs_of = {
-    rid: {x.text.strip() for x in rules[rid].findall(X + "reference") if x.get("href") == HREF}
+    rid: references(rules[rid], HREF)
     for rid in sel
     if rid in rules
 }
@@ -83,8 +97,8 @@ unmapped = sorted(rid.replace(RULE, "") for rid, s in svs_of.items() if not s)
 # generator's "deselected" wording.
 unpaired = []
 for rid in rules:
-    refs = {(x.text or "").strip() for x in rules[rid].findall(X + "reference") if x.get("href") == HREF_VULN}
-    rule_svs = {(x.text or "").strip() for x in rules[rid].findall(X + "reference") if x.get("href") == HREF}
+    refs = references(rules[rid], HREF_VULN)
+    rule_svs = references(rules[rid], HREF)
     vids = {v[2:] for v in refs if re.fullmatch(r"V-[0-9]+", v)}
     malformed = sorted(v for v in refs if not re.fullmatch(r"V-[0-9]+", v)) + sorted(
         sv for sv in rule_svs if not SV_RE.fullmatch(sv)
@@ -117,14 +131,13 @@ print(
 # anything else.
 fp_lines = []
 for rid in sorted(rules):
-    refs = rules[rid].findall(X + "reference")
-    sv_refs = sorted({(x.text or "").strip() for x in refs if x.get("href") == HREF})
-    v_refs = sorted({(x.text or "").strip() for x in refs if x.get("href") == HREF_VULN})
+    sv_refs = sorted(references(rules[rid], HREF))
+    v_refs = sorted(references(rules[rid], HREF_VULN))
     fp_lines.append(f"{rid}\t{'S' if rid in sel else 'N'}\t{' '.join(sv_refs)}\t{' '.join(v_refs)}")
 vids = set()
 for rid in sel & set(rules):
     nums = {SV_RE.fullmatch(x).group(1) for x in svs_of[rid] if SV_RE.fullmatch(x)}
-    refs = {(x.text or "").strip() for x in rules[rid].findall(X + "reference") if x.get("href") == HREF_VULN}
+    refs = references(rules[rid], HREF_VULN)
     (
         vids.update(v for v in refs if re.fullmatch(r"V-[0-9]+", v) and v[2:] in nums)
         if refs
@@ -166,3 +179,12 @@ mns = m.tag[: m.tag.index("}") + 1] if m.tag.startswith("{") else ""
 print(
     f"MATCH: {full[0]} ({next((''.join(x.itertext()) for x in m.iter(mns + 'plain-text') if x.get('id') == 'release-info'), '?')})"
 )
+
+if vendor:
+    script = Path(__file__).resolve().parents[1] / "src/scripts/checklist.sh"
+    code = script.read_text().split("<<'PY_CHECKLIST'\n", 1)[1].split("\nPY_CHECKLIST\n", 1)[0]
+    gen = {"__name__": "fingerprint"}
+    exec(compile(code, str(script), "exec"), gen)
+    res = gen["parse_results"](io.BytesIO(Path(a.results).read_bytes()))
+    print("  vendor evidence sha256", gen["vendor_evidence_fingerprint"](res))
+    print("  DISA XCCDF sha256", hashlib.sha256(Path(sorted(f for f in glob.glob(a.pattern) if os.path.basename(f) == full[0])[0]).read_bytes()).hexdigest())

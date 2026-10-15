@@ -9,6 +9,13 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 
 ### Added
 
+- Offline Wolfi/Chainguard GPOS SRG V3R2 checklists from the exact pinned vendor
+  datastream/profile: 198 native DISA rows, preserved CCIs and attributed vendor
+  N/A rationale in both formats. Metadata fingerprints reject altered evidence;
+  supplied reference revisions remain Not Reviewed when they differ. Site
+  answers retain original evidence and automated finding gates stay independent.
+  The Wolfi smoke now feeds STIG Manager and DISA CKLB schema validation.
+
 - Generated, source-hash-verified checklist entry point that stays below Linux's
   single-argument limit when CircleCI launches the packed generator and guard.
   Maintainer checks enforce source equality and command-size headroom.

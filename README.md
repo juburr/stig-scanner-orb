@@ -243,8 +243,9 @@ These are well-suited as ATO evidence and easy to attach to your container as in
 The `scan` job generates `.ckl` (STIG Viewer 2 XML) and `.cklb` (STIG Viewer 3
 JSON) offline, using Python's standard library on the runner. Supported pinned
 releases are RHEL 8 V2R8, RHEL 9 V2R9, RHEL 10 V1R2, and Ubuntu 22.04 V2R8;
-RHEL `stig_gui` profiles are supported too. CIS, Debian, Fedora `standard`, and
-Wolfi/Chainguard profiles are skipped, even when their rules cite DISA IDs.
+RHEL `stig_gui` profiles are supported too. The pinned Wolfi/Chainguard vendor
+profile also generates a GPOS SRG V3R2 checklist (see below). CIS, Debian and
+Fedora `standard` profiles are skipped, even when their rules cite DISA IDs.
 A scan recording missing dpkg or RPM inventory also skips checklist generation: a
 failed package probe cannot prove package absence or N/A applicability. Repair
 `/var/lib/dpkg/status` or restore the RPM database and rerun the scan first.
@@ -264,7 +265,7 @@ The finding ignore-list affects the build gate only, never checklist verdicts.
 Finding details retain every contributing result, scanner identity, datastream
 hash, target digest or local image ID, platform, runner CPU and scan times.
 
-Every N/A row explains the deciding condition: host control, absent graphical
+Every SSG N/A row explains the deciding condition: host control, absent graphical
 component, absent package, architecture, other platform condition, or a check
 that itself returned N/A. Compound conditions use a specific category only when
 the evidence proves which term failed. Host comments direct requirements to
@@ -273,7 +274,7 @@ review. Architecture gates read the scanning host's CPU. Uncertain target
 applicability makes the row Not Reviewed; a gate demonstrably false for the
 target is recomputed as N/A, preserving the original result as evidence.
 
-By default, verified pinned scans use **bundled DISA reference data** for their
+By default, verified pinned RHEL and Ubuntu scans use **bundled DISA reference data** for their
 content-matched release: official requirement/check/fix text, CCIs, and every
 DISA row, including manual-only requirements. No DISA download or additional
 input is needed during a scan. Separate included steps stage compressed data
@@ -343,6 +344,47 @@ ZIP hash/member where applicable; `checklist-meta.json` and `provenance.json`
 also record them. The `bundle` metadata block identifies the content-matched
 reference separately from a supplied skeleton.
 
+### Wolfi / Chainguard GPOS SRG checklists
+
+`target_base: wolfi` (or `auto` detecting Wolfi) produces both formats from the
+pinned `ssg-chainguard-gpos-ds.xml` and `xccdf_basic_profile_.check` profile.
+This is the **General Purpose Operating System Security Requirements Guide
+(SRG), evaluated with Chainguard's vendor container-image profile**, not a
+DISA OS STIG or a certification of deployment compliance.
+
+The verified release is **V3R2, 30 Jan 2025**: all 198 native Rule IDs match
+that DISA inventory exactly. The vendor content version (`3.2.17`) is separate
+from the DISA release. An unknown/modified datastream or another profile cannot
+borrow this mapping, even with a supplied DISA reference. Pin refreshes must
+verify the native Rule IDs and vendor metadata fingerprint again. The standard
+scan provenance, asset naming, publication guard and checklist mode gates apply.
+
+Each row retains the vendor's title, description and CCIs. N/A comments quote
+**Chainguard's vendor rationale** only when OpenSCAP's deciding gate is
+`cpe:/o:notapplicable`; the same rationale stays in finding details, including
+after site answers replace comments or status. These statements describe the
+vendor's container-image assumptions. Assess them against the intended runtime,
+especially for extracted host/VM filesystems; they do not establish RMF control
+inheritance. `na_by_reason.vendor` reports these rows, and `content_kind:
+vendor-srg` identifies the path in metadata, provenance and summary.
+
+This mode does not bundle DISA reference text. Check fields identify the executed
+OpenSCAP Rule ID, and missing remediation text is explicitly identified rather
+than presenting the vendor description as a fix. To use full official text,
+supply a GPOS SRG manual XCCDF/ZIP with `stig_xccdf_path`. Every Rule ID then
+comes from that release; differing revisions remain **Not Reviewed**, retaining
+the original vendor evidence. Without content-matched DISA check text, no
+cross-revision result is carried forward. Tailoring this vendor profile is not
+supported. Release-bound site answer files work as usual, including the
+`vendor` N/A wording category; `container-host` defaults remain RHEL-only.
+
+```yaml
+- stig-scanner-orb/scan:
+    image: cgr.dev/chainguard/static:latest
+    target_base: wolfi
+    checklist: require
+```
+
 ### Site answer files
 
 Set `checklist_answers` to a runner-readable JSON file staged before the scan.
@@ -395,7 +437,7 @@ checklist fail conversion and remove stale checklists. This format is inspired
 by Evaluate-STIG answer files; it is a separate schema.
 
 `category_comments` replaces comments on automatically N/A rows in the named
-categories: `host`, `gui`, `package`, `arch`, `platform`, `check`. The text is
+categories: `host`, `gui`, `package`, `arch`, `platform`, `check`, `vendor`. The text is
 literal; no interpolation or code runs. Categories change wording only. A row
 combining several categories requires wording for all of them; their comments
 are joined in category order. Individual V-ID answers take precedence over
@@ -667,7 +709,14 @@ The pins live in one place, `DEFAULT_CHAINGUARD_IMAGE` and `DEFAULT_RPM_SCANNER_
    references. Update `RELEASE_TABLE` in `src/scripts/checklist.sh`: benchmark,
    version, canonical release info, per-profile selection count/fingerprint,
    V-ID count, unmapped-rule allowlist, and datastream filename. Never guess
-   from the profile label. The smoke matrix checks every table entry.
+   from the profile label. For Chainguard GPOS, use the same tool against GPOS
+   SRG releases: it reads the native `xccdf_mil.disa.stig_rule_SV-…_rule` IDs
+   and prints the vendor evidence fingerprint. Record both fingerprints, exact
+   profile/benchmark/version, V-ID count, canonical release, and reference ZIP,
+   XCCDF and inventory hashes. Review vendor rationale/CCI/platform changes;
+   do not add a generic `_profile_.check` exemption. GPOS uses vendor metadata,
+   so it has an explicit `vendor-srg` table entry rather than a DISA text bundle.
+   The smoke matrix checks every table entry.
 6. Review matching public DISA ZIPs and refresh their checksum-pinned bundles
    using the procedure under "Refreshing bundled DISA data" below. Include source
    checksum, inventory, generated script and `BUNDLE_TABLE` updates in the PR.

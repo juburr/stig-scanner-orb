@@ -1,6 +1,7 @@
 description: >
   Generate offline STIG Viewer CKL and CKLB checklists from results.xml.
   DISA STIG profiles use verified pinned content or a supplied DISA skeleton.
+  The pinned Chainguard vendor profile produces a GPOS SRG checklist.
   Conversion failures are recorded in checklist-meta.json; summarize enforces the policy.
 
 parameters:

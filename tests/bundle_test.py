@@ -293,7 +293,9 @@ class BundleTests(unittest.TestCase):
 
     def test_real_bundles_match_release_source_pins_and_pack_wiring(self):
         sources = json.loads((ROOT / "tools/stig-sources.json").read_text())
-        self.assertEqual(set(MOD["BUNDLE_TABLE"]), set(MOD["RELEASE_TABLE"]))
+        self.assertEqual(set(MOD["BUNDLE_TABLE"]),
+                         {sha for sha, entry in MOD["RELEASE_TABLE"].items()
+                          if entry[4].get("kind") != "vendor-srg"})
         for sha, descriptor in MOD["BUNDLE_TABLE"].items():
             with patch.dict(os.environ, {}, clear=True):
                 disa = MOD["load_bundle"](sha, str(ROOT / "src/scripts/stig-data"))

@@ -404,7 +404,7 @@ if checklist is not None:
     if checklist.get("reason"):
         lines.append(f"  reason: {checklist['reason']}")
     if checklist.get("outcome") == "generated":
-        for key in ("host_name", "release_source", "bundle", "revision_drift", "skeleton_completeness", "skeleton_sha256", "skeleton_source_sha256", "skeleton_path", "skeleton_member", "unmatched_ssg_vids", "stig", "formats", "vulns", "status", "answers", "na_by_reason", "not_reviewed_by_reason", "unpaired_refs"):
+        for key in ("host_name", "content_kind", "vendor_reference", "release_source", "bundle", "revision_drift", "skeleton_completeness", "skeleton_sha256", "skeleton_source_sha256", "skeleton_path", "skeleton_member", "unmatched_ssg_vids", "stig", "formats", "vulns", "status", "answers", "na_by_reason", "not_reviewed_by_reason", "unpaired_refs"):
             lines.append(f"  {key}: {json.dumps(checklist.get(key), sort_keys=True)}")
         if checklist.get("skeleton_completeness") == "internal":
             lines.append("  warning: unknown DISA release; skeleton completeness establishes self-consistency only. Compare its source hash with DISA's published file.")

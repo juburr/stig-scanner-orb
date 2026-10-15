@@ -105,7 +105,7 @@ def build(source_dir, download=False):
         matches = [
             (sha, entry)
             for sha, entry in gen["RELEASE_TABLE"].items()
-            if entry[4]["filename"] == "ssg-" + alias + "-ds.xml"
+            if entry[4].get("filename") == "ssg-" + alias + "-ds.xml"
         ]
         if len(matches) != 1:
             raise ValueError(f"{alias}: expected exactly one pinned datastream")
@@ -142,7 +142,8 @@ def build(source_dir, download=False):
             "source_sha256": source["sha256"],
             "xccdf_sha256": hashlib.sha256(xml).hexdigest(),
         }
-    if set(descriptors) != set(gen["RELEASE_TABLE"]):
+    if set(descriptors) != {sha for sha, entry in gen["RELEASE_TABLE"].items()
+                            if entry[4].get("kind") != "vendor-srg"}:
         raise ValueError("every release-table datastream must have exactly one bundle")
     # JSON objects also form a Python literal here (all values are strings).
     table = (
