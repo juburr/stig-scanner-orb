@@ -132,6 +132,39 @@ def parse_results(source, tailoring=None):
     bench = benches[0]
     parent = {c: p for p in bench.iter() for c in p}
 
+    group_index = {}
+    for group in bench.iter(X12 + "Group"):
+        gid = group.get("id")
+        if not gid or gid in group_index:
+            raise ValueError("results.xml defines a missing or duplicate Group id")
+        group_index[gid] = group
+
+    group_platform_cache = {}
+    def group_platforms(group):
+        lineage, seen = [], set()
+        current = group
+        while current is not None and current.get("id") not in group_platform_cache:
+            gid = current.get("id")
+            if gid in seen:
+                raise ValueError("cyclic Group inheritance: " + str(gid))
+            seen.add(gid)
+            lineage.append(current)
+            base = current.get("extends")
+            if base and base not in group_index:
+                raise ValueError("unresolved Group inheritance: " + base)
+            current = group_index.get(base) if base else None
+        platforms = group_platform_cache[current.get("id")] if current is not None else []
+        for ancestor in reversed(lineage):
+            own = ancestor.findall(X12 + "platform")
+            if own:
+                platforms = own if any(p.get("override") in ("true", "1") for p in own) else platforms + own
+            group_platform_cache[ancestor.get("id")] = platforms
+        return group_platform_cache[group.get("id")]
+
+    # Validate even empty templates; shared inheritance chains are cached.
+    for group in group_index.values():
+        group_platforms(group)
+
     def chain_platforms(el):
         """Platform idrefs per level: the rule, its ancestor groups, then the
         Benchmark. Every level must hold: OpenSCAP checks an item's platforms
@@ -141,7 +174,8 @@ def parse_results(source, tailoring=None):
         override an ancestor's."""
         levels = []
         while el is not None:
-            ps = [p.get("idref") for p in el.findall(X12 + "platform")]
+            platforms = group_platforms(el) if el.tag == X12 + "Group" else el.findall(X12 + "platform")
+            ps = [p.get("idref") for p in platforms]
             if ps:
                 levels.append(ps)
             if el is bench:

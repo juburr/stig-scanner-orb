@@ -198,9 +198,11 @@ TestResult instance's role, severity, weight and check identity. Retain requests
 on stock-unselected Rules too. Preserve official DISA severity and do not infer
 missing properties or effective Group weight from Rule weight. Resolve Rule
 extends chains before matching value exports, using check replacement keyed by
-system/selector. Rule platform inheritance uses append/override semantics and
-joins the child's physical Group/Benchmark gates for applicability and target
-architecture checks; source base-Rule containing Groups are not inherited.
+system/selector. Resolve Rule and Group platform inheritance with
+append/override semantics, then combine the effective platforms with the
+item's physical Group/Benchmark gates for applicability and target architecture
+checks. Do not import a base item's enclosing Groups.
+Reject missing/duplicate Group IDs and cyclic/unresolved Group inheritance.
 For checks, inherited complex-check content takes precedence over simple
 checks. Resolve references with append/override semantics in source inventory
 and result mapping. Both pinned engines can erase inherited references and

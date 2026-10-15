@@ -700,6 +700,45 @@ class TailoringTests(unittest.TestCase):
                 expected = ["#aarch64_arch"] if override else ["#not_s390x_arch", "#aarch64_arch"]
                 self.assertEqual(parsed["rules"]["one"]["platform_levels"], [expected, ["#package_pam"]])
 
+    def test_inherited_group_platforms_gate_target_architecture(self):
+        ds, _ = self.tailored()
+        child = ds.findall(X + "Group")[0]
+        child.set("extends", "group-template")
+        template = ET.SubElement(ds, X + "Group", id="group-template")
+        ET.SubElement(template, X + "platform", idref="#not_s390x_arch")
+        ET.SubElement(ds.find(X + "TestResult"), X + "platform", idref="#not_s390x_arch")
+        meta = self.preflight(ds=ds)
+        meta["datastream_sha256"] = H
+        self.plan["image_platform"] = "linux/s390x"
+        self.prepare(ds, register=False)
+        self.save_meta(meta)
+        rc, result = self.generate(self.save_skeleton())
+        self.assertEqual((rc, result["outcome"]), (0, "generated"), result)
+        self.assertEqual(self.rows()[0]["status"], "not_applicable")
+
+    def test_group_platform_overrides_and_invalid_ancestry(self):
+        for mode in ("append", "override", "cycle", "missing"):
+            with self.subTest(mode=mode):
+                ds = source()
+                group = ds.findall(X + "Group")[0]
+                group.set("extends", "group-template")
+                template = ET.SubElement(ds, X + "Group", id="group-template")
+                ET.SubElement(template, X + "platform", idref="#not_s390x_arch")
+                platform = ET.SubElement(group, X + "platform", idref="#aarch64_arch")
+                if mode == "override":
+                    platform.set("override", "true")
+                elif mode == "cycle":
+                    template.set("extends", group.get("id"))
+                elif mode == "missing":
+                    group.set("extends", "unknown")
+                if mode in ("cycle", "missing"):
+                    with self.assertRaisesRegex(ValueError, "Group inheritance"):
+                        MOD["parse_results"](io.BytesIO(ET.tostring(ds)))
+                    continue
+                result = MOD["parse_results"](io.BytesIO(ET.tostring(ds)))
+                expected = ["#aarch64_arch"] if mode == "override" else ["#not_s390x_arch", "#aarch64_arch"]
+                self.assertEqual(result["rules"]["one"]["platform_levels"], [expected])
+
     def test_ssg_only_omits_deselected_row(self):
         self.tailored()
         res = MOD["parse_results"](
