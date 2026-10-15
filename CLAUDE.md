@@ -275,3 +275,25 @@ include this entry. After ANY checklist.sh edit, run
 entry. The CI matrix guard still runs the identical readable source. Do not
 pass the decoded script through an external bash -c argument. The packing
 regression launches the actual entry via bash -c to catch this limit.
+
+
+## Wolfi GPOS SRG checklists
+
+The exact Chainguard datastream/profile has a `kind: vendor-srg` release entry;
+all 198 native `xccdf_mil.disa.stig_rule_SV-…_rule` IDs match DISA GPOS SRG
+V3R2. This is vendor content, not ComplianceAsCode or a DISA OS STIG. Never
+admit other `_profile_.check` profiles by suffix. Unknown vendor bytes skip even
+with a skeleton; tailoring this vendor profile is refused. Selection and vendor
+metadata fingerprints bind identities, CCIs, description, rationale, severity
+and platform chains. `tools/fingerprint-stig.py` prints both for refreshes.
+No DISA text bundle is required for the explicit vendor entry; existing RHEL/
+Ubuntu bundles must still be present. `refresh-stig-data.py` and pinned-ref
+checks distinguish this entry explicitly. N/A uses the verbatim vendor rationale
+only for the deciding `cpe:/o:notapplicable` gate; retain attribution, deployment
+assumption caveat and original evidence through supplied reference drift and
+site answers. Never infer a host relationship from these statements. Missing
+vendor fix/check text must not be invented. `content_kind` and `vendor_reference`
+travel with summary/provenance; reference hashes travel in every row.
+`tests/gpos_test.py` covers identity, metadata, statuses, references, rootfs,
+site answers and scan-gate independence. `smoke-wolfi` asserts native IDs/CCIs,
+rationale, release and every outcome, then feeds both consumer validators.

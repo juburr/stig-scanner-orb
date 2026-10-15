@@ -134,7 +134,8 @@ jobs:
             assert p["target"]["platform"] == p["scanner"]["platform"], "target/scanner platform mismatch on one runner"
             ' "$pinned"
       - assert-checklist:
-          outcome: skipped
+          outcome: generated
+          artifact_name: wolfi
       - store_artifacts:
           path: build/stig
           destination: smoke-wolfi
@@ -879,6 +880,7 @@ workflows:
           filters: *filters
       - checklist-validator:
           requires:
+            - smoke-wolfi
             - smoke-rhel9-answers
             - smoke-rhel9-tailoring
             - smoke-rhel9-skeleton-matched

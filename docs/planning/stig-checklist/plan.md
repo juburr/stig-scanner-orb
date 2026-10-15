@@ -1,6 +1,6 @@
 # Plan: STIG Viewer checklists with container N/A justifications
 
-Status: **PR 1 merged (#9); PR 2 merged (#10); PR 3 merged (#11); PR 4 merged (#12); PR 5 implemented and locally validated, pending review/merge**, 2026-10-15. Owner: TBD. Done: the independent
+Status: **PR 1 merged (#9); PR 2 merged (#10); PR 3 merged (#11); PR 4 merged (#12); PR 5 merged (#13); PR 6 implemented and locally validated, pending review/merge**, 2026-10-15. Owner: TBD. Done: the independent
 `smoke-rhel10` item (as `smoke-rhel10-auto`).
 
 Inputs:
@@ -476,7 +476,7 @@ justifications are neutral about asset type and control inheritance.
   - `smoke-debian12-auto`, `smoke-rhel9-cis`, `smoke-fedora`: checklist
     skipped, not failed, and no checklist files in `output_dir`.
     `smoke-rhel9-cis` is the regression test for D11, since its rules carry
-    SV references. `smoke-wolfi`: skipped until PR 6.
+    SV references. `smoke-wolfi`: generates the pinned vendor GPOS SRG checklist (PR 6).
   - Negative test (like `smoke-hollow`): `checklist: require` on the CIS
     profile must fail `summarize`.
   - `smoke-rootfs`: with no `checklist_asset_name`, the checklist is skipped
@@ -743,6 +743,48 @@ and N/A rules are gated on `cpe:/o:notapplicable` with a per-rule rationale.
   - N/A COMMENTS use Chainguard's rationale, labelled as the vendor's.
 - README states plainly that this is an SRG checklist and Chainguard's
   vendor profile, not a DISA STIG.
+
+Implementation: native Rule-ID extraction is limited to the known vendor
+benchmark and admitted only by the exact datastream/profile entry. Both selection
+and vendor metadata fingerprints are checked before generation. The 198 native
+Rule IDs match the entire DISA GPOS SRG V3R2 inventory (no missing/extra rows),
+canonical `Release: 2 Benchmark Date: 30 Jan 2025`. V3R3 matches 192 and V3R4 only 168 of those
+Rule IDs, so the profile label is not used to choose or update a release.
+
+Reference evidence: the official V3R2 URL currently returns 404; the archived
+original package was retrieved from
+`https://cyber.trackr.live/stig/General_Purpose_Operating_System_Security_Requirements_Guide/3/2/companion.zip`.
+Source ZIP SHA-256 `16140318835d9d7e14cf511ff848eab533e0b9533014373fd413fcb4ad2e4fc7`;
+manual XCCDF `916ab279d897df209f09669baf9325f834d5d2a5b3f07a12553da4b650fa2335`;
+198 sorted V-ID/Rule-ID pairs `6d675778948710bc12ed77b79b3b93e68b231b170e790d981f4983994b7dbc3c`.
+The verified table records those hashes and both source locations. No vendor or
+DISA reference text is added to the orb; native metadata comes from the scan.
+The official V3R4 ZIP was downloaded separately for the non-match comparison.
+
+CCIs and vendor descriptions travel with each row. The deciding sentinel gate
+uses the vendor rationale in COMMENTS, with attribution and deployment-assumption
+caveats; finding details retain it even when revision drift or site answers
+replace the final comments. `na_by_reason.vendor`, `content_kind: vendor-srg`
+and `vendor_reference` distinguish the evidence. Supplied GPOS references use
+existing conservative revision checks; no cross-revision check-text equivalence
+is claimed without a matched bundle. Unknown vendor bytes skip, tailoring is
+refused and rootfs still requires a stable asset name. Site answers remain
+release-bound and automated gates independent; RHEL-only curated defaults
+cannot be applied. The updated Wolfi smoke feeds both consumer validators.
+
+Validation: all repository script suites pass, including 162 checklist tests
+(16 native GPOS regressions) on the local runtime and Python 3.8. A real pinned
+Wolfi scan produces 198 rows (85 NotAFinding, 6 Open, 107 vendor N/A). Matching
+V3R2 reference output retains the same outcomes; a V3R4 reference produces 202
+rows, including 34 Not Reviewed (29 revision mismatches withheld; other rows
+lack matching vendor checks). All three CKL/CKLB pairs pass pinned STIG Manager
+identity/outcome validation and all CKLBs pass the pinned DISA schema checks.
+Packed generation/guard work via actual bash -c launches. The arm64 scanner
+variant ships byte-identical GPOS content (verified by streaming its registry
+layer), so the same exact-hash entry covers both runner architectures. Existing DISA bundle
+sources reproduce exactly. ShellCheck, YAML lint, orb packing (~0.83 MB) and
+the CI matrix adapter's equality checks pass. Manual STIG Viewer GUI import
+and customer ISSM wording acceptance remain release acceptance tasks.
 
 ### Independent: `smoke-rhel10` (done)
 

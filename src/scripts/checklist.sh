@@ -57,7 +57,7 @@ HREF_VULN = "https://www.cyber.mil/stigs/srg-stig-tools#vulnerability_id"
 # and write it as the row's Rule_ID.
 SV_RE = re.compile(r"SV-([0-9]+)r[0-9]+_rule")  # ASCII digits only (\d matches any Unicode digit)
 # Bound untrusted XML before parsing: real results.xml is about 15–20 MiB.
-GENERATOR_VERSION = "1.3.0"
+GENERATOR_VERSION = "1.4.0"
 MAX_RESULTS_BYTES = 128 << 20
 MAX_DISA_BYTES = 16 << 20
 X11 = "{http://checklists.nist.gov/xccdf/1.1}"
@@ -124,6 +124,14 @@ def combine_instances(rs):
     return "pass" if "pass" in rs else "fixed"  # what's left is pass/fixed/notapplicable
 
 
+# The generic upstream benchmark id is insufficient on its own. main() admits
+# this vendor profile only through its exact datastream hash and release entry.
+GPOS_BENCHMARK = "xccdf_org.open-scap.sce-community-content_benchmark_all"
+GPOS_PROFILE = "xccdf_basic_profile_.check"
+GPOS_RULE_PREFIX = "xccdf_mil.disa.stig_rule_"
+GPOS_STIG = ("General_Purpose_Operating_System", "General Purpose Operating System Security Requirements Guide")
+
+
 def parse_results(source, tailoring=None):
     root = ET.parse(source).getroot()
     # One Benchmark (oscap's results.xml is the Benchmark itself): with
@@ -133,6 +141,7 @@ def parse_results(source, tailoring=None):
     if len(benches) != 1:
         raise ValueError(f"results.xml has {len(benches)} Benchmark elements; expected exactly one")
     bench = benches[0]
+    vendor_srg = bench.get("id") == GPOS_BENCHMARK
     parent = {c: p for p in bench.iter() for c in p}
 
     group_index = {}
@@ -246,6 +255,13 @@ def parse_results(source, tailoring=None):
         refs = [(x.get("href") or "", (x.text or "").strip()) for x in references]
         ref = lambda pred: next((v for h, v in refs if pred(h, v)), None)
         sv_refs = sorted({v for h, v in refs if h == HREF_RULE})
+        if vendor_srg:
+            native_id = r.get("id")[len(GPOS_RULE_PREFIX):]
+            if not r.get("id").startswith(GPOS_RULE_PREFIX) or not SV_RE.fullmatch(native_id):
+                raise ValueError("invalid Chainguard GPOS Rule id: " + r.get("id"))
+            if refs:
+                raise ValueError("unexpected DISA references in Chainguard GPOS content")
+            sv_refs = [native_id]
         svs = collections.defaultdict(list)
         for v in sv_refs:
             if SV_RE.fullmatch(v):
@@ -271,6 +287,8 @@ def parse_results(source, tailoring=None):
             "vids": list(dict.fromkeys(v for h, v in refs if h == HREF_VULN)),
             "stig_ids": [v for h, v in refs if "unix-linux" in h],
             "srg": ref(lambda h, v: v.startswith("SRG-")),
+            "ccis": sorted({text_of(i) for i in r.findall(X12 + "ident")
+                            if i.get("system") == "http://cyber.mil/cci"}),
             "cce": next((text_of(i) for i in r.findall(X12 + "ident") if "cce" in (i.get("system") or "")), None),
             "platform_levels": ([[p.get("idref") for p in platforms]] if platforms else []) + chain_platforms(parent.get(r)),
             "value_ids": sorted({e.get("value-id") for check in effective for e in check.findall(X12 + "check-export") if e.get("value-id")}),
@@ -346,6 +364,7 @@ def parse_results(source, tailoring=None):
             if el.tag == X12 + "set-complex-value" else "".join(el.itertext())
         )
     return {
+        "vendor_srg": vendor_srg,
         "benchmark_id": bench.get("id"),
         "benchmark_version": bench.findtext(X12 + "version"),
         "profile_id": profile_id,
@@ -498,7 +517,8 @@ def aggregate(rule_results):
     return "NotAFinding"  # pass/fixed, possibly mixed with notapplicable
 
 
-SSG_STIG_IDS = {  # SSG benchmark -> DISA benchmark id / title (SSG-only mode)
+SSG_STIG_IDS = {  # Known source benchmark -> DISA benchmark id / title
+    GPOS_BENCHMARK: GPOS_STIG,
     "RHEL-9": ("RHEL_9_STIG", "Red Hat Enterprise Linux 9 Security Technical Implementation Guide"),
     "RHEL-8": ("RHEL_8_STIG", "Red Hat Enterprise Linux 8 Security Technical Implementation Guide"),
     "RHEL-10": ("RHEL_10_STIG", "Red Hat Enterprise Linux 10 Security Technical Implementation Guide"),
@@ -512,6 +532,11 @@ SSG_STIG_IDS = {  # SSG benchmark -> DISA benchmark id / title (SSG-only mode)
 # several releases share a V-ID set (Ubuntu V2R7-V2R9, RHEL 10 V1R1-V1R2) and
 # differ only in Rule ID revisions, which consumers match exactly.
 STIG_INVENTORY = {
+    ("General_Purpose_Operating_System", "3", "2"): (
+        198,
+        "6d675778948710bc12ed77b79b3b93e68b231b170e790d981f4983994b7dbc3c",
+        "Release: 2 Benchmark Date: 30 Jan 2025",
+    ),
     ("CAN_Ubuntu_22-04_LTS_STIG", "2", "7"): (
         188,
         "12de845e06062acb595732396579707e79d18217e8f3b430ef19733bf90cbb7f",
@@ -593,6 +618,25 @@ TARGET_STIG = {
 # the verified release wouldn't hold for it.
 _P = "xccdf_org.ssgproject.content_profile_"
 RELEASE_TABLE = {
+    "6f7711b7759c3f9fd1aac4b8ea275075fd9d8810b7fccdeeffe5825a4ceef41e": (
+        GPOS_BENCHMARK,
+        "3.2.17",
+        {GPOS_PROFILE: (198, "1c08e65f6fa9d6845cf268521cb0ca52f6410dcee0d5bc0f88efb02d21428298")},
+        ("3", "Release: 2 Benchmark Date: 30 Jan 2025"),
+        {
+            "kind": "vendor-srg",
+            "datastream_filename": "ssg-chainguard-gpos-ds.xml",
+            "reference": {
+                "source_url": "https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip/U_GPOS_V3R2_SRG.zip",
+                "archive_url": "https://cyber.trackr.live/stig/General_Purpose_Operating_System_Security_Requirements_Guide/3/2/companion.zip",
+                "source_sha256": "16140318835d9d7e14cf511ff848eab533e0b9533014373fd413fcb4ad2e4fc7",
+                "xccdf_sha256": "916ab279d897df209f09669baf9325f834d5d2a5b3f07a12553da4b650fa2335",
+                "inventory_sha256": "6d675778948710bc12ed77b79b3b93e68b231b170e790d981f4983994b7dbc3c",
+            },
+            "evidence_sha256": "0bd08e20d78ca6e9c7d17a779ce9a5398d58b829a979378762f0ff09d621347e",
+            "profiles": {GPOS_PROFILE: {"vids": 198, "unmapped": []}},
+        },
+    ),
     "27fc84bb2ea29619a944d5a75b361961e1ac7a8dadd48f4165f00d106b0ef944": (
         "xccdf_org.ssgproject.content_benchmark_RHEL-9",
         "0.1.82",
@@ -726,6 +770,18 @@ def selection_fingerprint(res):
         svs = sorted({v for revs in r["svs"].values() for v in revs} | set(r["bad_svs"]))
         lines.append(f"{rid}\t{'S' if sel else 'N'}\t{' '.join(svs)}\t{' '.join(sorted(set(r['vids'])))}")
     return selected, hashlib.sha256("\n".join(lines).encode()).hexdigest()
+
+
+def vendor_evidence_fingerprint(res):
+    """Bind native metadata and vendor applicability explanations to the pin.
+
+    Selection fingerprints cover identities; this also prevents altered CCI,
+    rationale or platform metadata in results from borrowing the reviewed pin.
+    Runtime verdicts and scan times are deliberately excluded.
+    """
+    fields = ("id", "title", "severity", "description", "rationale", "ccis", "platform_levels")
+    data = [{k: rule[k] for k in fields} for _, rule in sorted(res["rules"].items())]
+    return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def read_tailoring(plan, plan_path):
@@ -1321,6 +1377,17 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
             and res["bench_platforms"] and not set(res["bench_platforms"]) & res["true_platforms"]):
         prov.append("All Rules were unselected; benchmark applicability was not established. "
                     "Every requirement remains Not Reviewed.")
+    if res.get("vendor_srg"):
+        entry = RELEASE_TABLE.get(plan.get("datastream_sha256", ""))
+        reference = entry[4].get("reference") if entry and len(entry) > 4 else None
+        if reference:
+            prov.append("DISA GPOS SRG release identity verified by exact Rule-ID inventory; "
+                        f"reference XCCDF sha256 {reference['xccdf_sha256']}; "
+                        f"source ZIP sha256 {reference['source_sha256']}. "
+                        "Vendor assessment evidence is retained separately from any supplied DISA reference text.")
+        prov.append("Chainguard vendor GPOS SRG profile; not a DISA OS STIG. "
+                    "Vendor applicability statements describe container-image assumptions, "
+                    "not verified deployment conditions or RMF control inheritance.")
     prov_txt = "\n".join(prov)
     arch_note = f"[architecture gate evaluated on the scanning host ({runner_arch}); target architecture {target_arch or 'unknown'}]"
 
@@ -1378,6 +1445,11 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
             if result == "notapplicable":
                 gates = unmet_gates(r, true_p)
                 cat = classify_level(gates)
+                vendor_na = res.get("vendor_srg") and gates == ["cpe:/o:notapplicable"]
+                if vendor_na:
+                    if not r["rationale"]:
+                        raise ValueError("Chainguard N/A rule has no vendor rationale: " + rid)
+                    cat = "vendor"
                 if gates:
                     line += f" (platform not met: {', '.join(g.lstrip('#') for g in gates)})"
                 if cat == "arch?":
@@ -1416,10 +1488,19 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
                     line += " -> not reviewed " + arch_note
             effective.append((rid, eff))
             details.append(line)
+            if res.get("vendor_srg") and r["rationale"]:
+                details.append("Chainguard vendor rationale: " + r["rationale"])
             details.extend(tailoring_notes([rid]))
         status = aggregate(effective)
         if status == "Not_Applicable":
-            comments = [justification(c, list(g), rootfs=bool(plan.get("rootfs_path"))) for c, g in sorted(na_cats)]
+            comments = [justification(c, list(g), rootfs=bool(plan.get("rootfs_path")))
+                        for c, g in sorted(na_cats) if c != "vendor"]
+            if any(c == "vendor" for c, _ in na_cats):
+                comments.extend("Chainguard vendor N/A rationale (container-image profile): " + res["rules"][rid]["rationale"]
+                                for rid, eff in effective if eff == "notapplicable"
+                                and unmet_gates(res["rules"][rid], true_p) == ["cpe:/o:notapplicable"])
+                comments.append("Verify these vendor container-image assumptions against the intended deployment; "
+                                "this statement does not establish control inheritance.")
         elif status == "Not_Reviewed" and uncertain:
             if "na" in uncertain:
                 comments.append(
@@ -1441,7 +1522,7 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
         )
         # Why a row is Not_Reviewed travels the same way, for the meta.
         nr_reason = ("architecture" if uncertain else "unevaluated") if status == "Not_Reviewed" else None
-        head = f"Automated result from OpenSCAP ({len(rids)} SSG rule{'s' if len(rids) > 1 else ''}):"
+        head = f"Automated result from OpenSCAP ({len(rids)} {'vendor' if res.get('vendor_srg') else 'SSG'} rule{'s' if len(rids) > 1 else ''}):"
         return (
             status,
             head + "\n" + "\n".join(details) + "\n\n" + prov_txt,
@@ -1577,7 +1658,8 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
         stig = {
             "benchmark_id": bid,
             "title": title,
-            "description": res["profile_title"],
+            "description": ("Chainguard vendor GPOS SRG profile; not a DISA OS STIG."
+                            if res.get("vendor_srg") else res["profile_title"]),
             "version": ver,
             "releaseinfo": releaseinfo,
             "filename": f"{res['benchmark_id']}-{res['profile_id']}.xml",
@@ -1635,11 +1717,12 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
                     "weight": "10.0",
                     "rule_ver": stig_ids[0] if pairable else "",
                     "rule_title": " / ".join(dict.fromkeys(r["title"] for r in rules_)),
-                    "discussion": labeled("rationale"),
+                    "discussion": labeled("description" if res.get("vendor_srg") else "rationale"),
                     "check_content": "Automated OpenSCAP check: " + ", ".join(sorted(rids)),
                     "check_ref": "M",
-                    "fix_text": labeled("description"),
-                    "ccis": [],
+                    "fix_text": ("No remediation text is supplied by this vendor profile; review the requirement manually."
+                                 if res.get("vendor_srg") else labeled("description")),
+                    "ccis": sorted({c for rule in rules_ for c in rule["ccis"]}) if res.get("vendor_srg") else [],
                     "legacy": [],
                     "documentable": "false",
                     "status": status,
@@ -1705,7 +1788,7 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
 ANSWER_SCHEMA = "stig-scanner-orb/checklist-answers/v1"
 MAX_ANSWER_BYTES = 1 << 20
 ANSWER_STATUSES = {"Open", "NotAFinding", "Not_Applicable", "Not_Reviewed"}
-ANSWER_CATEGORIES = {"host", "gui", "package", "arch", "platform", "check"}
+ANSWER_CATEGORIES = {"host", "gui", "package", "arch", "platform", "check", "vendor"}
 # Reviewed against the bundled RHEL 9 V2R9 requirement, not an inferred list of
 # host controls. Any source-text edit requires another review of this entry.
 DEFAULT_HOST_ANSWER = {
@@ -2304,13 +2387,32 @@ def main():
                     if k in plan:
                         raise ValueError(f"the scan plan repeats {k}")
                     plan[k] = v
+        ent = RELEASE_TABLE.get(plan.get("datastream_sha256", ""))
+        vendor_entry = ent and len(ent) > 4 and ent[4].get("kind") == "vendor-srg"
+        if vendor_entry and plan.get("tailoring_file"):
+            raise ValueError("tailoring is not supported for the Chainguard vendor GPOS SRG profile")
         tailoring = read_tailoring(plan, a.plan)
         res = parse_results(io.BytesIO(results_bytes), tailoring)
         if tailoring:
             validate_tailored_results(res, tailoring)
+        if res.get("vendor_srg") and not vendor_entry:
+            return emit({"outcome": "skipped", "reason":
+                         "Chainguard GPOS SRG requires the exact verified pinned datastream; "
+                         "an unknown or modified vendor profile cannot borrow its release or N/A rationale"}, 0)
+        if vendor_entry:
+            if (res["benchmark_id"], res["benchmark_version"]) != ent[:2]:
+                raise ValueError("results and plan come from different scans: verified Chainguard GPOS benchmark/profile mismatch")
+            if res["profile_id"] not in ent[2]:
+                return emit({"outcome": "skipped", "reason":
+                             "profile is not the verified Chainguard vendor GPOS SRG profile"}, 0)
+            if vendor_evidence_fingerprint(res) != ent[4]["evidence_sha256"]:
+                raise ValueError("Chainguard GPOS metadata differs from the verified vendor content")
+            for rule in res["rules"].values():
+                if not rule["ccis"] or any(not re.fullmatch(r"CCI-[0-9]{6}", c) for c in rule["ccis"]):
+                    raise ValueError("Chainguard GPOS rule has missing or malformed CCI identifiers")
         ancestry = tailoring["base_profile_ancestry"] if tailoring else [res["profile_id"]]
         stig_bases = [p for p in ancestry if re.search(r"_profile_stig(_gui)?$", p)]
-        source_profile = stig_bases[0] if stig_bases else None
+        source_profile = res["profile_id"] if vendor_entry else stig_bases[0] if stig_bases else None
         # Gate on the evaluated profile, not on SV references: SSG reuses rules
         # across profiles, so e.g. RHEL 9 CIS L1 selects 160 rules that carry
         # DISA references and would otherwise yield a partial "STIG" checklist.
@@ -2676,6 +2778,8 @@ def main():
                     "deselected_rule_count": len(tailoring["deselected_rules"]),
                     "value_count": len(tailoring["values"]),
                 } if tailoring else None),
+                "content_kind": "vendor-srg" if vendor_entry else "stig",
+                "vendor_reference": ent[4].get("reference") if vendor_entry else None,
                 "release_source": "skeleton" if a.stig_xccdf_path else "bundle" if baseline else "table",
                 "bundle": (
                     {
