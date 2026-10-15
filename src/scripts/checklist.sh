@@ -54,7 +54,7 @@ HREF_VULN = "https://www.cyber.mil/stigs/srg-stig-tools#vulnerability_id"
 # and write it as the row's Rule_ID.
 SV_RE = re.compile(r"SV-([0-9]+)r[0-9]+_rule")  # ASCII digits only (\d matches any Unicode digit)
 # Bound untrusted XML before parsing: real results.xml is about 15–20 MiB.
-GENERATOR_VERSION = "1.1.0"
+GENERATOR_VERSION = "1.2.0"
 MAX_RESULTS_BYTES = 128 << 20
 MAX_DISA_BYTES = 16 << 20
 X11 = "{http://checklists.nist.gov/xccdf/1.1}"
@@ -121,7 +121,7 @@ def combine_instances(rs):
     return "pass" if "pass" in rs else "fixed"  # what's left is pass/fixed/notapplicable
 
 
-def parse_results(source):
+def parse_results(source, tailoring=None):
     root = ET.parse(source).getroot()
     # One Benchmark (oscap's results.xml is the Benchmark itself): with
     # several, XML order would pair one's mappings and gates with another's
@@ -186,6 +186,7 @@ def parse_results(source):
             "srg": ref(lambda h, v: v.startswith("SRG-")),
             "cce": next((text_of(i) for i in r.findall(X12 + "ident") if "cce" in (i.get("system") or "")), None),
             "platform_levels": chain_platforms(r),
+            "value_ids": sorted({e.get("value-id") for e in r.iter(X12 + "check-export") if e.get("value-id")}),
         }
 
     # oscap writes exactly one TestResult; with several, XML order would
@@ -214,14 +215,23 @@ def parse_results(source):
         raise ValueError(f"results.xml's TestResult names {len(profiles)} evaluated profiles; expected exactly one")
     profile_id = profiles[0].get("idref")
     matching = [p for p in bench.iter(X12 + "Profile") if p.get("id") == profile_id]
-    if len(matching) != 1:
+    if tailoring and profile_id != tailoring["profile_id"]:
+        raise ValueError("results.xml does not name the validated tailoring profile")
+    if len(matching) != 1 and not (tailoring and not matching):
         raise ValueError(f"evaluated profile {profile_id} has {len(matching)} definitions; expected exactly one")
-    profile = matching[0]
+    profile = matching[0] if matching else None
+    set_values = {}
+    for el in tr.findall(X12 + "set-value"):
+        if not el.get("idref") or el.get("idref") in set_values:
+            raise ValueError("results.xml has a missing or repeated set-value idref")
+        set_values[el.get("idref")] = "".join(el.itertext())
     return {
         "benchmark_id": bench.get("id"),
         "benchmark_version": bench.findtext(X12 + "version"),
         "profile_id": profile_id,
-        "profile_title": text_of(profile.find(X12 + "title")),
+        "profile_title": text_of(profile.find(X12 + "title")) if profile is not None else tailoring["profile_title"],
+        "set_values": set_values,
+        "tailoring": tailoring,
         "bench_platforms": [p.get("idref") for p in bench.findall(X12 + "platform")],
         "true_platforms": true_platforms,
         "rules": rules,
@@ -595,6 +605,65 @@ def selection_fingerprint(res):
         svs = sorted({v for revs in r["svs"].values() for v in revs} | set(r["bad_svs"]))
         lines.append(f"{rid}\t{'S' if sel else 'N'}\t{' '.join(svs)}\t{' '.join(sorted(set(r['vids'])))}")
     return selected, hashlib.sha256("\n".join(lines).encode()).hexdigest()
+
+
+def read_tailoring(plan, plan_path):
+    """Only the scan's hash-bound, derived manifest is needed for conversion.
+    Never reopen the caller's original file, which may have changed or gone."""
+    keys = ("tailoring_file", "tailoring_sha256", "tailoring_profile", "tailoring_meta_sha256")
+    if not any(plan.get(k) for k in keys):
+        return None
+    if not all(plan.get(k) for k in keys):
+        raise ValueError("the scan plan has incomplete tailoring provenance")
+    for key in ("tailoring_sha256", "tailoring_meta_sha256"):
+        if not re.fullmatch(r"[0-9a-f]{64}", plan[key]):
+            raise ValueError("invalid tailoring hash in the scan plan")
+    raw = read_capped(os.path.join(os.path.dirname(plan_path), "tailoring-meta.json"), 16 << 20, "tailoring metadata")
+    if hashlib.sha256(raw).hexdigest() != plan["tailoring_meta_sha256"]:
+        raise ValueError("tailoring metadata hash differs from the scan plan")
+    def unique(pairs):
+        result = {}
+        for key, val in pairs:
+            if key in result:
+                raise ValueError("tailoring metadata repeats " + key)
+            result[key] = val
+        return result
+    meta = json.loads(raw, object_pairs_hook=unique)
+    if (meta.get("schema") != "stig-scanner-orb/tailoring/v1"
+            or meta.get("sha256") != plan["tailoring_sha256"]
+            or meta.get("datastream_sha256") != plan.get("datastream_sha256")
+            or meta.get("profile_id") != plan["tailoring_profile"]
+            or meta.get("profile_id") != plan.get("profile")):
+        raise ValueError("tailoring metadata identity differs from the scan plan")
+    if (not isinstance(meta.get("values"), dict) or not isinstance(meta.get("deselected_rules"), list)
+            or not isinstance(meta.get("base_profile_ancestry"), list)
+            or not meta.get("base_profile_id")
+            or not re.fullmatch(r"[0-9a-f]{64}", meta.get("references_sha256", ""))):
+        raise ValueError("invalid tailoring metadata inventory")
+    return meta
+
+
+def validate_tailored_results(res, tailoring):
+    if (res["benchmark_id"], res["benchmark_version"]) != (
+            tailoring["benchmark_id"], tailoring["benchmark_version"]):
+        raise ValueError("tailoring metadata and results name different benchmarks")
+    lines = []
+    for rid, rule in sorted(res["rules"].items()):
+        svs = sorted({v for revs in rule["svs"].values() for v in revs} | set(rule["bad_svs"]))
+        lines.append(rid + "\t" + " ".join(svs) + "\t" + " ".join(sorted(set(rule["vids"]))))
+    if hashlib.sha256("\n".join(lines).encode()).hexdigest() != tailoring["references_sha256"]:
+        raise ValueError("tailored results' Rule/DISA reference inventory differs from the source datastream")
+    if set(tailoring["deselected_rules"]) - set(res["rules"]):
+        raise ValueError("tailoring metadata names undefined deselected rules")
+    for rid, value in tailoring["values"].items():
+        if (not isinstance(value, dict) or (value.get("value") is not None and not isinstance(value["value"], str))
+                or not isinstance(value.get("directives"), list)):
+            raise ValueError("invalid tailoring value metadata")
+        # TestResult is authoritative for resolved values: a set-value and a
+        # refine-value can coexist, and inherited selectors/operators need not
+        # resolve like the source Value's default. Retain all requested
+        # directives alongside the actual value instead of reimplementing
+        # OpenSCAP's resolution semantics here.
 
 
 def target_ref(plan):
@@ -1089,6 +1158,10 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
         f"Content: {res['benchmark_id']} {res['benchmark_version']}, profile {res['profile_id']}; "
         f"scan {res['start']} .. {res['end']} ({res['test_system']})"
     )
+    if res.get("tailoring"):
+        t = res["tailoring"]
+        prov.append(f"Tailoring: {plan.get('tailoring_file')}; sha256 {t['sha256']}; "
+                    f"profile {t['profile_id']} extends {t['base_profile_id']}")
     if disa:
         prov.append(
             f"DISA STIG file: {disa['benchmark_id']} V{disa['version']} ({disa['releaseinfo']}); "
@@ -1102,6 +1175,23 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
                     f"bundle sha256 {baseline['bundle_sha256']}")
     prov_txt = "\n".join(prov)
     arch_note = f"[architecture gate evaluated on the scanning host ({runner_arch}); target architecture {target_arch or 'unknown'}]"
+
+    def tailoring_value_notes(rids):
+        notes = []
+        if not res.get("tailoring"):
+            return notes
+        value_ids = sorted({value_id for rid in rids for value_id in res["rules"][rid]["value_ids"]})
+        for value_id in value_ids:
+            if value_id not in res["tailoring"]["values"]:
+                continue
+            configured = res["tailoring"]["values"][value_id]
+            actual = res["set_values"].get(value_id)
+            notes.append(f"Tailored value {value_id}: " +
+                         (f"{actual!r} (resolved by OpenSCAP)" if actual is not None else
+                          "not recorded in TestResult"))
+            for directive in configured["directives"]:
+                notes.append("  Requested " + json.dumps(directive, sort_keys=True, ensure_ascii=False))
+        return notes
 
     def vuln_from_ssg(vid, rids):
         details, comments, ruleids = [], [], set()
@@ -1155,6 +1245,7 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
                     line += " -> not reviewed " + arch_note
             effective.append((rid, eff))
             details.append(line)
+            details.extend(tailoring_value_notes([rid]))
         status = aggregate(effective)
         if status == "Not_Applicable":
             comments = [justification(c, list(g), rootfs=bool(plan.get("rootfs_path"))) for c, g in sorted(na_cats)]
@@ -1375,6 +1466,27 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
                     "nr_reason": nr_reason,
                 }
             )
+    if res.get("tailoring"):
+        t = res["tailoring"]
+        affected = {
+            vid: sorted(set(rids) & set(t["deselected_rules"]))
+            for vid, rids in deselected.items()
+            if set(rids) & set(t["deselected_rules"])
+        }
+        if not disa:
+            vulns = [v for v in vulns if v["vid"] not in affected]
+            stig["mapped_vids"] = len(vulns)
+        else:
+            for v in vulns:
+                if v["vid"] not in affected:
+                    continue
+                note = f"Deselected by tailoring {t['profile_id']}: {', '.join(affected[v['vid']])}."
+                v["finding_details"] += "\n" + note + " Remaining automated evidence does not assess the complete requirement."
+                values = tailoring_value_notes(affected[v["vid"]])
+                if values:
+                    v["finding_details"] += "\nDeselected checks' settings (checks were not evaluated):\n" + "\n".join(values)
+                v["comments"] = note + " Manual review required."
+                v["status"], v["nr_reason"], v["na_category"] = "Not_Reviewed", "tailoring_deselected", None
     stig["uuid"] = str(
         uuid.uuid5(
             uuid.NAMESPACE_URL, f"stig-scanner-orb:{stig['benchmark_id']}:{stig['version']}:{stig['releaseinfo']}"
@@ -1777,11 +1889,23 @@ def main():
             return emit(
                 {"outcome": "failed", "reason": f"checklist_formats {a.formats!r}: use one or both of ckl, cklb"}, 1
             )
-        res = parse_results(io.BytesIO(results_bytes))
+        plan = {}
+        with open(a.plan, encoding="utf-8") as plan_file:
+            for line in plan_file:
+                k, sep, v = line.rstrip("\n").partition("=")
+                if sep:
+                    if k in plan:
+                        raise ValueError(f"the scan plan repeats {k}")
+                    plan[k] = v
+        tailoring = read_tailoring(plan, a.plan)
+        res = parse_results(io.BytesIO(results_bytes), tailoring)
+        if tailoring:
+            validate_tailored_results(res, tailoring)
+        source_profile = tailoring["base_profile_id"] if tailoring else res["profile_id"]
         # Gate on the evaluated profile, not on SV references: SSG reuses rules
         # across profiles, so e.g. RHEL 9 CIS L1 selects 160 rules that carry
         # DISA references and would otherwise yield a partial "STIG" checklist.
-        if not re.search(r"_profile_stig(_gui)?$", res["profile_id"]):
+        if not re.search(r"_profile_stig(_gui)?$", source_profile):
             return emit({"outcome": "skipped", "reason": f"profile {res['profile_id']} is not a DISA STIG profile"}, 0)
         # Every rule-result must resolve to a Rule in the file's benchmark. One
         # that doesn't (a truncated or edited file) would be dropped silently,
@@ -1809,14 +1933,6 @@ def main():
                 },
                 1,
             )
-        plan = {}
-        with open(a.plan, encoding="utf-8") as plan_file:
-            for line in plan_file:
-                k, sep, v = line.rstrip("\n").partition("=")
-                if sep:
-                    if k in plan:
-                        raise ValueError(f"the scan plan repeats {k}")
-                    plan[k] = v
         # Every row's provenance and TARGET_COMMENT name the scanner and the
         # target by digest or id (a rootfs_path scan by its path): without
         # them a checklist can't be tied back to what was assessed.
@@ -1859,7 +1975,7 @@ def main():
         # The release table (D4) identifies the exact datastream bytes the scan
         # evaluated, for that entry's benchmark, version and STIG profiles.
         ent = RELEASE_TABLE.get(plan.get("datastream_sha256", ""))
-        if ent and ((res["benchmark_id"], res["benchmark_version"]) != ent[:2] or res["profile_id"] not in ent[2]):
+        if ent and ((res["benchmark_id"], res["benchmark_version"]) != ent[:2] or source_profile not in ent[2]):
             # The plan names a known datastream, but results.xml can't have
             # come from it: the inputs are from different scans. Never let a
             # different inputs supply the release (provenance would be wrong).
@@ -1872,7 +1988,7 @@ def main():
                 },
                 1,
             )
-        if ent:
+        if ent and not tailoring:
             # Known datastream and profile, so OpenSCAP's selection is known:
             # a results.xml selecting anything else is incomplete or edited,
             # whatever names the release.
@@ -1891,6 +2007,12 @@ def main():
         expected_stig = SSG_STIG_IDS.get(key, (None,))[0] or TARGET_STIG.get(plan.get("target_base", ""))
         baseline = load_bundle(plan.get("datastream_sha256", ""), a.bundle_dir) if ent else None
         disa = read_disa(a.stig_xccdf_path, expected_stig) if a.stig_xccdf_path else baseline
+        if tailoring and not disa:
+            # Tailoring may select rules outside the stock profile's verified
+            # release mapping. A complete DISA reference must supply identity
+            # and revision checks; never borrow the stock SSG-only release.
+            return emit({"outcome": "skipped", "reason":
+                         "tailored checklists require bundled DISA data or stig_xccdf_path"}, 0)
         if not disa and key not in SSG_STIG_IDS:
             # A DISA benchmark id can't be derived from an SSG benchmark name,
             # and consumers merge rows on the exact id: never invent one.
@@ -2028,7 +2150,7 @@ def main():
         # whose references moved to another URL (or a custom datastream without
         # them) would yield an empty "checklist" that row-count checks can't
         # catch. Require at least one selected rule mapped to a DISA V-ID.
-        if ent and len(ent) > 4:
+        if ent and len(ent) > 4 and not tailoring:
             expected = ent[4]["profiles"][res["profile_id"].replace(_P, "", 1)]
             unmapped = sorted(
                 rid.replace("xccdf_org.ssgproject.content_rule_", "", 1)
@@ -2107,6 +2229,7 @@ def main():
                 "profile_id": res["profile_id"],
                 "outcome": "generated",
                 "host_name": host_name,
+                "tailoring": tailoring,
                 "release_source": "skeleton" if a.stig_xccdf_path else "bundle" if baseline else "table",
                 "bundle": (
                     {

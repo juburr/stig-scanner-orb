@@ -294,6 +294,12 @@ provenance = {
         "resolved_from": opt(plan.get("target_base_source")),
     },
     "profile": {"id": profile_id, "title": profile_title},
+    "tailoring": {
+        "path": plan.get("tailoring_file"),
+        "sha256": plan.get("tailoring_sha256"),
+        "profile_id": plan.get("tailoring_profile"),
+        "metadata_sha256": plan.get("tailoring_meta_sha256"),
+    } if plan.get("tailoring_file") else None,
     "scanner": {
         "image": opt(plan.get("scanner")),
         "image_id": opt(plan.get("scanner_image_id")),
@@ -402,6 +408,11 @@ if plan:
         lines.append(f"  donor-digest:      {digest_line(donor['repo_digests'], donor['image_id'], 'none', donor['platform'])} (used for {', '.join(donor['used_for'])})")
     if t["dpkg_status"] and t["dpkg_status"]["state"] == "synthesized":
         lines.append(f"  dpkg-status:       synthesized from /var/lib/dpkg/status.d ({t['dpkg_status']['packages']} packages) in the scratch rootfs copy")
+    if provenance["tailoring"]:
+        tailoring = provenance["tailoring"]
+        lines.append(f"  tailoring-file:    {tailoring['path']}")
+        lines.append(f"  tailoring-sha256:  {tailoring['sha256']}")
+        lines.append(f"  tailored-profile:  {tailoring['profile_id']}")
     lines.append(f"  datastream-source: {ds['source'] or ''}")
     lines.append(f"  datastream-sha256: {ds['sha256'] or 'unavailable'}")
     bench = f"{ds['benchmark_id'] or 'unknown'} {ds['benchmark_version'] or ''}".rstrip()

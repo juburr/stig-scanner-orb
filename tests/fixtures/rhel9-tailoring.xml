@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Tailoring xmlns="http://checklists.nist.gov/xccdf/1.2" id="xccdf_org.example_tailoring_rhel9">
+  <benchmark href="ssg-rhel9-ds.xml"/>
+  <version time="2026-10-14T00:00:00Z">1</version>
+  <Profile id="xccdf_org.example_profile_tailored_stig" extends="xccdf_org.ssgproject.content_profile_stig">
+    <title>RHEL 9 STIG tailoring integration fixture</title>
+    <select idref="xccdf_org.ssgproject.content_rule_package_aide_installed" selected="false"/>
+    <select idref="xccdf_org.ssgproject.content_rule_configure_crypto_policy" selected="false"/>
+    <set-value idref="xccdf_org.ssgproject.content_value_var_password_pam_minlen">18</set-value>
+    <refine-value idref="xccdf_org.ssgproject.content_value_var_accounts_user_umask" selector="077"/>
+  </Profile>
+</Tailoring>

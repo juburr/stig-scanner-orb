@@ -31,7 +31,10 @@ else:
     generator = {"__name__": "smoke"}
     exec(compile(code, "checklist.sh", "exec"), generator)
     entry = generator["RELEASE_TABLE"][meta["datastream_sha256"]]
-    res = generator["parse_results"](io.BytesIO(results))
+    tailoring = generator["read_tailoring"](plan, str(out / "scan-plan.env"))
+    res = generator["parse_results"](io.BytesIO(results), tailoring)
+    if tailoring:
+        generator["validate_tailored_results"](res, tailoring)
     baseline = generator["load_bundle"](meta["datastream_sha256"], "src/scripts/stig-data")
     assert meta["bundle"]["sha256"] == baseline["bundle_sha256"]
     assert meta["bundle"]["source_sha256"] == baseline["source_sha256"]

@@ -137,8 +137,27 @@ Rule ID revision becomes Not_Reviewed, retaining automated evidence. Known
 release inventories and internal profile inventories are separate checks;
 unknown releases report self-consistency only. Skeletons never waive scan
 provenance, selected mapping, inventory or architecture checks. Without a
-skeleton, SSG-only limits still apply. Tailoring/answer files are not implemented. Manual STIG Viewer 3 import and ISSM
+skeleton, SSG-only limits still apply. Answer files are not implemented. Manual STIG Viewer 3 import and ISSM
 wording review remain release acceptance tasks.
+
+## Tailoring
+
+`scan.sh` snapshots `tailoring_file` through the root scanner, preflights bounded
+UTF-8 XCCDF 1.2 XML and validates its schema with the exact scanner. Use
+`--skip-schematron`: the pinned RPM scanner lacks tailoring schematron rules.
+The chosen profile must be defined in the file and extend a benchmark profile.
+`tailoring-meta.json` is derived from the same snapshots used by evaluation;
+its SHA-256 and the original tailoring hash/profile are in scan-plan.env.
+Conversion validates the complete Rule/DISA reference inventory against the
+source snapshot rather than applying the stock selection fingerprint to a
+custom profile. It still gates on the inherited STIG profile and pinned
+benchmark/version. Tailored generation requires bundled or supplied DISA data:
+additions can select mappings outside the stock release verification.
+Explicit tailoring deselections withhold the whole V-ID verdict even when
+another contributor ran. Preserve its evidence. Refined values use check-export
+value ids and TestResult set-values. The caller's source is never reopened.
+`tests/tailoring_test.py` loads the exact scan preflight and checklist generator;
+`smoke-rhel9-tailoring` also feeds the consumer validators.
 
 ## Bundled DISA data
 

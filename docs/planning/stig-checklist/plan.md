@@ -1,6 +1,6 @@
 # Plan: STIG Viewer checklists with container N/A justifications
 
-Status: **PR 1 merged (#9); PR 2 merged (#10); PR 3 implemented, pending review/merge**, 2026-10-14. Owner: TBD. Done: the independent
+Status: **PR 1 merged (#9); PR 2 merged (#10); PR 3 merged (#11); PR 4 implemented, pending review/merge**, 2026-10-15. Owner: TBD. Done: the independent
 `smoke-rhel10` item (as `smoke-rhel10-auto`).
 
 Inputs:
@@ -658,6 +658,16 @@ blanket license for future releases or separately supplied vendor material.
   biggest SSG-only gap.
 
 ### PR 4: `tailoring_file` passthrough (S)
+
+Implementation notes: tailoring is snapshotted once as root, bounded to 16 MiB,
+parsed offline and schema-validated before evaluation. A derived manifest binds
+its profile inheritance, value directives and the source's complete Rule/DISA
+reference inventory to the scan plan. For tailored profiles this inventory
+replaces the stock selection fingerprint; stock profile checks are unchanged.
+Tailored generation requires bundled or supplied DISA metadata so additions
+cannot borrow the stock SSG-only release mapping. An explicit deselection of
+one contributor withholds the whole V-ID verdict, retaining the remaining
+automated evidence. CI covers real RHEL 9 tailoring and both consumer formats.
 
 - **Parameter** `tailoring_file`: snapshotted and hashed like
   `datastream_path` and passed as `--tailoring-file`. `profile_id` must

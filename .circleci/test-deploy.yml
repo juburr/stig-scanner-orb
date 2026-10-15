@@ -416,6 +416,27 @@ workflows:
                 artifact_name: smoke-rhel9
           filters: *filters
       - stig-scanner-orb/scan:
+          name: smoke-rhel9-tailoring
+          image: registry.access.redhat.com/ubi9/ubi:latest
+          target_base: rhel9
+          tailoring_file: /tmp/rhel9-tailoring.xml
+          pre-steps:
+            - checkout
+            - run:
+                name: Stage root-owned tailoring input
+                command: sudo install -m 0600 tests/fixtures/rhel9-tailoring.xml /tmp/rhel9-tailoring.xml
+          profile_id: xccdf_org.example_profile_tailored_stig
+          checklist: require
+          checkout: true
+          post-steps:
+            - run:
+                name: Verify tailored selection, resolved values and source identity
+                command: python3 tools/tailoring-smoke.py build/stig tests/fixtures/rhel9-tailoring.xml
+            - assert-checklist:
+                outcome: generated
+                artifact_name: smoke-rhel9-tailoring
+          filters: *filters
+      - stig-scanner-orb/scan:
           name: smoke-rhel9-skeleton-matched
           checkout: false
           image: registry.access.redhat.com/ubi9/ubi
@@ -838,7 +859,7 @@ workflows:
                 artifact_name: smoke-rootfs-checklist
           filters: *filters
       - checklist-validator:
-          requires: [smoke-rhel9-skeleton-matched, smoke-rhel9-skeleton-drift, smoke-ubuntu2204, smoke-rhel9, smoke-rhel8-auto, smoke-rhel10-auto, smoke-rootfs-checklist]
+          requires: [smoke-rhel9-tailoring, smoke-rhel9-skeleton-matched, smoke-rhel9-skeleton-drift, smoke-ubuntu2204, smoke-rhel9, smoke-rhel8-auto, smoke-rhel10-auto, smoke-rootfs-checklist]
           filters: *filters
       - orb-tools/pack:
           filters: *release-filters
@@ -857,6 +878,7 @@ workflows:
             - smoke-debian12-auto
             - smoke-rhel8-auto
             - smoke-rhel9
+            - smoke-rhel9-tailoring
             - smoke-rhel9-skeleton-matched
             - smoke-rhel9-skeleton-drift
             - smoke-rhel9-cis

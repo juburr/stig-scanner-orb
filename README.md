@@ -341,6 +341,71 @@ ZIP hash/member where applicable; `checklist-meta.json` and `provenance.json`
 also record them. The `bundle` metadata block identifies the content-matched
 reference separately from a supplied skeleton.
 
+### XCCDF tailoring
+
+Set `tailoring_file` to a local XCCDF 1.2 tailoring XML file and `profile_id`
+to a profile defined in that file. The profile must extend a profile in the
+scanned benchmark, directly or through other profiles in the tailoring file.
+Stage the file before the scan (use checkout or a pre-step). For example:
+
+```yaml
+- stig-scanner-orb/scan:
+    image: registry.access.redhat.com/ubi9/ubi:latest
+    target_base: rhel9
+    tailoring_file: security/rhel9-tailoring.xml
+    profile_id: xccdf_org.example_profile_site_stig
+    checklist: require
+```
+
+The tailoring XML can contain a profile such as:
+
+```xml
+<Tailoring xmlns="http://checklists.nist.gov/xccdf/1.2"
+           id="xccdf_org.example_tailoring_site">
+  <benchmark href="ssg-rhel9-ds.xml"/>
+  <version time="2026-10-14T00:00:00Z">1</version>
+  <Profile id="xccdf_org.example_profile_site_stig"
+           extends="xccdf_org.ssgproject.content_profile_stig">
+    <title>Site STIG values</title>
+    <set-value idref="xccdf_org.ssgproject.content_value_var_password_pam_minlen">18</set-value>
+    <refine-value idref="xccdf_org.ssgproject.content_value_var_accounts_user_umask"
+                  selector="077"/>
+  </Profile>
+</Tailoring>
+```
+
+Use tailoring to set site values or add checks. Keep host rules selected:
+the checklist already explains their N/A outcomes. Explicitly deselected checks
+remain **Not Reviewed** in complete DISA checklists, with the tailored profile
+and rule names recorded. This also applies when a requirement has several
+scanner checks and tailoring deselects only one: the remaining automated result
+stays as evidence, but cannot assess the complete requirement. The SSG-only
+model omits tailoring-deselected rows. Tailored generation requires a complete
+DISA reference (the pinned bundle, or `stig_xccdf_path`) because additions can
+fall outside a stock profile's verified release mapping. A tailored CIS or
+other non-STIG profile still skips checklist generation under `auto` and fails
+under `require`.
+
+Both scanners validate tailoring offline before evaluation. The orb snapshots
+and hashes the file using the scanner's root user, so a root-owned 0600 file
+can be used. It accepts UTF-8 XCCDF 1.2 XML up to 16 MiB, without DTDs or entity
+declarations, against a datastream containing exactly one Benchmark. Profile
+ids must be unique and must not shadow benchmark profiles; unknown references,
+cycles, and invalid selectors are refused. The benchmark `href` is recorded as
+a source label; the explicitly selected datastream is the input, and the orb
+never fetches that href. The tailoring file itself is never mounted into the
+target filesystem or reopened after the scan snapshot is made.
+
+`scan-plan.env` and `provenance.json` record the original file path, its SHA-256
+and the tailored profile id. `tailoring-meta.json` records the inherited base
+profile, source datastream hash, Rule/DISA reference inventory, deselections
+and value directives; its own hash binds it to the scan plan. Conversion checks
+that inventory against every rule in `results.xml`. A known datastream still
+uses its pinned DISA release; stock profiles retain their exact selection
+checks. Each checklist row carries the tailoring hash, and affected rows list
+custom values alongside the values OpenSCAP resolved in `TestResult`. Original
+scan gates, finding ignores and artifact publication policies continue to apply.
+
 Open `.cklb` in STIG Viewer 3, or use **Import V2 Checklist** for `.ckl`.
 STIG Manager imports either format. Verify the intended asset and STIG revision
 before merging reviews. STIG Viewer's optional loose Rule ID matching does not

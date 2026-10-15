@@ -53,6 +53,7 @@ SCANNER_IMAGE_OVERRIDE="$(subst "${PARAM_SCANNER_IMAGE:-}")"
 DATASTREAM_NAME_OVERRIDE="$(subst "${PARAM_DATASTREAM_NAME:-}")"
 DATASTREAM_PATH_OVERRIDE="$(subst "${PARAM_DATASTREAM_PATH:-}")"
 PROFILE_ID_OVERRIDE="$(subst "${PARAM_PROFILE_ID:-}")"
+TAILORING_FILE="$(subst "${PARAM_TAILORING_FILE:-}")"
 OUTPUT_DIR="$(subst "${PARAM_OUTPUT_DIR:-build/stig}")"
 DONOR_IMAGE="$(subst "${PARAM_DONOR_IMAGE:-}")"
 [ -n "${DONOR_IMAGE}" ] || DONOR_IMAGE="${DEFAULT_CHAINGUARD_IMAGE}"
@@ -67,6 +68,15 @@ if [ -n "${DATASTREAM_NAME_OVERRIDE}" ]; then
             exit 2 ;;
     esac
 fi
+
+if [ -n "${TAILORING_FILE}" ] && [ -z "${PROFILE_ID_OVERRIDE}" ]; then
+    echo "ERROR: tailoring_file requires an explicit profile_id naming a profile in that file." >&2
+    exit 2
+fi
+# scan-plan.env is line-oriented; never let these inputs inject another key.
+case "${TAILORING_FILE}${PROFILE_ID_OVERRIDE}" in
+    *$'\n'*|*$'\r'*) echo "ERROR: tailoring_file and profile_id cannot contain newlines." >&2; exit 2 ;;
+esac
 
 # --- 1. validate input shape ---------------------------------------------
 if [ -n "${IMAGE}" ] && [ -n "${ROOTFS_PATH}" ]; then
@@ -127,6 +137,7 @@ fi
 # This must follow the physical overlap check: never clean the caller's tree.
 rm -f -- "${OUTPUT_DIR}/checklist-meta.json"
 rm -f -- "${OUTPUT_DIR}/summary.txt.exit-code"
+rm -f -- "${OUTPUT_DIR}/tailoring-meta.json"
 rm -f -- "${OUTPUT_DIR}/checklist.ckl" "${OUTPUT_DIR}/checklist.cklb" \
     "${OUTPUT_DIR}/checklist.ckl.partial" "${OUTPUT_DIR}/checklist.cklb.partial" \
     "${OUTPUT_DIR}/checklist-meta.json.partial"
@@ -242,6 +253,7 @@ ROOTFS_DIR=""
 CLEANUP_ROOTFS=0
 CID=""
 DATASTREAM_SNAP_DIR=""
+TAILORING_SNAP_DIR=""
 OUT_STAGE_DIR=""
 ROOTFS_MOUNT=()
 TARGET_IMAGE_ID=""
@@ -260,6 +272,9 @@ cleanup() {
         if [ -e "${DATASTREAM_SNAP_DIR}" ]; then
             echo "WARNING: could not remove the datastream snapshot ${DATASTREAM_SNAP_DIR}; remove it manually." >&2
         fi
+    fi
+    if [ -n "${TAILORING_SNAP_DIR}" ]; then
+        rm -rf -- "${TAILORING_SNAP_DIR}" 2>/dev/null || true
     fi
     if [ -n "${OUT_STAGE_DIR}" ]; then
         rm -rf "${OUT_STAGE_DIR}" 2>/dev/null || true
@@ -836,6 +851,9 @@ elif [ "${FAMILY}" != "rpm" ]; then
     # of falling into the donor flow and pulling the upstream Chainguard
     # image. If a consumer is mirroring a non-Chainguard-shape image for
     # a non-RPM target, they should set datastream-path explicitly.
+    if [ -n "${TAILORING_FILE}" ]; then
+        snapshot_datastream "${SCANNER_ID}" "/usr/share/xml/scap/ssg/content/${DATASTREAM}"
+    fi
     DATASTREAM_IN_SCANNER_PATH="/usr/share/xml/scap/ssg/content/${DATASTREAM}"
     DATASTREAM_SOURCE="bundled"
     echo "==> Using datastream bundled inside scanner image (target family: ${FAMILY})"
@@ -854,6 +872,208 @@ fi
 ds_mount_args=()
 if [ -n "${DATASTREAM_HOST_DIR}" ]; then
     ds_mount_args=( -v "${DATASTREAM_HOST_DIR}:/ds:ro" )
+fi
+# Tailoring is copied once by the scanner's root user, just like a supplied
+# datastream. The original file is never mounted during evaluation.
+tailoring_mount_args=()
+TAILORING_PATH=""
+TAILORING_SHA256=""
+TAILORING_META_SHA256=""
+if [ -n "${TAILORING_FILE}" ]; then
+    [ -f "${TAILORING_FILE}" ] || { echo "ERROR: tailoring_file is not a regular file: ${TAILORING_FILE}" >&2; exit 2; }
+    tailoring_src="$(cd "$(dirname "${TAILORING_FILE}")" && pwd)/$(basename "${TAILORING_FILE}")"
+    TAILORING_SNAP_DIR="$(mktemp -d -t stig-tailoring.XXXXXX)"
+    docker run --rm --network none -u 0:0 \
+        -v "${tailoring_src}:/src/tailoring.xml:ro" -v "${TAILORING_SNAP_DIR}:/out" \
+        -e HOST_UID="${HOST_UID}" -e HOST_GID="${HOST_GID}" \
+        --entrypoint sh "${SCANNER_ID}" -c '
+            set -eu
+            # Bound the snapshot before parsing; never copy a growing file unbounded.
+            head -c 16777217 /src/tailoring.xml > /out/tailoring.xml
+            test -s /out/tailoring.xml
+            test "$(wc -c < /out/tailoring.xml)" -le 16777216
+            chown "${HOST_UID}:${HOST_GID}" /out/tailoring.xml
+            chmod 0444 /out/tailoring.xml
+        '
+    TAILORING_PATH="/tailoring/tailoring.xml"
+    tailoring_mount_args=( -v "${TAILORING_SNAP_DIR}:/tailoring:ro" )
+    python3 - "${TAILORING_SNAP_DIR}/tailoring.xml" "${DATASTREAM_HOST_DIR}/${DATASTREAM}" \
+        "${PROFILE}" "${TAILORING_SNAP_DIR}/meta.json" <<'PY_TAILORING'
+import hashlib
+import json
+import re
+import sys
+import xml.etree.ElementTree as ET
+
+X = "{http://checklists.nist.gov/xccdf/1.2}"
+HREF_RULE = "https://www.cyber.mil/stigs/srg-stig-tools/"
+HREF_VULN = "https://www.cyber.mil/stigs/srg-stig-tools#vulnerability_id"
+
+
+def read_xml(path, cap):
+    with open(path, "rb") as f:
+        data = f.read(cap + 1)
+    if not data or len(data) > cap:
+        raise ValueError("empty or oversized XML input")
+    # OpenSCAP's libxml and the runner's expat must see the same literal
+    # content. Tailoring does not need DTDs or external entities.
+    text = data.decode("utf-8-sig")
+    encoding = re.search(r"<\?xml[^?]*encoding\s*=\s*[\"\']([^\"\']+)", text, re.I)
+    if encoding and encoding.group(1).lower() not in ("utf-8", "utf8"):
+        raise ValueError("tailoring/source XML must use UTF-8")
+    if re.search(r"<!\s*(DOCTYPE|ENTITY)\b", text, re.I):
+        raise ValueError("DTD/entity declarations are not supported")
+    return data, ET.fromstring(text)
+
+
+def indexed(elements):
+    result = {}
+    for el in elements:
+        key = el.get("id")
+        if not key or key in result:
+            raise ValueError("missing or duplicate XCCDF id: " + str(key))
+        result[key] = el
+    return result
+
+
+def prepare(tailoring_path, datastream_path, profile_id):
+    raw, tailoring = read_xml(tailoring_path, 16 << 20)
+    source, ds = read_xml(datastream_path, 128 << 20)
+    if tailoring.tag != X + "Tailoring":
+        raise ValueError("expected an XCCDF 1.2 Tailoring document")
+    benches = list(ds.iter(X + "Benchmark"))
+    if len(benches) != 1:
+        raise ValueError("tailoring requires a datastream with exactly one Benchmark")
+    bench = benches[0]
+    links = tailoring.findall(X + "benchmark")
+    if len(links) != 1 or not links[0].get("href"):
+        raise ValueError("tailoring must name its source benchmark")
+    if links[0].get("id") and links[0].get("id") != bench.get("id"):
+        raise ValueError("tailoring names a different benchmark id")
+    # href is a source label, never a resource to fetch. The explicit input
+    # datastream is authoritative, and every idref below must resolve in it.
+    local = indexed(tailoring.findall(X + "Profile"))
+    original = indexed(bench.findall(X + "Profile"))
+    if set(local) & set(original):
+        raise ValueError("tailoring profile ids must not shadow benchmark profiles")
+    if profile_id not in local:
+        raise ValueError("profile_id must name a profile in the tailoring file")
+    chain, seen = [], set()
+    current = profile_id
+    while current in local:
+        if current in seen:
+            raise ValueError("cyclic tailoring profile inheritance")
+        seen.add(current)
+        chain.append(local[current])
+        current = local[current].get("extends")
+    if current not in original:
+        raise ValueError("tailored profile must extend an existing benchmark profile")
+    base_profile = current
+    ancestry = []
+    while current:
+        if current in seen or current not in original:
+            raise ValueError("cyclic or unresolved benchmark profile inheritance")
+        seen.add(current)
+        ancestry.append(current)
+        current = original[current].get("extends")
+    rules = indexed(bench.iter(X + "Rule"))
+    groups = indexed(bench.iter(X + "Group"))
+    values = indexed(bench.iter(X + "Value"))
+    selected, refined = {}, {}
+    for profile in reversed(chain):
+        duplicates = set()
+        for el in profile:
+            tag = el.tag[len(X) :] if el.tag.startswith(X) else el.tag
+            if tag not in ("select", "set-value", "refine-value", "refine-rule"):
+                continue
+            rid = el.get("idref")
+            if (tag, rid) in duplicates:
+                raise ValueError("duplicate tailoring directive: " + str(rid))
+            duplicates.add((tag, rid))
+            if tag == "select":
+                if rid not in rules and rid not in groups:
+                    raise ValueError("tailoring selects an unknown rule/group: " + str(rid))
+                flag = el.get("selected")
+                if flag not in ("true", "false", "1", "0"):
+                    raise ValueError("invalid tailoring selected flag")
+                targets = [rid] if rid in rules else [r.get("id") for r in groups[rid].iter(X + "Rule")]
+                for target in targets:
+                    selected[target] = flag in ("true", "1")
+            elif tag in ("set-value", "refine-value"):
+                if rid not in values:
+                    raise ValueError("tailoring refines an unknown value: " + str(rid))
+                if tag == "set-value":
+                    value = "".join(el.itertext())
+                else:
+                    matches = [
+                        v for v in values[rid].findall(X + "value") if v.get("selector", "") == el.get("selector")
+                    ]
+                    if el.get("selector") is not None and len(matches) != 1:
+                        raise ValueError("tailoring value selector does not resolve uniquely: " + str(rid))
+                    value = "".join(matches[0].itertext()) if matches else None
+                directives = refined.get(rid, {}).get("directives", []) + [
+                    {
+                        "profile_id": profile.get("id"),
+                        "directive": tag,
+                        "value": value,
+                        "selector": el.get("selector"),
+                        "operator": el.get("operator"),
+                    }
+                ]
+                refined[rid] = {
+                    "value": value,
+                    "directive": tag,
+                    "selector": el.get("selector"),
+                    "operator": el.get("operator"),
+                    "directives": directives,
+                }
+            elif rid not in rules and rid not in groups:
+                raise ValueError("tailoring refines an unknown rule/group: " + str(rid))
+    lines = []
+    for rid in sorted(rules):
+        refs = rules[rid].findall(X + "reference")
+        svs = sorted({(r.text or "").strip() for r in refs if r.get("href") == HREF_RULE})
+        vids = sorted({(r.text or "").strip() for r in refs if r.get("href") == HREF_VULN})
+        lines.append(rid + "\t" + " ".join(svs) + "\t" + " ".join(vids))
+    return {
+        "schema": "stig-scanner-orb/tailoring/v1",
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "datastream_sha256": hashlib.sha256(source).hexdigest(),
+        "benchmark_id": bench.get("id"),
+        "benchmark_version": bench.findtext(X + "version"),
+        "benchmark_href": links[0].get("href"),
+        "profile_id": profile_id,
+        "profile_title": (
+            " ".join("".join(local[profile_id].find(X + "title").itertext()).split())
+            if local[profile_id].find(X + "title") is not None
+            else profile_id
+        ),
+        "base_profile_id": base_profile,
+        "base_profile_ancestry": ancestry,
+        "references_sha256": hashlib.sha256("\n".join(lines).encode()).hexdigest(),
+        "deselected_rules": sorted(rid for rid, flag in selected.items() if not flag),
+        "values": refined,
+    }
+
+
+if __name__ == "__main__":
+    try:
+        meta = prepare(*sys.argv[1:4])
+        encoded = (json.dumps(meta, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        if len(encoded) > 16 << 20:
+            raise ValueError("derived tailoring metadata exceeds 16 MiB")
+        with open(sys.argv[4], "xb") as f:
+            f.write(encoded)
+    except (OSError, ValueError, ET.ParseError) as exc:
+        print("ERROR: invalid tailoring: " + str(exc), file=sys.stderr)
+        sys.exit(2)
+PY_TAILORING
+    # Validate with the exact OpenSCAP that will evaluate it, offline and before
+    # any target evaluation. Schema errors and missing profiles fail closed.
+    docker run --rm --network none -u 0:0 "${tailoring_mount_args[@]}" \
+        --entrypoint oscap "${SCANNER_ID}" xccdf validate --skip-schematron "${TAILORING_PATH}"
+    TAILORING_SHA256="$(sha256sum "${TAILORING_SNAP_DIR}/tailoring.xml" | awk '{print $1}')"
+    TAILORING_META_SHA256="$(sha256sum "${TAILORING_SNAP_DIR}/meta.json" | awk '{print $1}')"
 fi
 # ${a[@]+"${a[@]}"}: an empty array is an unbound variable under set -u
 # in bash < 4.4 (e.g. the macOS system bash used for local runs).
@@ -887,7 +1107,7 @@ fi
 # contain the scratch rootfs), and /out is the scanner's one writable
 # mount. The two reports are copied out afterwards.
 OUT_STAGE_DIR="$(mktemp -d -t stig-out.XXXXXX)"
-mount_args=( "${ROOTFS_MOUNT[@]}" -v "${OUT_STAGE_DIR}:/out" ${ds_mount_args[@]+"${ds_mount_args[@]}"} )
+mount_args=( "${ROOTFS_MOUNT[@]}" -v "${OUT_STAGE_DIR}:/out" ${ds_mount_args[@]+"${ds_mount_args[@]}"} ${tailoring_mount_args[@]+"${tailoring_mount_args[@]}"} )
 
 # Hash the datastream as the scanner sees it: same image, same mount, same
 # path and same user (root) as oscap-chroot below. The image's default user
@@ -902,6 +1122,10 @@ esac
 if [ "${#DATASTREAM_SHA256}" -ne 64 ]; then
     echo "WARNING: could not hash ${DATASTREAM_IN_SCANNER_PATH} inside the scanner image; datastream_sha256 will be empty." >&2
     DATASTREAM_SHA256=""
+    if [ -n "${TAILORING_FILE}" ]; then
+        echo "ERROR: a tailored scan requires a hashed datastream." >&2
+        exit 2
+    fi
 fi
 
 echo "==> Running oscap-chroot"
@@ -913,11 +1137,16 @@ docker run --rm --network none -u 0:0 \
     "${mount_args[@]}" \
     -e PROFILE="${PROFILE}" \
     -e DS_PATH="${DATASTREAM_IN_SCANNER_PATH}" \
+    -e TAILORING_PATH="${TAILORING_PATH}" \
     -e HOST_UID="${HOST_UID}" \
     -e HOST_GID="${HOST_GID}" \
     --entrypoint /bin/sh \
     "${SCANNER_ID}" -c '
-        oscap-chroot /target xccdf eval \
+        set --
+        if [ -n "${TAILORING_PATH}" ]; then
+            set -- --tailoring-file "${TAILORING_PATH}"
+        fi
+        oscap-chroot /target xccdf eval "$@" \
             --profile "${PROFILE}" \
             --report /out/report.html \
             --results /out/results.xml \
@@ -958,6 +1187,10 @@ if [ ! -s "${OUTPUT_DIR_ABS}/results.xml" ] || [ ! -s "${OUTPUT_DIR_ABS}/report.
     exit 1
 fi
 
+if [ -n "${TAILORING_FILE}" ]; then
+    cp -- "${TAILORING_SNAP_DIR}/meta.json" "${OUTPUT_DIR_ABS}/tailoring-meta.json"
+fi
+
 # --- 7. record what produced these reports ------------------------------
 # summarize.sh turns this into the provenance block of summary.txt and
 # provenance.json. One key=value per line; list values are comma-separated.
@@ -983,6 +1216,12 @@ fi
         echo "donor_used_for=${DONOR_USED_FOR}"
     fi
     echo "profile=${PROFILE}"
+    if [ -n "${TAILORING_FILE}" ]; then
+        echo "tailoring_file=${TAILORING_FILE}"
+        echo "tailoring_sha256=${TAILORING_SHA256}"
+        echo "tailoring_profile=${PROFILE}"
+        echo "tailoring_meta_sha256=${TAILORING_META_SHA256}"
+    fi
     echo "family=${FAMILY}"
     if [ -n "${RPM_STATUS}" ]; then
         echo "rpm_status=${RPM_STATUS}"
