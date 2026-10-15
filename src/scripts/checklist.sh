@@ -166,6 +166,33 @@ def parse_results(source, tailoring=None):
         raise ValueError(
             f"results.xml defines {len(dup_ids)} Rule id(s) more than once (e.g. {', '.join(dup_ids[:5])})"
         )
+    source_rules = {r.get("id"): r for r in bench.iter(X12 + "Rule")}
+    def effective_checks(rule):
+        # check properties replace inherited checks with the same system and
+        # selector; distinct alternatives are inherited. complex-check is a
+        # separate replace property and takes precedence over simple checks.
+        lineage, seen = [], set()
+        current = rule
+        while current is not None:
+            rid = current.get("id")
+            if rid in seen:
+                raise ValueError("cyclic Rule inheritance: " + str(rid))
+            seen.add(rid)
+            lineage.append(current)
+            base = current.get("extends")
+            if base and base not in source_rules:
+                raise ValueError("unresolved Rule inheritance: " + base)
+            current = source_rules.get(base) if base else None
+        checks, complex_check = {}, None
+        for ancestor in reversed(lineage):
+            own = collections.defaultdict(list)
+            for check in ancestor.findall(X12 + "check"):
+                own[(check.get("system"), check.get("selector", ""))].append(check)
+            checks.update(own)
+            if ancestor.find(X12 + "complex-check") is not None:
+                complex_check = ancestor.find(X12 + "complex-check")
+        return list(complex_check.iter(X12 + "check")) if complex_check is not None else [c for cs in checks.values() for c in cs]
+
     for r in bench.iter(X12 + "Rule"):
         if not r.get("id"):
             raise ValueError("results.xml defines a Rule without an id")
@@ -176,9 +203,10 @@ def parse_results(source, tailoring=None):
         for v in sv_refs:
             if SV_RE.fullmatch(v):
                 svs[SV_RE.fullmatch(v).group(1)].append(v)
+        effective = effective_checks(r)
         check_exports[r.get("id")] = [
             (check_key(check), {e.get("value-id") for e in check.findall(X12 + "check-export") if e.get("value-id")})
-            for check in r.iter(X12 + "check")
+            for check in effective
         ]
         rules[r.get("id")] = {
             "id": r.get("id"),
@@ -199,7 +227,7 @@ def parse_results(source, tailoring=None):
             "srg": ref(lambda h, v: v.startswith("SRG-")),
             "cce": next((text_of(i) for i in r.findall(X12 + "ident") if "cce" in (i.get("system") or "")), None),
             "platform_levels": chain_platforms(r),
-            "value_ids": sorted({e.get("value-id") for e in r.iter(X12 + "check-export") if e.get("value-id")}),
+            "value_ids": sorted({e.get("value-id") for check in effective for e in check.findall(X12 + "check-export") if e.get("value-id")}),
         }
 
     # oscap writes exactly one TestResult; with several, XML order would
@@ -1240,6 +1268,10 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
         prov.append(f"Content-matched DISA reference: {baseline['benchmark_id']} {release_label(baseline)}; "
                     f"XCCDF sha256 {baseline['sha256']}; source ZIP sha256 {baseline['source_sha256']}; "
                     f"bundle sha256 {baseline['bundle_sha256']}")
+    if (res.get("tailoring") and res["results"] and all(r == "notselected" for r in res["results"].values())
+            and res["bench_platforms"] and not set(res["bench_platforms"]) & res["true_platforms"]):
+        prov.append("All Rules were unselected; benchmark applicability was not established. "
+                    "Every requirement remains Not Reviewed.")
     prov_txt = "\n".join(prov)
     arch_note = f"[architecture gate evaluated on the scanning host ({runner_arch}); target architecture {target_arch or 'unknown'}]"
 
@@ -1473,7 +1505,14 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
                 }
             )
         stig["unmatched_ssg_vids"] = sorted(set(by_vid) - seen)
-        stig["mapped_vids"] = len(set(by_vid) & seen)
+        selected_mapped = set(by_vid) & seen
+        # Complete tailored checklists may be entirely Not Reviewed. Count
+        # validated explicit deselections that map to this DISA reference,
+        # while preserving selected-only coverage checks for unmatched V-IDs.
+        tailored_deselections = set((res.get("tailoring") or {}).get("deselected_rules", []))
+        deselected_mapped = {vid for vid, rids in deselected.items() if set(rids) & tailored_deselections} & seen
+        stig["selected_mapped_vids"] = len(selected_mapped)
+        stig["mapped_vids"] = len(selected_mapped | deselected_mapped)
         stig["unpaired_refs"] = sorted(unpaired)
     else:
         key = res["benchmark_id"].replace("xccdf_org.ssgproject.content_benchmark_", "")
@@ -2199,7 +2238,9 @@ def main():
         # None listed: it assessed nothing against this target, and every row
         # would blame inner gates it never evaluated ("gdm is not installed").
         bench_ps = res["bench_platforms"]
-        if bench_ps and not set(bench_ps) & res["true_platforms"]:
+        intentionally_unselected = (tailoring and tailoring["deselected_rules"] and res["results"]
+                                    and all(r == "notselected" for r in res["results"].values()))
+        if bench_ps and not set(bench_ps) & res["true_platforms"] and not intentionally_unselected:
             named = ", ".join(bench_ps[:3]) + (f" and {len(bench_ps) - 3} more" if len(bench_ps) > 3 else "")
             evaluated = [
                 r
@@ -2284,9 +2325,9 @@ def main():
                 )
         if disa:
             missing = len(stig["unmatched_ssg_vids"])
-            mapped = missing + stig["mapped_vids"]
+            mapped = missing + stig.get("selected_mapped_vids", stig["mapped_vids"])
             if not stig["mapped_vids"]:
-                raise ValueError("the DISA file shares no V-ID with selected scanner rules")
+                raise ValueError("the DISA file shares no V-ID with selected or explicitly tailored-deselected scanner rules")
             if missing > max(10, mapped // 20):
                 raise ValueError(
                     f"the DISA file lacks {missing} of the {mapped} V-IDs this scan maps: incomplete, or not this STIG"

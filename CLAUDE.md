@@ -148,7 +148,9 @@ UTF-8 XCCDF 1.2 XML and validates its schema with the exact scanner. Use
 The chosen profile must be defined in the file and extend a benchmark profile.
 Reject local-to-local tailoring inheritance (XCCDF forbids it), including unused
 local profiles with such references and extensions through another shadow.
-Only a shadow profile's own self-reference into the benchmark is exempt. Reject child elements in scalar set-value;
+Only a shadow profile's own self-reference into the benchmark is exempt.
+Validate every local profile's source base and benchmark ancestry, including
+unused profiles. Reject child elements in scalar set-value;
 remarks are allowed on select/refine selectors, not on set-value.
 `tailoring-meta.json` is derived from the same snapshots used by evaluation;
 its SHA-256 and the original tailoring hash/profile are in scan-plan.env.
@@ -175,9 +177,14 @@ and are normalized for the engines. Permit standard profile shadowing only
 when local id == extends == benchmark id, transitioning to the source profile.
 Checklist meta stores compact identity and the detailed manifest hash, keeping within the guard/summarizer's 1 MiB limit.
 Explicit tailoring deselections withhold the whole V-ID verdict even when
-another contributor ran. Preserve its evidence. Refined values use check-export
+another contributor ran. Preserve its evidence. Count matching, validated
+explicit deselections for complete tailored mapping eligibility so entirely
+Not Reviewed checklists can be generated; selected-rule mismatch coverage and
+the separate require_evaluated_rules gate remain unchanged. Refined values use check-export
 value ids and TestResult set-values. Match recorded TestResult checks to source
 checks by system and content references before associating value exports.
+Resolve Rule extends chains with check replacement keyed by system/selector;
+an inherited complex-check takes precedence over simple check alternatives.
 Exclude unselected alternatives when matching is complete; missing/ambiguous
 check evidence must label values as global settings with unverified Rule use.
 Retain refine-rule requests (including Group/cluster targets and remarks) and
@@ -216,8 +223,9 @@ conservative revision policy. Record source hashes and drift reasons per row.
 CircleCI's compiled-config limit is lower than the packed-orb limit. The large
 CI matrix uses `.circleci/prepare-test-config.sh`: it packs the actual orb, keeps
 `smoke-rhel9` on the complete packed includes, and creates a second inline orb
-that prepares checkout for staging and changes only the four bundle staging bodies to run their identical scripts
-from checkout. It asserts that every other command, parameter, job and guard
+that prepares checkout for staging and changes the four bundle staging bodies
+and artifact guard body to run their identical scripts from checkout. Checklist
+generation and every other command stay packed in every scan. It asserts that every other command, parameter, job and guard
 is equal after removing the checkout preparation. The full packed smoke scans
 without checkout, then checks out only for post-step assertions. All scan paths and both skeleton jobs still feed consumer validation.
 Do not duplicate product implementation in the CI adapter or omit the full-orb

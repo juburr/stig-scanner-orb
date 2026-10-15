@@ -250,6 +250,100 @@ class TailoringTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("tailoring metadata hash/size", result.stderr)
 
+    def test_every_unused_profile_base_and_ancestry_is_validated(self):
+        for change in ("missing", "unknown", "cycle", "unresolved"):
+            with self.subTest(change=change):
+                root = tailoring()
+                ds = source()
+                other = ET.SubElement(root, X + "Profile", id="xccdf_org.example_profile_unused")
+                if change == "unknown":
+                    other.set("extends", "unknown")
+                elif change in ("cycle", "unresolved"):
+                    base = "xccdf_org.example_profile_other_base"
+                    other.set("extends", base)
+                    ET.SubElement(ds, X + "Profile", id=base, extends=base if change == "cycle" else "unknown")
+                with self.assertRaises(ValueError):
+                    self.preflight(root, ds)
+        root = tailoring()
+        ET.SubElement(root, X + "Profile", id="xccdf_org.example_profile_unused", extends=P)
+        self.assertEqual(self.preflight(root)["base_profile_id"], P)
+
+    def test_inherited_rule_checks_associate_values_and_preserve_replacement_semantics(self):
+        for case in ("inherited", "replaced", "complex", "cycle", "missing"):
+            with self.subTest(case=case):
+                ds, _ = self.tailored()
+                child, parent = list(ds.iter(X + "Rule"))
+                inherited = child.find(X + "check")
+                child.remove(inherited)
+                ET.SubElement(inherited, X + "check-content-ref", href="checks.xml", name="inherited")
+                parent.append(inherited)
+                child.set("extends", parent.get("id"))
+                if case == "cycle":
+                    parent.set("extends", child.get("id"))
+                elif case == "missing":
+                    child.set("extends", "unknown")
+                elif case == "replaced":
+                    check = ET.SubElement(child, X + "check", system="test")
+                    ET.SubElement(check, X + "check-content-ref", href="checks.xml", name="replacement")
+                elif case == "complex":
+                    parent.remove(inherited)
+                    complex_check = ET.SubElement(parent, X + "complex-check", operator="AND")
+                    complex_check.append(inherited)
+                rr = ds.find(X + "TestResult/" + X + "rule-result")
+                check = ET.SubElement(rr, X + "check", system="test")
+                ET.SubElement(
+                    check,
+                    X + "check-content-ref",
+                    href="checks.xml",
+                    name="replacement" if case == "replaced" else "inherited",
+                )
+                self.prepare(ds, register=False)
+                rc, result = self.generate(self.save_skeleton())
+                if case in ("cycle", "missing"):
+                    self.assertEqual((rc, result["outcome"]), (1, "failed"), result)
+                    self.assertIn("Rule inheritance", result["reason"])
+                    continue
+                self.assertEqual((rc, result["outcome"]), (0, "generated"), result)
+                details = self.rows()[0]["finding_details"]
+                if case == "replaced":
+                    self.assertNotIn("Tailored value " + VALUE, details)
+                else:
+                    self.assertIn("Tailored value " + VALUE, details)
+                    self.assertIn("Export declared by recorded check(s): one", details)
+
+    def test_fully_deselected_tailoring_generates_complete_not_reviewed_checklists(self):
+        ds, _ = self.tailored()
+        ET.SubElement(ds, X + "platform", idref="not-evaluated")
+        root = tailoring()
+        ET.SubElement(root.find(X + "Profile"), X + "select", idref="one", selected="false")
+        meta = self.preflight(root, ds)
+        self.assertEqual(meta["deselected_rules"], ["one", "two"])
+        meta["datastream_sha256"] = H
+        for rr in ds.find(X + "TestResult").findall(X + "rule-result"):
+            rr.find(X + "result").text = "notselected"
+        self.prepare(ds, register=False)
+        self.save_meta(meta)
+        rc, result = self.generate(self.save_skeleton())
+        self.assertEqual((rc, result["outcome"]), (0, "generated"), result)
+        self.assertEqual(len(self.rows()), 2)
+        self.assertTrue(all(row["status"] == "not_reviewed" for row in self.rows()))
+        self.assertIn("benchmark applicability was not established", self.rows()[0]["finding_details"])
+        self.assertEqual(result["not_reviewed_by_reason"]["tailoring_deselected"], 2)
+        # Checklist conversion succeeds, while the default hollow-scan gate
+        # remains independent and still rejects zero evaluated Rules.
+        self.assertNotEqual(self.summary("require").returncode, 0)
+        env = dict(
+            os.environ,
+            PARAM_OUTPUT_DIR=str(self.out),
+            PARAM_CHECKLIST="require",
+            PARAM_FAIL_ON_FINDING="false",
+            PARAM_REQUIRE_EVALUATED_RULES="false",
+        )
+        summary = subprocess.run(
+            ["bash", str(common.ROOT / "src/scripts/summarize.sh")], env=env, capture_output=True, text=True
+        )
+        self.assertEqual(summary.returncode, 0, summary.stderr)
+
     def test_ssg_only_omits_deselected_row(self):
         self.tailored()
         res = MOD["parse_results"](

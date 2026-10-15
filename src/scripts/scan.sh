@@ -961,6 +961,18 @@ def prepare(tailoring_path, datastream_path, profile_id, evaluated_path=None):
             profile.get("id") == profile.get("extends") and profile.get("id") in original
         ):
             raise ValueError("tailoring profiles cannot extend other tailoring profiles; extend a benchmark profile")
+        base = profile.get("extends")
+        if base not in original:
+            raise ValueError(
+                "every tailoring profile must extend an existing benchmark profile: " + str(profile.get("id"))
+            )
+        visited = set()
+        ancestor = base
+        while ancestor:
+            if ancestor in visited or ancestor not in original:
+                raise ValueError("cyclic or unresolved benchmark profile inheritance")
+            visited.add(ancestor)
+            ancestor = original[ancestor].get("extends")
     for pid in set(local) & set(original):
         if local[pid].get("extends") != pid:
             raise ValueError("a shadowing tailoring profile must extend its same-named benchmark profile")

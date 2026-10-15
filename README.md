@@ -385,7 +385,12 @@ stays as evidence, but cannot assess the complete requirement. For tailored
 scans, any shared requirement with an unselected contributor is conservatively
 Not Reviewed, including exclusions caused by dependencies, conflicts or stock
 selection state. The evidence distinguishes these from explicit tailoring
-deselections. The SSG-only model omits these partial rows. Tailored generation requires a complete
+deselections. The SSG-only model omits these partial rows. A fully deselected
+STIG can generate a complete Not Reviewed checklist; the separate default
+`require_evaluated_rules` gate still fails a scan with zero evaluated Rules.
+Set that option to `false` only when intentionally creating such a checklist.
+If no platform evaluation was recorded, the checklist says applicability was
+not established and keeps every requirement Not Reviewed. Tailored generation requires a complete
 DISA reference (the pinned bundle, or `stig_xccdf_path`) because additions can
 fall outside a stock profile's verified release mapping. A tailored CIS or
 other non-STIG profile still skips checklist generation under `auto` and fails
