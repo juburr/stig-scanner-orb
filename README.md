@@ -402,6 +402,11 @@ recorded as a source label; the explicitly selected datastream is the input, and
 never fetches that href. The tailoring file itself is never mounted into the
 target filesystem or reopened after the scan snapshot is made.
 
+Value evidence follows the check recorded in TestResult when its source
+exports can be identified. If check evidence is missing or ambiguous, the row
+labels the setting as global TestResult evidence whose use by that Rule is
+unverified; alternative checks may not have run.
+
 `scan-plan.env` and `provenance.json` record the original file path, its SHA-256
 and the tailored profile id. `tailoring-meta.json` records the inherited base
 profile, source datastream hash, Rule/DISA reference inventory, deselections

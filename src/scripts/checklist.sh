@@ -149,6 +149,15 @@ def parse_results(source, tailoring=None):
             el = parent.get(el)
         return levels
 
+    def check_key(check):
+        # TestResult normally records the executed check's system/content
+        # references, without the source selector or check-export elements.
+        refs = tuple(sorted((e.get("href", ""), e.get("name", ""))
+                            for e in check.findall(X12 + "check-content-ref")))
+        inline = tuple("".join(e.itertext()) for e in check.findall(X12 + "check-content"))
+        return (check.get("system"), refs, inline) if refs or inline else None
+
+    check_exports = {}
     rules = {}
     # XCCDF ids are unique; a repeated Rule id would let the last copy decide
     # the mapping, text and gates silently.
@@ -167,6 +176,10 @@ def parse_results(source, tailoring=None):
         for v in sv_refs:
             if SV_RE.fullmatch(v):
                 svs[SV_RE.fullmatch(v).group(1)].append(v)
+        check_exports[r.get("id")] = [
+            (check_key(check), {e.get("value-id") for e in check.findall(X12 + "check-export") if e.get("value-id")})
+            for check in r.iter(X12 + "check")
+        ]
         rules[r.get("id")] = {
             "id": r.get("id"),
             "title": text_of(r.find(X12 + "title")),
@@ -201,6 +214,8 @@ def parse_results(source, tailoring=None):
     # XCCDF allows several rule-results per rule (multi-check, multiple
     # instances): keep them all and combine, never let the last one win.
     instances = collections.defaultdict(list)
+    executed_values = collections.defaultdict(set)
+    checks_complete = {}
     for rr in tr.findall(X12 + "rule-result"):
         # Exactly one result per rule-result: with <result>pass</result>
         # <result>fail</result>, findtext would read only the pass.
@@ -208,7 +223,20 @@ def parse_results(source, tailoring=None):
         if len(res_els) != 1:
             raise ValueError(f"rule-result {rr.get('idref')} has {len(res_els)} result elements; expected exactly one")
         r = (res_els[0].text or "").strip()
-        instances[rr.get("idref")].append(r if r in XCCDF_RESULTS else "unknown")
+        rid = rr.get("idref")
+        instances[rid].append(r if r in XCCDF_RESULTS else "unknown")
+        recorded = list(rr.iter(X12 + "check"))
+        checks_complete[rid] = checks_complete.get(rid, True) and bool(recorded)
+        for check in recorded:
+            key = check_key(check)
+            candidates = [exports for candidate, exports in check_exports.get(rid, []) if key and candidate == key]
+            if not candidates or any(exports != candidates[0] for exports in candidates):
+                checks_complete[rid] = False
+            else:
+                executed_values[rid].update(candidates[0])
+    for rid, rule in rules.items():
+        rule["executed_value_ids"] = sorted(executed_values[rid])
+        rule["check_exports_complete"] = checks_complete.get(rid, False)
     results = {rid: combine_instances(rs) for rid, rs in instances.items()}
     profiles = tr.findall(X12 + "profile")
     if len(profiles) != 1 or not profiles[0].get("idref"):
@@ -1198,7 +1226,10 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
         notes = []
         if not res.get("tailoring"):
             return notes
-        value_ids = sorted({value_id for rid in rids for value_id in res["rules"][rid]["value_ids"]})
+        value_ids = sorted({
+            value_id for rid in rids
+            for value_id in res["rules"][rid]["executed_value_ids" if res["rules"][rid]["check_exports_complete"] else "value_ids"]
+        })
         for value_id in value_ids:
             if value_id not in res["tailoring"]["values"]:
                 continue
@@ -1207,6 +1238,14 @@ def build_model(res, plan, runner_arch=None, release=None, disa=None, baseline=N
             notes.append(f"Tailored value {value_id}: " +
                          (f"{actual!r} (resolved by OpenSCAP)" if actual is not None else
                           "not recorded in TestResult"))
+            linked = sorted(rid for rid in rids if value_id in res["rules"][rid]["executed_value_ids"])
+            if linked:
+                notes.append("  Export declared by recorded check(s): " + ", ".join(linked) +
+                             ". The resolved value above is global TestResult evidence.")
+            else:
+                notes.append("  Declared by Rule check definitions only; association with an executed check "
+                             "is not established. Alternatives may not have run. "
+                             "The resolved value above is global TestResult evidence, not proof of use by this Rule.")
             for directive in configured["directives"]:
                 notes.append("  Requested " + json.dumps(directive, sort_keys=True, ensure_ascii=False))
         return notes

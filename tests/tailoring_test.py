@@ -133,6 +133,46 @@ class TailoringTests(unittest.TestCase):
         ckl = ET.parse(self.out / "checklist.ckl")
         self.assertIn("Tailored value", ckl.find(".//FINDING_DETAILS").text)
 
+    def test_value_evidence_uses_recorded_checks_and_labels_uncertain_associations(self):
+        for case in ("selected", "alternative", "ambiguous", "missing", "multiple"):
+            with self.subTest(case=case):
+                ds, meta = self.tailored()
+                rule = next(ds.iter(X + "Rule"))
+                selected = rule.find(X + "check")
+                ET.SubElement(selected, X + "check-content-ref", href="checks.xml", name="selected")
+                selected.set("selector", "chosen")
+                other = ET.SubElement(rule, X + "check", system="test", selector="other")
+                ET.SubElement(other, X + "check-content-ref", href="checks.xml", name="other")
+                if case in ("alternative", "multiple", "ambiguous"):
+                    export = selected.find(X + "check-export")
+                    selected.remove(export)
+                    other.append(export)
+                if case == "ambiguous":
+                    other.find(X + "check-content-ref").set("name", "selected")
+                rr = ds.find(X + "TestResult").find(X + "rule-result")
+                if case != "missing":
+                    check = ET.SubElement(rr, X + "check", system="test")
+                    ET.SubElement(check, X + "check-content-ref", href="checks.xml", name="selected")
+                if case == "multiple":
+                    rr = ET.SubElement(ds.find(X + "TestResult"), X + "rule-result", idref="one")
+                    ET.SubElement(rr, X + "result").text = "pass"
+                    check = ET.SubElement(rr, X + "check", system="test")
+                    ET.SubElement(check, X + "check-content-ref", href="checks.xml", name="other")
+                self.prepare(ds, register=False)
+                rc, result = self.generate(self.save_skeleton())
+                self.assertEqual((rc, result["outcome"]), (0, "generated"), result)
+                details = self.rows()[0]["finding_details"]
+                if case == "alternative":
+                    self.assertNotIn("Tailored value " + VALUE, details)
+                else:
+                    self.assertIn("Tailored value " + VALUE, details)
+                    self.assertIn("global TestResult evidence", details)
+                    if case in ("missing", "ambiguous"):
+                        self.assertIn("association with an executed check is not established", details)
+                        self.assertNotIn("Export declared by recorded check", details)
+                    else:
+                        self.assertIn("Export declared by recorded check(s): one", details)
+
     def test_ssg_only_omits_deselected_row(self):
         self.tailored()
         res = MOD["parse_results"](

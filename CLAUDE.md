@@ -170,7 +170,10 @@ when local id == extends == benchmark id, transitioning to the source profile.
 Checklist meta stores compact identity and the detailed manifest hash, keeping within the guard/summarizer's 1 MiB limit.
 Explicit tailoring deselections withhold the whole V-ID verdict even when
 another contributor ran. Preserve its evidence. Refined values use check-export
-value ids and TestResult set-values. The caller's source is never reopened. Resolve `cluster-id` aliases by item type and expand them in the evaluated XML
+value ids and TestResult set-values. Match recorded TestResult checks to source
+checks by system and content references before associating value exports.
+Exclude unselected alternatives when matching is complete; missing/ambiguous
+check evidence must label values as global settings with unverified Rule use. The caller's source is never reopened. Resolve `cluster-id` aliases by item type and expand them in the evaluated XML
 (the pinned RPM OpenSCAP ignores value aliases). Bind original and evaluated
 XML with separate hashes,
 reject complex-value tailoring before evaluation (the pinned RPM OpenSCAP
