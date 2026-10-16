@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Parse the OpenSCAP results.xml produced by scan.sh, write a
 # human-readable summary and a machine-readable provenance.json, apply the
-# optional ignore-list, and enforce two independent gates:
+# optional ignore-list, and enforce independent gates:
 #
-#   * fail_on_finding — non-ignored fail, error, and unknown results.
+#   * fail_on_finding — non-ignored compliance failures.
+#   * fail_on_scan_error — error/unknown results and recorded missing
+#     package inventory, regardless of the compliance ignore-list.
 #   * require_evaluated_rules — at least one rule evaluated to pass,
 #     fail, fixed, or informational. An all-notapplicable scan usually
 #     means mis-dispatch (wrong target_base, a scanner missing the probe
@@ -46,6 +48,9 @@ IGNORE_FINDINGS="$(subst "${PARAM_IGNORE_FINDINGS:-}")"
 if ! FAIL_ON_FINDING="$(normalize_bool "fail-on-finding" "${PARAM_FAIL_ON_FINDING:-false}")"; then
     exit 2
 fi
+if ! FAIL_ON_SCAN_ERROR="$(normalize_bool "fail-on-scan-error" "${PARAM_FAIL_ON_SCAN_ERROR:-true}")"; then
+    exit 2
+fi
 if ! REQUIRE_EVALUATED_RULES="$(normalize_bool "require-evaluated-rules" "${PARAM_REQUIRE_EVALUATED_RULES:-true}")"; then
     exit 2
 fi
@@ -68,7 +73,7 @@ if [ ! -f "${RESULTS}" ]; then
 fi
 
 python3 - "$RESULTS" "$SUMMARY" "${IGNORE_FINDINGS}" "${PLAN}" \
-    "${FAIL_ON_FINDING}" "${REQUIRE_EVALUATED_RULES}" "${PROVENANCE}" "${CHECKLIST}" <<'PY'
+    "${FAIL_ON_FINDING}" "${REQUIRE_EVALUATED_RULES}" "${PROVENANCE}" "${CHECKLIST}" "${FAIL_ON_SCAN_ERROR}" <<'PY'
 import hashlib
 import json
 import os
@@ -79,6 +84,7 @@ from collections import Counter
 
 results_path, summary_path, ignore_csv, plan_path, fail_on_finding, require_evaluated, provenance_path = sys.argv[1:8]
 checklist_mode = sys.argv[8]
+fail_on_scan_error = sys.argv[9]
 
 def local(tag):
     return tag.rsplit("}", 1)[-1]
@@ -190,7 +196,8 @@ for el in root.iter():
     matchable = {normalize(short_id(rid)), normalize(rid)}
     matchable.update(normalize(i) for i in idents)
     matchable.update(normalize(a) for a in rule_aliases.get(rid, []))
-    is_ignored = bool(result in GATED_RESULTS and (ignores & matchable))
+    # A compliance exception cannot establish a missing scanner verdict.
+    is_ignored = bool(result == "fail" and (ignores & matchable))
 
     if is_ignored:
         counts["ignored"] += 1
@@ -222,7 +229,9 @@ if os.path.isfile(plan_path):
                     duplicate_plan_keys.add(k)
                 plan[k] = v
 
-actionable = [rec for name in GATED_RESULTS for rec in gated[name] if not rec["ignored"]]
+actionable = [rec for rec in gated["fail"] if not rec["ignored"]]
+unavailable_inventories = [name for name in ("dpkg", "rpm") if plan.get(name + "_status") == "missing"]
+quality_issues = len(gated["error"]) + len(gated["unknown"]) + len(unavailable_inventories)
 hollow = rule_results > 0 and evaluated == 0
 
 # --- provenance: scan-plan.env (what ran) + results.xml (what it read) ---
@@ -395,6 +404,26 @@ if checklist_mode != "none":
         checklist_mode == "require" and checklist["outcome"] != "generated")
 provenance["checklist"] = checklist
 provenance["scan"]["results_sha256"] = results_sha
+provenance["gates"] = {
+    "scan_quality": {
+        "enabled": fail_on_scan_error == "true",
+        "failed": fail_on_scan_error == "true" and quality_issues > 0,
+        "error_results": len(gated["error"]),
+        "unknown_results": len(gated["unknown"]),
+        "unavailable_inventories": unavailable_inventories,
+    },
+    "compliance": {
+        "enabled": fail_on_finding == "true",
+        "failed": fail_on_finding == "true" and bool(actionable),
+        "actionable_failures": len(actionable),
+    },
+    "evaluated_rules": {
+        "enabled": require_evaluated == "true",
+        "failed": require_evaluated == "true" and evaluated == 0,
+        "evaluated": evaluated,
+    },
+    "checklist": {"mode": checklist_mode, "failed": checklist_failed},
+}
 
 lines = ["STIG scan summary", ""]
 if checklist is not None:
@@ -468,7 +497,12 @@ if plan:
     lines.append("")
 
 lines.append(f"  fail-on-finding: {fail_on_finding}")
+lines.append(f"  fail-on-scan-error: {fail_on_scan_error}")
 lines.append(f"  require-evaluated-rules: {require_evaluated}")
+for name in ("scan_quality", "compliance"):
+    gate = provenance["gates"][name]
+    outcome = "disabled" if not gate["enabled"] else "failed" if gate["failed"] else "passed"
+    lines.append(f"  {name.replace('_', '-')}-gate: {outcome}")
 lines.append("")
 lines.append(f"Evaluated rules: {evaluated}")
 
@@ -512,20 +546,18 @@ elif hollow:
             "and it is still not evidence of compliance."
         )
 
-ungated_errors = [rec for rec in gated["error"] if not rec["ignored"]]
-ungated_unknown = [rec for rec in gated["unknown"] if not rec["ignored"]]
-if ungated_errors or ungated_unknown:
+if quality_issues:
     lines.append("")
-    if fail_on_finding == "true":
-        lines.append(
-            f"WARNING: {len(ungated_errors)} error and {len(ungated_unknown)} unknown "
-            "result(s) count toward fail_on_finding."
-        )
-    else:
-        lines.append(
-            f"WARNING: {len(ungated_errors)} error and {len(ungated_unknown)} unknown "
-            "result(s) are present. fail_on_finding=false, so they do not fail the job."
-        )
+    lines.append(
+        f"WARNING: scan quality: {len(gated['error'])} error result(s), "
+        f"{len(gated['unknown'])} unknown result(s), "
+        f"{len(unavailable_inventories)} unavailable package inventory source(s)."
+    )
+    lines.append(
+        "fail_on_scan_error=true — failing the build; ignore_findings does not waive scan-quality issues."
+        if fail_on_scan_error == "true" else
+        "fail_on_scan_error=false — these scan-quality issues do not fail the job; results may be incomplete."
+    )
 
 lines.append("")
 lines.append("Rule results:")
@@ -586,6 +618,7 @@ with open(provenance_path, "w", encoding="utf-8") as fh:
 # in one place. Missing file is a hard error, not a pass.
 with open(summary_path + ".gate", "w", encoding="utf-8") as fh:
     fh.write(f"actionable={len(actionable)}\n")
+    fh.write(f"quality_issues={quality_issues}\n")
     fh.write(f"evaluated={evaluated}\n")
     fh.write(f"rule_results={rule_results}\n")
     fh.write(f"checklist_failed={int(checklist_failed)}\n")
@@ -598,12 +631,14 @@ if [ ! -f "${GATE_FILE}" ]; then
 fi
 
 ACTIONABLE=""
+QUALITY_ISSUES=""
 EVALUATED=""
 RULE_RESULTS=""
 CHECKLIST_FAILED=""
 while IFS='=' read -r key value; do
     case "${key}" in
         actionable) ACTIONABLE="${value}" ;;
+        quality_issues) QUALITY_ISSUES="${value}" ;;
         evaluated) EVALUATED="${value}" ;;
         rule_results) RULE_RESULTS="${value}" ;;
         checklist_failed) CHECKLIST_FAILED="${value}" ;;
@@ -611,7 +646,7 @@ while IFS='=' read -r key value; do
 done < "${GATE_FILE}"
 rm -f "${GATE_FILE}"
 
-for pair in "actionable:${ACTIONABLE}" "evaluated:${EVALUATED}" "rule_results:${RULE_RESULTS}" "checklist_failed:${CHECKLIST_FAILED}"; do
+for pair in "actionable:${ACTIONABLE}" "quality_issues:${QUALITY_ISSUES}" "evaluated:${EVALUATED}" "rule_results:${RULE_RESULTS}" "checklist_failed:${CHECKLIST_FAILED}"; do
     name="${pair%%:*}"
     value="${pair#*:}"
     case "${value}" in
@@ -642,7 +677,11 @@ if [ "${EVALUATED}" -eq 0 ] && [ "${REQUIRE_EVALUATED_RULES}" = "true" ]; then
     failed=1
 fi
 if [ "${ACTIONABLE}" -gt 0 ] && [ "${FAIL_ON_FINDING}" = "true" ]; then
-    echo "==> fail-on-finding=true and ${ACTIONABLE} actionable result(s) (fail, error, or unknown) — failing the build."
+    echo "==> fail-on-finding=true and ${ACTIONABLE} non-ignored compliance failure(s) — failing the build."
+    failed=1
+fi
+if [ "${QUALITY_ISSUES}" -gt 0 ] && [ "${FAIL_ON_SCAN_ERROR}" = "true" ]; then
+    echo "==> fail-on-scan-error=true and ${QUALITY_ISSUES} scan-quality issue(s) — failing the build."
     failed=1
 fi
 if [ "${failed}" -ne 0 ]; then
@@ -656,4 +695,4 @@ fi
 if [ "${DEFER_GATE}" = "true" ]; then
     (set -o noclobber; printf '0\n' > "${SUMMARY}.exit-code")
 fi
-echo "==> summarize complete (actionable: ${ACTIONABLE}, evaluated: ${EVALUATED}, fail-on-finding ${FAIL_ON_FINDING}, require-evaluated-rules ${REQUIRE_EVALUATED_RULES})"
+echo "==> summarize complete (actionable: ${ACTIONABLE}, quality issues: ${QUALITY_ISSUES}, evaluated: ${EVALUATED}, fail-on-finding ${FAIL_ON_FINDING}, fail-on-scan-error ${FAIL_ON_SCAN_ERROR}, require-evaluated-rules ${REQUIRE_EVALUATED_RULES})"

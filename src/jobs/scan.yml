@@ -94,9 +94,16 @@ parameters:
     type: boolean
     default: false
     description: >
-      When true, exit 1 if any non-ignored result is fail, error, or
-      unknown. Default false so evaluated findings can be triaged
-      first. Does not waive an unevaluated scan.
+      When true, exit 1 if any non-ignored result is fail. Default false
+      so evaluated compliance findings can be triaged first. Scan-quality
+      issues are independently controlled by fail_on_scan_error.
+  fail_on_scan_error:
+    type: boolean
+    default: true
+    description: >
+      Fail on error/unknown results or recorded missing dpkg/RPM inventory.
+      Independent of compliance findings and ignore_findings. Set false
+      only to retain explicitly accepted incomplete scan evidence.
   require_evaluated_rules:
     type: boolean
     default: true
@@ -169,6 +176,7 @@ steps:
       checklist: <<parameters.checklist>>
       output_dir: <<parameters.output_dir>>
       fail_on_finding: <<parameters.fail_on_finding>>
+      fail_on_scan_error: <<parameters.fail_on_scan_error>>
       require_evaluated_rules: <<parameters.require_evaluated_rules>>
       ignore_findings: <<parameters.ignore_findings>>
   # Preserve ordinary evidence before the guard can fail. Never

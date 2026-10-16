@@ -82,7 +82,8 @@ class GposTests(unittest.TestCase):
                 if e.findtext('VULN_ATTRIBUTE') == 'CCI_REF']
         self.assertEqual(ccis, row['ccis'])
         self.assertEqual(self.guard(), 0)
-        self.assertEqual(self.summary('require').returncode, 0)
+        self.assertEqual(self.summary('require').returncode, 1)  # fixture includes a scanner error
+        self.assertEqual(self.summary('require', quality='false').returncode, 0)
         self.assertEqual(json.loads((self.out / 'provenance.json').read_text())['checklist']['content_kind'], 'vendor-srg')
 
     def test_unknown_hash_skips_even_with_a_skeleton_and_require_fails(self):
@@ -95,7 +96,8 @@ class GposTests(unittest.TestCase):
         self.assertEqual(meta['outcome'], 'skipped')
         self.assertIn('exact verified pinned datastream', meta['reason'])
         self.assertFalse((self.out / 'checklist.ckl').exists())
-        self.assertEqual(self.summary('auto').returncode, 0)
+        self.assertEqual(self.summary('auto').returncode, 1)  # fixture includes a scanner error
+        self.assertEqual(self.summary('auto', quality='false').returncode, 0)
         self.assertNotEqual(self.summary('require').returncode, 0)
 
     def test_alternate_profile_is_not_admitted_by_rule_ids(self):

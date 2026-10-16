@@ -33,7 +33,7 @@ workflows:
 
 That's enough to produce `report.html`, `results.xml`, and `summary.txt` as job artifacts. `fail_on_finding` is off by default, so evaluated `fail` results are reported without failing the build and you can triage a baseline before turning that gate on.
 
-One gate is on by default: a scan in which **zero rules evaluate** to pass or fail fails the job (`require_evaluated_rules: true`). An all-`notapplicable` result is what you get from a mis-dispatched scan (wrong `target_base`, or a scanner without the probes the datastream needs), and before 2.0.0 that was a green build. See [Gates](#-gates).
+Scan quality is gated by default: `error`/`unknown` results and recorded missing dpkg/RPM inventory fail the job (`fail_on_scan_error: true`). A scan in which **zero rules evaluate** also fails (`require_evaluated_rules: true`). These gates remain active while compliance findings are being triaged. See [Gates](#-gates).
 
 ## 🧰 What it does
 
@@ -115,14 +115,45 @@ Google distroless images (`gcr.io/distroless/*-debian12`) ship `/etc/os-release`
 
 ## 🚦 Gates
 
-`summarize` applies two independent gates and states both settings in `summary.txt`:
+`summarize` separates scan quality from compliance and records each policy in
+`summary.txt` and `provenance.json` (`gates`):
 
 | Gate | Default | Fails the job when |
 |---|---|---|
 | `require_evaluated_rules` | `true` | Zero rules evaluated to `pass`, `fail`, `fixed`, or `informational`. |
-| `fail_on_finding` | `false` | Any non-ignored rule is `fail`, `error`, or `unknown`. |
+| `fail_on_scan_error` | `true` | Any rule is `error` or `unknown`, or the scan plan records missing dpkg/RPM inventory. Ignore lists do not waive these issues. |
+| `fail_on_finding` | `false` | Any non-ignored rule is `fail` (a compliance finding). |
 
-`error` and `unknown` count as findings because the check did not produce a compliance answer. `notchecked` is listed in the summary but does not trip `fail_on_finding`; a scan that is *only* `notchecked` still fails `require_evaluated_rules`. Ignoring a failure removes it from the `fail_on_finding` count but not from "evaluated": a triaged baseline is still an evaluated scan.
+An `error` or `unknown` result means the check did not produce a compliance
+answer. A missing package inventory makes package absence and applicability
+unreliable, even when other checks pass. These are scan-quality issues rather
+than compliance exceptions. The quality gate works with `checklist: none` and
+also fails when `checklist: auto` skips for missing inventory.
+
+To accept existing compliance findings while blocking incomplete scans:
+
+```yaml
+- stig-scanner-orb/scan:
+    image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+    fail_on_finding: false
+    fail_on_scan_error: true
+```
+
+Set `fail_on_finding: true` to additionally enforce compliance. Set
+`fail_on_scan_error: false` only when deliberately retaining incomplete evidence;
+quality issues and the disabled gate remain visible. This does not waive
+`require_evaluated_rules`, checklist policies, or scan/parse/configuration failures.
+Policy failures are enforced after artifact upload in the scan job, so evidence
+remains available. Standalone `summarize` exits immediately unless deferred.
+
+Standalone summaries without `scan-plan.env` can gate `error`/`unknown` results
+but cannot establish package-inventory availability. Missing inventory is detected
+from the plan's recorded `dpkg_status=missing` or `rpm_status=missing` fields.
+
+`notchecked` is listed but does not itself trip either gate: it can represent a
+manual requirement. A scan that is *only* `notchecked` still fails
+`require_evaluated_rules`. Ignoring a compliance failure does not change whether
+it was evaluated: a triaged baseline is still an evaluated scan.
 
 `require_evaluated_rules` exists because an all-`notapplicable` scan looks clean and is not. Each of these produces 0 evaluated rules and, before 2.0.0, a green build:
 
@@ -206,9 +237,10 @@ The checklist output explains N/A conditions without deselecting host rules. Tai
 | `datastream_path` | string | `""` | Host-local datastream file. Skips the donor flow. |
 | `profile_id` | string | `""` | Override the XCCDF profile id (e.g. switch to CIS). |
 | `donor_image` | string | `""` (pinned Chainguard openscap) | Root-privileged helper (extraction, distroless dpkg status, the `rootfs_path` socket check) and the image datastreams are copied out of for RPM targets. Override for air-gap; an override needs a shell and a POSIX userland (`tar`, `find`, `awk`, `cp`, …; busybox is enough) plus the SCAP content under `/usr/share/xml/scap/ssg/content`. |
-| `fail_on_finding` | boolean | `false` | When true, exit 1 on any non-ignored `fail`, `error`, or `unknown` result. |
+| `fail_on_finding` | boolean | `false` | When true, exit 1 on any non-ignored `fail` result. |
+| `fail_on_scan_error` | boolean | `true` | Fail on `error`/`unknown` results or recorded missing dpkg/RPM inventory, independently of compliance findings and ignore lists. |
 | `require_evaluated_rules` | boolean | `true` | Fail the job when zero rules evaluate to pass, fail, fixed, or informational. Set false only on a job that intentionally records an all-notapplicable baseline (see [Gates](#-gates)). |
-| `ignore_findings` | string | `""` | Comma-separated rule IDs to subtract from the fail/error/unknown gate count. |
+| `ignore_findings` | string | `""` | Comma-separated rule IDs to subtract from the compliance failure count. Scan-quality issues cannot be ignored per rule. |
 | `checklist` | enum | `auto` (job/checklist); `none` (summarize) | `auto` allows documented skips and fails generation errors; `require` also fails skips; `none` disables generation and enforcement. |
 | `checklist_formats` | string | `ckl,cklb` | One or both formats; trimmed, case-insensitive, comma-separated. Empty or unknown formats are errors. |
 | `checklist_answers` | string | `""` | Release-bound site answers JSON, at most 1 MiB. Keep outside output_dir. Overrides checklist decisions and wording, retaining automated evidence. |
@@ -731,7 +763,7 @@ Entries in `ignore_findings` are matched case-insensitively against:
 - the full XCCDF rule id, or
 - any `<ident>` or `<reference>` value on the rule (CCE, CVE, CCI, a NIST control such as `AC-2`, and so on). A shared reference waives every rule that cites it.
 
-Ignored `fail`, `error`, and `unknown` results still appear in the summary and the HTML report. They are removed from the `fail_on_finding` count, not the audit trail. Ignoring them does not waive `require_evaluated_rules`: a result that actually failed was evaluated.
+Ignored `fail` results still appear in the summary and the HTML report. They are removed from the `fail_on_finding` count, not the audit trail. `error` and `unknown` results remain visible and count toward `fail_on_scan_error` even if their IDs match the ignore list. Ignoring a compliance failure does not waive `require_evaluated_rules`: a result that actually failed was evaluated.
 
 ## 🔐 Info for security teams
 

@@ -1,7 +1,8 @@
 description: >
   Parse results.xml, write a human-readable summary.txt, apply the
   optional ignore-list, and enforce the gates. fail_on_finding covers
-  non-ignored fail, error, and unknown results. require_evaluated_rules
+  non-ignored compliance failures; fail_on_scan_error covers error/unknown
+  results and recorded missing package inventory. require_evaluated_rules
   fails the job when nothing evaluated to pass or fail, so a
   mis-dispatched, all-notapplicable scan cannot pass as a clean one.
 
@@ -12,7 +13,7 @@ parameters:
     description: >
       Record policy exit status for enforce-gate.sh instead of exiting 1.
       Used by the scan job to upload validated artifacts before enforcing
-      finding and checklist policies. Parsing/configuration errors still fail.
+      compliance, scan-quality and checklist policies. Parsing/configuration errors still fail.
   checklist:
     type: enum
     enum: ["auto", "require", "none"]
@@ -29,10 +30,19 @@ parameters:
     type: boolean
     default: false
     description: >
-      If true, exit non-zero when any non-ignored result is fail,
-      error, or unknown. Default is false so a baseline that actually
+      If true, exit non-zero when any non-ignored result is fail.
+      Default is false so a baseline that actually
       evaluated rules can be triaged before being gated. An unevaluated
       scan still fails; see require_evaluated_rules.
+  fail_on_scan_error:
+    type: boolean
+    default: true
+    description: >
+      Fail on any error or unknown result, or recorded missing dpkg/RPM
+      inventory, independently of fail_on_finding and ignore_findings.
+      Set false only to retain explicitly accepted incomplete scan evidence.
+      Missing inventory can only be detected when scan-plan.env records it;
+      standalone results without a plan still enforce error/unknown results.
   require_evaluated_rules:
     type: boolean
     default: true
@@ -47,7 +57,7 @@ parameters:
     type: string
     default: ""
     description: >
-      Comma-separated rule IDs to subtract from the fail/error/unknown
+      Comma-separated rule IDs to subtract from the compliance fail
       gate count (still surfaced in summary.txt as ignored). Accepted
       forms per entry: short DISA id ("SV-257779r925318"), full XCCDF
       rule id, or any CCE/STIG ident from the rule's <ident> or
@@ -62,6 +72,7 @@ steps:
         PARAM_DEFER_GATE: <<parameters.defer_gate>>
         PARAM_CHECKLIST: <<parameters.checklist>>
         PARAM_FAIL_ON_FINDING: <<parameters.fail_on_finding>>
+        PARAM_FAIL_ON_SCAN_ERROR: <<parameters.fail_on_scan_error>>
         PARAM_REQUIRE_EVALUATED_RULES: <<parameters.require_evaluated_rules>>
         PARAM_IGNORE_FINDINGS: <<parameters.ignore_findings>>
       command: <<include(scripts/summarize.sh)>>

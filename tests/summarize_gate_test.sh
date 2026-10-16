@@ -126,7 +126,7 @@ EOF
 assert_grep "notchecked only" "manual_review"
 assert_grep "notchecked only" "not evidence of compliance"
 
-# --- error counts toward the finding gate, and is listed ---
+# --- error counts toward the quality gate, and is listed ---
 run_case "error gated" 1 PARAM_FAIL_ON_FINDING=true <<EOF
 ${xml_header}
   <Rule id="xccdf_org.ssgproject.content_rule_rpm_probe" severity="high">
@@ -145,8 +145,8 @@ EOF
 assert_grep "error gated" "rpm_probe"
 assert_not_grep "error gated" "not evidence of compliance"
 
-# Gate off: errors are visible and do not fail a scan that did evaluate rules.
-run_case "error ungated" 0 PARAM_FAIL_ON_FINDING=false <<EOF
+# Quality opt-out: errors remain visible even with compliance gating enabled.
+run_case "error ungated" 0 PARAM_FAIL_ON_FINDING=true PARAM_FAIL_ON_SCAN_ERROR=0 <<EOF
 ${xml_header}
   <TestResult>
     <rule-result idref="xccdf_org.ssgproject.content_rule_file_ok"><result>pass</result></rule-result>
@@ -154,10 +154,10 @@ ${xml_header}
   </TestResult>
 </Benchmark>
 EOF
-assert_grep "error ungated" "fail_on_finding=false, so they do not fail the job"
+assert_grep "error ungated" "fail_on_scan_error=false.*do not fail the job"
 assert_grep "error ungated" "rpm_probe"
 
-# --- unknown counts toward the finding gate ---
+# --- unknown counts toward the quality gate ---
 run_case "unknown gated" 1 PARAM_FAIL_ON_FINDING=1 <<EOF
 ${xml_header}
   <TestResult>
@@ -276,3 +276,4 @@ if [ "${failures}" -ne 0 ]; then
     exit 1
 fi
 echo "summarize gate fixtures passed"
+python3 "${ROOT}/tests/scan_quality_test.py"
