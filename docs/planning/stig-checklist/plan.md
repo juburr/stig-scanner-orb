@@ -1,7 +1,26 @@
 # Plan: STIG Viewer checklists with container N/A justifications
 
-Status: **PR 1 merged (#9); PR 2 merged (#10); PR 3 merged (#11); PR 4 merged (#12); PR 5 merged (#13); PR 6 implemented and locally validated, pending review/merge**, 2026-10-15. Owner: TBD. Done: the independent
-`smoke-rhel10` item (as `smoke-rhel10-auto`).
+Status: **Implementation complete; release acceptance pending**, 2026-10-16.
+PRs 1–6 are merged (#9, #10, #11, #12, #13, #14). The independent
+`smoke-rhel10` item is also complete (as `smoke-rhel10-auto`).
+
+This plan, the spike and the research report are retained as an implementation
+archive: they preserve the decisions and evidence behind the feature.
+[README.md](../../../README.md) describes current supported behavior;
+[CHANGELOG.md](../../../CHANGELOG.md) records user-visible changes and the
+planned 2.0.0 release. The delivery sections below preserve the implementation
+history and are not a queue of unfinished feature work.
+
+## Release closeout
+
+- Import CI-produced `.ckl` and `.cklb` files into STIG Viewer 3.8.x and
+  capture the displayed N/A comments as acceptance evidence.
+- Obtain customer ISSM acceptance of the category wording, especially host-level
+  N/A explanations and Chainguard vendor assumptions.
+- Finalize the 2.0.0 changelog, create the official release tag, and confirm the
+  tag-triggered test matrix and production orb publication succeed.
+- After acceptance and publication, mark this plan complete and record the
+  released version and acceptance evidence here.
 
 Inputs:
 - [spike.md](spike.md): measured on real ubi9, ubi8, ubuntu:22.04 and
