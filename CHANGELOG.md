@@ -70,6 +70,15 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 
 ### Breaking
 
+- **Separate scan-quality and compliance gates.** New `fail_on_scan_error`
+  defaults to `true` on the scan job and summarize command, failing on any
+  `error`/`unknown` result or recorded missing dpkg/RPM inventory, even when
+  other checks pass. `fail_on_finding` now covers only non-ignored `fail`
+  results. `ignore_findings` waives compliance failures only; it cannot hide
+  scan-quality problems. To deliberately retain incomplete evidence, explicitly
+  set `fail_on_scan_error: false`; hollow-scan and checklist policies still apply.
+  Summary and provenance report both gate settings, outcomes and quality counts.
+
 - **`require_evaluated_rules` (new, default `true`).** `summarize` fails the
   job when zero rules evaluate to `pass`, `fail`, `fixed`, or `informational`.
   An all-`notapplicable` scan, which 1.x reported as a green build, is what a
@@ -77,9 +86,6 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   probe family the datastream needs). Set `require_evaluated_rules: false` on a
   job that intentionally records such a baseline; `summary.txt` records the
   opt-out.
-- **`fail_on_finding` also counts `error` and `unknown`.** Non-ignored `error`
-  and `unknown` results now trip the gate alongside `fail`. `ignore_findings`
-  entries apply to them too.
 - **`debian12` default profile is now CIS Level 1 Server**
   (`xccdf_org.ssgproject.content_profile_cis_level1_server`, CIS Debian 12
   Benchmark v1.1.0) instead of `anssi_np_nt28_high`. There is no DISA STIG for
@@ -91,7 +97,7 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   CIS L1 is not a DISA-accepted STIG substitute; see the README for what it
   is, and for a known SSG 0.1.82 defect in its banner rules that affects
   `rootfs_path` scans of Debian hosts (container images are unaffected).
-- **`summary.txt` layout.** It now states both gate settings and the evaluated
+- **`summary.txt` layout.** It now states gate settings/outcomes and the evaluated
   rule count, always prints the `pass`/`fail`/`error`/`unknown`/
   `notapplicable`/`notchecked` rows (including zeros), and lists rules under
   separate `Fail`, `Error`, `Unknown`, and `Notchecked` headings. Scripts that

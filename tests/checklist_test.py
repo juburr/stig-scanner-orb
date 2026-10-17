@@ -130,12 +130,13 @@ class ChecklistTests(unittest.TestCase):
     def rows(self):
         return json.loads((self.out / "checklist.cklb").read_text())["stigs"][0]["rules"]
 
-    def summary(self, mode="auto", findings="false", defer="false"):
+    def summary(self, mode="auto", findings="false", defer="false", quality="true"):
         env = {
             **os.environ,
             "PARAM_OUTPUT_DIR": str(self.out),
             "PARAM_CHECKLIST": mode,
             "PARAM_FAIL_ON_FINDING": findings,
+            "PARAM_FAIL_ON_SCAN_ERROR": quality,
             "PARAM_DEFER_GATE": defer,
         }
         return subprocess.run(["bash", str(ROOT / "src/scripts/summarize.sh")], env=env, capture_output=True, text=True)
@@ -199,7 +200,8 @@ class ChecklistTests(unittest.TestCase):
         self.assertEqual(meta["stig"]["releaseinfo"], "Release: 9 Benchmark Date: 01 Jul 2026")
         self.assertEqual(meta["host_name"], "local/app:test")
         self.assertIn("sha256:target) [linux/amd64]", rows[0]["finding_details"])
-        self.assertEqual(self.summary().returncode, 0)
+        self.assertEqual(self.summary().returncode, 1)  # scanner error is independent of compliance
+        self.assertEqual(self.summary(quality="false").returncode, 0)
         self.assertEqual(self.summary(findings="true").returncode, 1)
         self.assertTrue((self.out / "checklist.ckl").exists())
 
@@ -603,7 +605,8 @@ cat
         self.assertIn("rpm_status=missing", meta["reason"])
         self.assertIn("Restore a usable RPM database", meta["reason"])
         self.assertFalse((self.out / "checklist.ckl").exists())
-        self.assertEqual(self.summary(mode="auto").returncode, 0)
+        self.assertEqual(self.summary(mode="auto").returncode, 1)
+        self.assertEqual(self.summary(mode="auto", quality="false").returncode, 0)
         self.assertEqual(self.summary(mode="require").returncode, 1)
         self.plan.update(rpm_status="available", rpm_status_packages="12", rpm_status_reason="")
         self.save_plan()
@@ -753,7 +756,8 @@ printf '\nSTATE=%s\nREASON=%s\n' "$DPKG_STATUS" "$DPKG_STATUS_REASON"
         self.assertIn("Repair /var/lib/dpkg/status", meta["reason"])
         self.assertFalse((self.out / "checklist.ckl").exists())
         self.assertFalse((self.out / "checklist.cklb").exists())
-        self.assertEqual(self.summary().returncode, 0)
+        self.assertEqual(self.summary().returncode, 1)
+        self.assertEqual(self.summary(quality="false").returncode, 0)
         self.assertEqual(self.summary("require").returncode, 1)
         self.plan["dpkg_status"] = "synthesized"
         self.save_plan()
@@ -770,6 +774,20 @@ printf '\nSTATE=%s\nREASON=%s\n' "$DPKG_STATUS" "$DPKG_STATUS_REASON"
         self.assertFalse((self.out / "summary.txt.exit-code").exists())
         self.assertEqual(self.summary(defer="true").returncode, 0)
         self.assertEqual(self.enforce_gate().returncode, 0)
+
+    def test_deferred_quality_failure_preserves_validated_checklists(self):
+        self.prepare(fixture([("ok", 1, "pass", ()), ("broken", 2, "error", ())]))
+        self.generate()
+        original = {name: (self.out / name).read_bytes() for name in ("checklist.ckl", "checklist.cklb")}
+        self.assertEqual(self.summary("require", defer="true").returncode, 0)
+        gates = json.loads((self.out / "provenance.json").read_text())["gates"]
+        self.assertTrue(gates["scan_quality"]["failed"])
+        self.assertFalse(gates["compliance"]["failed"])
+        self.assertFalse(gates["checklist"]["failed"])
+        self.assertEqual(self.guard(), 0)
+        self.assertEqual(self.enforce_gate().returncode, 1)
+        for name, data in original.items():
+            self.assertEqual((self.out / name).read_bytes(), data)
 
     def test_deferred_checklist_policy_and_parse_errors_still_fail_closed(self):
         self.prepare(fixture(profile="xccdf_org.ssgproject.content_profile_cis_server_l1"))

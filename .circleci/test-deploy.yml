@@ -175,12 +175,11 @@ jobs:
           name: Gate ON, ignore all real failures → expect exit 0
           command: |
             set -e
-            # Short ids from the Fail, Error, and Unknown sections. SV-only
-            # matching would miss an error result whose id is not a DISA id,
-            # and fail_on_finding now counts those.
+            # Only compliance failures are waivable. The independent quality
+            # gate stays enabled and would reject any error/unknown results.
             fails=$(awk '
-              /^Fail \(/ || /^Error \(/ || /^Unknown \(/ {section=1; next}
-              /^Notchecked \(/ || /^[A-Za-z]/ {section=0}
+              /^Fail \(/ {section=1; next}
+              /^[A-Za-z]/ {section=0}
               section && $1 == "-" {
                 if ($2 == "[IGNORED]") print $3; else print $2
               }
@@ -227,6 +226,7 @@ jobs:
             set -e
             PARAM_OUTPUT_DIR="build/stig" \
             PARAM_REQUIRE_EVALUATED_RULES="false" \
+            PARAM_FAIL_ON_SCAN_ERROR="false" \
             bash src/scripts/summarize.sh
             grep -q "require_evaluated_rules=false" build/stig/summary.txt
             grep -q "not evidence of compliance" build/stig/summary.txt
@@ -690,9 +690,11 @@ workflows:
       - stig-scanner-orb/scan:
           name: smoke-distroless-rootfs
           # rootfs_path trees belong to the caller and are never modified,
-          # so the distroless layout must surface as a loud warning instead.
+          # so deliberately retain incomplete evidence, then verify that the
+          # default quality policy rejects this same real scan.
           rootfs_path: /tmp/distroless-rootfs
           target_base: debian12
+          fail_on_scan_error: false
           checkout: false
           pre-steps:
             - run:
@@ -713,6 +715,24 @@ workflows:
                   grep -q "^WARNING: the target has no usable /var/lib/dpkg/status" build/stig/summary.txt
                   grep -q "the orb does not modify a rootfs_path tree" build/stig/summary.txt
                   grep -q "package absence cannot be verified" build/stig/summary.txt
+                  python3 -c '
+                  import json
+                  g = json.load(open("build/stig/provenance.json"))["gates"]
+                  assert not g["scan_quality"]["enabled"], g
+                  assert g["scan_quality"]["unavailable_inventories"] == ["dpkg"], g
+                  '
+                  set +e
+                  PARAM_OUTPUT_DIR=build/stig PARAM_FAIL_ON_FINDING=false PARAM_FAIL_ON_SCAN_ERROR=true \
+                    bash src/scripts/summarize.sh
+                  rc=$?
+                  set -e
+                  test "$rc" -eq 1 || { echo "expected quality failure, got $rc"; exit 1; }
+                  python3 -c '
+                  import json
+                  g = json.load(open("build/stig/provenance.json"))["gates"]
+                  assert g["scan_quality"]["failed"], g
+                  assert not g["compliance"]["failed"], g
+                  '
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-fedora
