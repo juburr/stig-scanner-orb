@@ -77,7 +77,7 @@ Every command is a thin YAML wrapper around a script in `src/scripts/`. Pattern:
     command: <<include(scripts/foo.sh)>>
 ```
 
-Inside the script, every `PARAM_*` env var goes through a `subst()` shim that calls `circleci env subst -- "$1"` if present, else passes through. The `--` is required: values starting with a dash must not become CLI flags or help text. This is what lets the scripts run locally as plain bash — no CircleCI runtime dependency for development.
+Inside the script, every `PARAM_*` env var goes through a `subst()` shim that pipes the value into `circleci env subst` on stdin (`printf '%s' "$1" | circleci env subst`) if the CLI is present, else passes it through with `printf '%s\n'` (not `echo`, which would swallow `-n` or `-e`). Never pass the value as an argument: values starting with a dash must not become CLI flags or help text. Stdin avoids the CLI's argument parsing entirely and is the form all juburr orbs use; `tests/env_subst_test.sh` enforces it. This is what lets the scripts run locally as plain bash — no CircleCI runtime dependency for development.
 
 When adding a parameter, edit four places: the command's `parameters:` block, the command's `environment:` block, the corresponding pass-through in `jobs/scan.yml`, and the script's variable read at the top.
 

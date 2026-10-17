@@ -19,12 +19,12 @@ fail() {
 stub="$(mktemp -d)"
 printf '#!/bin/sh\nexit 1\n' > "${stub}/docker"
 printf '#!/bin/sh\nexit 0\n' > "${stub}/sleep"
+# Like the real CLI, read the value from stdin. subst() never passes it as
+# an argument, which the CLI would parse as a flag if it started with "-".
 cat > "${stub}/circleci" <<'EOF'
 #!/bin/sh
-[ "$1 $2" = "env subst" ] || exit 1
-shift 2
-if [ "$1" = "--" ]; then shift; fi
-printf '%s\n' "$1"
+[ "$1 $2" = "env subst" ] && [ "$#" -eq 2 ] || exit 1
+cat
 EOF
 chmod +x "${stub}/docker" "${stub}/circleci" "${stub}/sleep"
 

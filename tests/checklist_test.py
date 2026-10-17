@@ -550,16 +550,12 @@ main()
         cli_dir = self.out / "bin"
         cli_dir.mkdir()
         cli = cli_dir / "circleci"
+        # The value must arrive on stdin: as an argument, the real CLI would
+        # parse "--help" as its own flag.
         cli.write_text("""#!/bin/sh
 [ "$1 $2" = "env subst" ] || exit 2
-shift 2
-if [ "$1" = "--" ]; then
-    shift
-else
-    case "$1" in -*) echo "unescaped CLI option" >&2; exit 2 ;; esac
-fi
-[ "$#" -eq 1 ] || exit 2
-printf '%s\\n' "$1"
+[ "$#" -eq 2 ] || { echo "value passed as an argument" >&2; exit 2; }
+cat
 """)
         cli.chmod(0o755)
         result = self.wrapper(PATH=str(cli_dir) + os.pathsep + os.environ["PATH"], PARAM_CHECKLIST_ASSET_NAME="--help")

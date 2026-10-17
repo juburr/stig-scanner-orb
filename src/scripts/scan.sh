@@ -26,9 +26,9 @@ set -euo pipefail
 # --- env-substitution shim: works in CircleCI and locally -----------------
 subst() {
     if command -v circleci >/dev/null 2>&1; then
-        circleci env subst -- "$1"
+        printf '%s' "$1" | circleci env subst
     else
-        echo "$1"
+        printf '%s\n' "$1"
     fi
 }
 
