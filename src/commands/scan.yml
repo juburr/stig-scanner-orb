@@ -66,7 +66,7 @@ parameters:
     default: ""
     description: >
       Runner-readable release-bound site answers JSON (at most 1 MiB), outside
-      output_dir. Protected from output cleanup; pass the same file to the checklist command.
+      output_dir. Protected from output cleanup; pass the same file to the generate_checklist command.
   tailoring_file:
     type: string
     default: ""

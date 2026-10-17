@@ -305,7 +305,7 @@ class BundleTests(unittest.TestCase):
             self.assertTrue(all(g["ccis"] for g in disa["groups"]))
             self.assertIn(
                 "scripts/stig-data/" + descriptor["alias"] + ".sh",
-                (ROOT / "src/commands/checklist.yml").read_text(),
+                (ROOT / "src/commands/generate_checklist.yml").read_text(),
             )
         bash_env = self.out / "command-size-bash-env"
         bash_env.write_text("")

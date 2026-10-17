@@ -39,7 +39,7 @@ before = {name: hashlib.sha256((out / name).read_bytes()).hexdigest()
           for name in ('results.xml', 'scan-plan.env', 'checklist.ckl', 'checklist.cklb')}
 proc = subprocess.run(['bash', 'src/scripts/summarize.sh'], env={**os.environ,
     'PARAM_OUTPUT_DIR': str(out), 'PARAM_CHECKLIST': 'require', 'PARAM_FAIL_ON_FINDING': 'true',
-    'PARAM_DEFER_GATE': 'false', 'PARAM_IGNORE_RULES': ''}, capture_output=True, text=True)
+    'PARAM_DEFER_GATE': 'false', 'PARAM_IGNORE_FINDINGS': ''}, capture_output=True, text=True)
 assert proc.returncode == 1, proc.stdout + proc.stderr
 assert all(hashlib.sha256((out / name).read_bytes()).hexdigest() == value for name, value in before.items())
 assert json.loads((out / 'provenance.json').read_text())['checklist']['answers'] == answers

@@ -52,6 +52,18 @@ assert_grep() {
     fi
 }
 
+# assert_log NAME STREAM TEXT: the latest run's stdout or stderr contains TEXT.
+# Messages name parameters exactly as the YAML does, never hyphenated.
+assert_log() {
+    local name="$1"
+    local stream="$2"
+    local text="$3"
+    if ! grep -qF -- "${text}" "${LAST_DIR}/${stream}.txt"; then
+        fail "${name}: ${stream} missing '${text}'"
+        cat "${LAST_DIR}/${stream}.txt" >&2 || true
+    fi
+}
+
 assert_not_grep() {
     local name="$1"
     local pattern="$2"
@@ -244,6 +256,7 @@ ${xml_header}
 </Benchmark>
 EOF
 assert_grep "fail gated" "telnet"
+assert_log "fail gated" stdout "fail_on_finding=true and 1 actionable result(s)"
 
 # --- empty results are a broken scan, not a hollow opt-out ---
 run_case "no rule results" 2 PARAM_REQUIRE_EVALUATED_RULES=false <<EOF
@@ -260,6 +273,7 @@ ${xml_header}
   </TestResult>
 </Benchmark>
 EOF
+assert_log "bad bool" stderr "ERROR: require_evaluated_rules must be 'true', 'false', '1', or '0'; got 'yes'."
 
 # --- missing results.xml ---
 dir="$(mktemp -d)"

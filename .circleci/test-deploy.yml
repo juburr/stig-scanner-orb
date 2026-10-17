@@ -87,7 +87,7 @@ jobs:
           image: cgr.dev/chainguard/static:latest
           target_base: wolfi
           output_dir: build/stig
-      - stig-scanner-orb/checklist:
+      - stig-scanner-orb/generate_checklist:
           output_dir: build/stig
       - stig-scanner-orb/summarize:
           checklist: auto

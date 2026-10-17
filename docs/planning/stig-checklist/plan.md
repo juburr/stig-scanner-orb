@@ -9,7 +9,10 @@ archive: they preserve the decisions and evidence behind the feature.
 [README.md](../../../README.md) describes current supported behavior;
 [CHANGELOG.md](../../../CHANGELOG.md) records user-visible changes and the
 planned 2.0.0 release. The delivery sections below preserve the implementation
-history and are not a queue of unfinished feature work.
+history and are not a queue of unfinished feature work. The `checklist` command
+they describe was renamed `generate_checklist` before 2.0.0
+(`src/commands/generate_checklist.yml`); its `checklist` mode parameter and the
+`checklist.sh` script keep their names.
 
 ## Release closeout
 

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A CircleCI orb that runs OpenSCAP DISA STIG scans against container images and extracted filesystems. The user-facing surface is `juburr/stig-scanner-orb/scan` (a job) plus `scan` / `checklist` / `summarize` / `load_image` (commands).
+A CircleCI orb that runs OpenSCAP DISA STIG scans against container images and extracted filesystems. The user-facing surface is `juburr/stig-scanner-orb/scan` (a job) plus `scan` / `generate_checklist` / `summarize` / `load_image` (commands). The `generate_checklist` command takes a `checklist` mode parameter (`auto` / `require` / `none`) and runs `src/scripts/checklist-packed.sh`.
 
 ## Local working notes
 
@@ -81,6 +81,8 @@ Inside the script, every `PARAM_*` env var goes through a `subst()` shim that pi
 
 When adding a parameter, edit four places: the command's `parameters:` block, the command's `environment:` block, the corresponding pass-through in `jobs/scan.yml`, and the script's variable read at the top.
 
+Error and log messages name a parameter exactly as the YAML does (`rootfs_path`, `target_base`), never a hyphenated form. Data-contract keys keep their spelling: `scan-plan.env` and `provenance.json` keys, the `summary.txt` field labels that smoke jobs and consumers grep (`target-base:`, `fail-on-finding:`), and checklist.sh's internal argparse flags (`--rootfs-path=`).
+
 ## Pitfalls / non-obvious knowledge
 
 - **`orb-tools/review` RC009 fails any inline `run` command in `src/jobs` / `src/commands` longer than 64 characters.** Put it in `src/scripts/` and use `<<include(...)>>`. A failing review stops the setup workflow, so none of the test-deploy jobs run.
@@ -107,8 +109,9 @@ When debugging a scan-script change, the local end-to-end smoke against `cgr.dev
 selection/reference fingerprints, V-ID counts, unmapped allowlists and DISA
 release identity. Never infer release identity from a profile title.
 `tools/fingerprint-stig.py` verifies new pins against candidate DISA releases.
-The scan job runs checklist between scan and summarize; summarize is the only
-gatekeeper. Job/checklist defaults are `auto`, standalone summarize is `none`.
+The scan job runs `generate_checklist` between scan and summarize; summarize is
+the only gatekeeper. Job/`generate_checklist` defaults are `auto`, standalone
+summarize is `none`.
 
 Cleanup invalidates meta first, following the physical overlap check in rootfs
 mode. The always-run guard also receives rootfs_path to avoid modifying a tree
@@ -247,11 +250,11 @@ smoke. Every matrix job must checkout before bundle staging.
 ## Checklist answers
 
 `checklist_answers` is a runner-readable UTF-8 JSON file outside output_dir,
-bounded to 1 MiB and snapshotted once by checklist. The strict v1 schema binds
+bounded to 1 MiB and snapshotted once by generate_checklist. The strict v1 schema binds
 benchmark_id/version/releaseinfo; rejects duplicate/unknown keys, malformed text,
 unknown V-IDs and invalid statuses. Text is literal (no templating). A status
 requires comments. `scan` and reserve-output protect it before cleanup, including
-hard links. Standalone callers pass the path to scan and checklist.
+hard links. Standalone callers pass the path to scan and generate_checklist.
 `apply_answers` runs after all automatic model/eligibility checks. Preserve original
 verdict/comments/evidence and hash-bound decisions in both formats. Order: opt-in
 curated default, category wording, explicit row answer. Category wording changes

@@ -17,12 +17,12 @@ subst() {
 TARBALL="$(subst "${PARAM_IMAGE_TARBALL:-}")"
 
 if [ -z "${TARBALL}" ]; then
-    echo "load-image: no image-tarball set, nothing to do."
+    echo "load-image: no image_tarball set, nothing to do."
     exit 0
 fi
 
 if [ ! -f "${TARBALL}" ]; then
-    echo "ERROR: image-tarball '${TARBALL}' not found." >&2
+    echo "ERROR: image_tarball '${TARBALL}' not found." >&2
     exit 2
 fi
 

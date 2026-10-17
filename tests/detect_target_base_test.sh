@@ -35,12 +35,12 @@ expect() {
         PARAM_OUTPUT_DIR="$(mktemp -d)" bash "${SCAN}" 2>&1 || true)"
     if [ "${want}" = "ERROR" ]; then
         case "${out}" in
-            *"could not auto-detect a supported target-base"*) ;;
+            *"could not auto-detect a supported target_base"*) ;;
             *) fail "${name}: expected a detection error, got: ${out}" ;;
         esac
     else
         case "${out}" in
-            *"auto-detected target-base: ${want}"*) ;;
+            *"auto-detected target_base: ${want}"*) ;;
             *) fail "${name}: expected '${want}', got: $(printf '%s' "${out}" | head -3)" ;;
         esac
     fi
