@@ -846,6 +846,8 @@ workflows:
           image_tarball: /tmp/stig-image.tar
           target_base: wolfi
           checkout: false
+          # Not the default image, to prove machine_image reaches the executor.
+          machine_image: ubuntu-2204:current
           pre-steps:
             - run:
                 name: Build a non-pullable image tarball
@@ -860,6 +862,7 @@ workflows:
                 name: Assert scan ran against the tarball-loaded image
                 command: |
                   set -e
+                  grep -qx 'VERSION_ID="22.04"' /etc/os-release
                   test -f build/stig/summary.txt
                   na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
                   echo "notapplicable=${na:-0}"

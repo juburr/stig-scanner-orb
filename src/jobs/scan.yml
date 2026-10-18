@@ -6,6 +6,7 @@ description: >
 
 executor:
   name: machine
+  image: <<parameters.machine_image>>
   resource_class: <<parameters.resource_class>>
 
 parameters:
@@ -115,9 +116,19 @@ parameters:
   output_dir:
     type: string
     default: "build/stig"
+  machine_image:
+    type: string
+    default: "ubuntu-2404:current"
+    description: >
+      CircleCI machine image the job runs on, passed to the orb's machine
+      executor. The scan needs a machine executor with a local Docker
+      daemon, because it extracts the target filesystem through Docker.
   resource_class:
     type: string
     default: "medium"
+    description: >
+      CircleCI resource class the job runs on, passed to the orb's machine
+      executor.
   no_output_timeout:
     type: string
     default: "30m"
