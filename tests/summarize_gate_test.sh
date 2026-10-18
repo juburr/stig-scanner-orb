@@ -24,7 +24,7 @@ run_case() {
     (
         cd "${dir}"
         export PARAM_OUTPUT_DIR="${dir}"
-        export PARAM_FAIL_ON_FINDING="${PARAM_FAIL_ON_FINDING-false}"
+        export PARAM_FAIL_ON="${PARAM_FAIL_ON-never}"
         export PARAM_REQUIRE_EVALUATED_RULES="${PARAM_REQUIRE_EVALUATED_RULES-true}"
         export PARAM_IGNORE_FINDINGS="${PARAM_IGNORE_FINDINGS-}"
         # shellcheck disable=SC2086
@@ -140,7 +140,7 @@ assert_grep "notchecked only" "manual_review"
 assert_grep "notchecked only" "not evidence of compliance"
 
 # --- error counts toward the finding gate, and is listed ---
-run_case "error gated" 1 PARAM_FAIL_ON_FINDING=true <<EOF
+run_case "error gated" 1 PARAM_FAIL_ON=high <<EOF
 ${xml_header}
   <Rule id="xccdf_org.ssgproject.content_rule_rpm_probe" severity="high">
     <title>RPM probe</title>
@@ -159,7 +159,7 @@ assert_grep "error gated" "rpm_probe"
 assert_not_grep "error gated" "not evidence of compliance"
 
 # Gate off: errors are visible and do not fail a scan that did evaluate rules.
-run_case "error ungated" 0 PARAM_FAIL_ON_FINDING=false <<EOF
+run_case "error ungated" 0 PARAM_FAIL_ON=never <<EOF
 ${xml_header}
   <TestResult>
     <rule-result idref="xccdf_org.ssgproject.content_rule_file_ok"><result>pass</result></rule-result>
@@ -167,11 +167,12 @@ ${xml_header}
   </TestResult>
 </Benchmark>
 EOF
-assert_grep "error ungated" "fail_on_finding=false, so they do not fail the job"
+assert_grep "error ungated" "fail_on=never, so they do not fail the job"
 assert_grep "error ungated" "rpm_probe"
 
-# --- unknown counts toward the finding gate ---
-run_case "unknown gated" 1 PARAM_FAIL_ON_FINDING=1 <<EOF
+# --- unknown counts toward the finding gate, and a rule with no stated
+# severity counts even at the highest threshold ---
+run_case "unknown gated" 1 PARAM_FAIL_ON=high <<EOF
 ${xml_header}
   <TestResult>
     <rule-result idref="xccdf_org.ssgproject.content_rule_file_ok"><result>pass</result></rule-result>
@@ -182,7 +183,7 @@ EOF
 assert_grep "unknown gated" "mystery"
 
 # --- all-error scan is hollow, so it fails even with the finding gate off ---
-run_case "errors only" 1 PARAM_FAIL_ON_FINDING=false <<EOF
+run_case "errors only" 1 PARAM_FAIL_ON=never <<EOF
 ${xml_header}
   <TestResult>
     <rule-result idref="xccdf_org.ssgproject.content_rule_rpm_probe"><result>error</result></rule-result>
@@ -193,7 +194,7 @@ assert_grep "errors only" "not evidence of compliance"
 
 # --- ignored fails are evaluated, so a triaged baseline is not hollow ---
 run_case "ignored baseline" 0 \
-    PARAM_FAIL_ON_FINDING=true \
+    PARAM_FAIL_ON=info \
     PARAM_IGNORE_FINDINGS="SV-1000r1,SV-2000r2" <<EOF
 ${xml_header}
   <Rule id="xccdf_org.ssgproject.content_rule_alpha" severity="high">
@@ -216,7 +217,7 @@ assert_grep "ignored baseline" "\\[IGNORED\\]"
 # A shared reference token waives every rule that cites it. Pass rule keeps
 # the scan evaluated; both fails are ignored so the finding gate passes.
 run_case "shared reference ignore" 0 \
-    PARAM_FAIL_ON_FINDING=true \
+    PARAM_FAIL_ON=info \
     PARAM_IGNORE_FINDINGS="AC-2" <<EOF
 ${xml_header}
   <Rule id="xccdf_org.ssgproject.content_rule_alpha" severity="high">
@@ -249,7 +250,7 @@ EOF
 assert_not_grep "pass only" "not evidence of compliance"
 
 # --- fail still fails the finding gate ---
-run_case "fail gated" 1 PARAM_FAIL_ON_FINDING=true <<EOF
+run_case "fail gated" 1 PARAM_FAIL_ON=info <<EOF
 ${xml_header}
   <TestResult>
     <rule-result idref="xccdf_org.ssgproject.content_rule_telnet"><result>fail</result></rule-result>
@@ -257,7 +258,57 @@ ${xml_header}
 </Benchmark>
 EOF
 assert_grep "fail gated" "telnet"
-assert_log "fail gated" stderr "ERROR: fail_on_finding=true and 1 actionable result(s)"
+assert_grep "fail gated" "^  fail-on: info$"
+assert_log "fail gated" stderr "ERROR: fail_on=info and 1 actionable result(s) (fail, error, or unknown) at info severity or above"
+
+# --- fail_on is a severity threshold: one fail on each of a low, a
+# medium, and a high rule ---
+threshold_xml="${xml_header}
+  <Rule id=\"xccdf_org.ssgproject.content_rule_cat3\" severity=\"low\"><title>Cat III</title></Rule>
+  <Rule id=\"xccdf_org.ssgproject.content_rule_cat2\" severity=\"medium\"><title>Cat II</title></Rule>
+  <Rule id=\"xccdf_org.ssgproject.content_rule_cat1\" severity=\"high\"><title>Cat I</title></Rule>
+  <TestResult>
+    <rule-result idref=\"xccdf_org.ssgproject.content_rule_cat3\" severity=\"low\"><result>fail</result></rule-result>
+    <rule-result idref=\"xccdf_org.ssgproject.content_rule_cat2\" severity=\"medium\"><result>fail</result></rule-result>
+    <rule-result idref=\"xccdf_org.ssgproject.content_rule_cat1\" severity=\"high\"><result>fail</result></rule-result>
+  </TestResult>
+</Benchmark>"
+for level_count in info:3 low:3 medium:2 high:1; do
+    level="${level_count%%:*}"
+    count="${level_count#*:}"
+    run_case "threshold ${level}" 1 PARAM_FAIL_ON="${level}" <<< "${threshold_xml}"
+    assert_log "threshold ${level}" stderr "ERROR: fail_on=${level} and ${count} actionable result(s)"
+done
+run_case "threshold never" 0 PARAM_FAIL_ON=never <<< "${threshold_xml}"
+assert_grep "threshold never" "^  fail-on: never$"
+
+# Ignoring the only fail at or above the threshold passes the gate, even
+# with lower-severity fails left; they stay listed.
+run_case "threshold high ignored" 0 \
+    PARAM_FAIL_ON=high \
+    PARAM_IGNORE_FINDINGS="cat1" <<< "${threshold_xml}"
+assert_grep "threshold high ignored" "\\[IGNORED\\] cat1"
+assert_grep "threshold high ignored" "  - cat2 (medium)"
+assert_grep "threshold high ignored" "  - cat3 (low)"
+
+# An error below the threshold is reported but does not count.
+run_case "error below threshold" 0 PARAM_FAIL_ON=high <<EOF
+${xml_header}
+  <Rule id="xccdf_org.ssgproject.content_rule_rpm_probe" severity="low"><title>RPM probe</title></Rule>
+  <TestResult>
+    <rule-result idref="xccdf_org.ssgproject.content_rule_file_ok"><result>pass</result></rule-result>
+    <rule-result idref="xccdf_org.ssgproject.content_rule_rpm_probe" severity="low"><result>error</result></rule-result>
+  </TestResult>
+</Benchmark>
+EOF
+assert_grep "error below threshold" "0 of them count toward fail_on=high"
+assert_grep "error below threshold" "rpm_probe"
+
+# --- bad fail_on value; the old boolean form is rejected too ---
+for value in true yes HIGH; do
+    run_case "bad fail_on ${value}" 2 PARAM_FAIL_ON="${value}" <<< "${threshold_xml}"
+    assert_log "bad fail_on ${value}" stderr "ERROR: fail_on must be high, medium, low, info, or never; got '${value}'."
+done
 
 # --- empty results are a broken scan, not a hollow opt-out ---
 run_case "no rule results" 2 PARAM_REQUIRE_EVALUATED_RULES=false <<EOF

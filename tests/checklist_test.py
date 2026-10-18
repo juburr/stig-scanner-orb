@@ -130,12 +130,12 @@ class ChecklistTests(unittest.TestCase):
     def rows(self):
         return json.loads((self.out / "checklist.cklb").read_text())["stigs"][0]["rules"]
 
-    def summary(self, mode="auto", findings="false", defer="false"):
+    def summary(self, mode="auto", fail_on="never", defer="false"):
         env = {
             **os.environ,
             "PARAM_OUTPUT_DIR": str(self.out),
             "PARAM_CHECKLIST": mode,
-            "PARAM_FAIL_ON_FINDING": findings,
+            "PARAM_FAIL_ON": fail_on,
             "PARAM_DEFER_GATE": defer,
         }
         return subprocess.run(["bash", str(ROOT / "src/scripts/summarize.sh")], env=env, capture_output=True, text=True)
@@ -200,7 +200,7 @@ class ChecklistTests(unittest.TestCase):
         self.assertEqual(meta["host_name"], "local/app:test")
         self.assertIn("sha256:target) [linux/amd64]", rows[0]["finding_details"])
         self.assertEqual(self.summary().returncode, 0)
-        self.assertEqual(self.summary(findings="true").returncode, 1)
+        self.assertEqual(self.summary(fail_on="info").returncode, 1)
         self.assertTrue((self.out / "checklist.ckl").exists())
 
     def test_na_gate_walk_and_compound_evidence(self):
@@ -762,7 +762,7 @@ printf '\nSTATE=%s\nREASON=%s\n' "$DPKG_STATUS" "$DPKG_STATUS_REASON"
     def test_deferred_finding_gate_preserves_checklist_then_fails_job(self):
         self.prepare(fixture([("fail", 1, "fail", ())]))
         self.generate()
-        self.assertEqual(self.summary(findings="true", defer="true").returncode, 0)
+        self.assertEqual(self.summary(fail_on="info", defer="true").returncode, 0)
         self.assertEqual((self.out / "summary.txt.exit-code").read_text(), "1\n")
         self.assertEqual(self.guard(), 0)
         self.assertTrue((self.out / "checklist.ckl").exists())

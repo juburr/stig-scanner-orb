@@ -413,7 +413,7 @@ class TailoringTests(unittest.TestCase):
             os.environ,
             PARAM_OUTPUT_DIR=str(self.out),
             PARAM_CHECKLIST="require",
-            PARAM_FAIL_ON_FINDING="false",
+            PARAM_FAIL_ON="never",
             PARAM_REQUIRE_EVALUATED_RULES="false",
         )
         summary = subprocess.run(
