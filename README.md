@@ -218,7 +218,8 @@ The checklist output explains N/A conditions without deselecting host rules. Tai
 | `stig_xccdf_path` | string | `""` | Runner-readable DISA manual XCCDF file or ZIP, at most 16 MiB. Supplies official text, CCIs, all rows, and the checklist release. |
 | `checklist_asset_name` | string | `""` | Stable unique asset name; defaults to the image reference. Required for rootfs checklists. XML-safe, trimmed, capped at 255 characters. |
 | `output_dir` | string | `build/stig` | Where reports and summary land. In `rootfs_path` mode it must not overlap the scanned tree; that is checked by physical path (symlinks resolved), so don't point it at a bind-mount alias of the tree either. |
-| `resource_class` | string | `medium` | Pass-through to the machine executor. |
+| `machine_image` | string | `ubuntu-2404:current` | CircleCI machine image, passed to the orb's machine executor. The scan needs a machine executor with a local Docker daemon. |
+| `resource_class` | string | `medium` | CircleCI resource class, passed to the orb's machine executor. |
 | `no_output_timeout` | string | `30m` | OpenSCAP can be silent for several minutes during evaluation. |
 | `checkout` | boolean | `true` | Whether to `checkout` before scanning. |
 

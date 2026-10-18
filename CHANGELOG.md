@@ -71,6 +71,9 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   CircleCI substitution, and rootfs N/A wording supports VM and host assets.
 - Fault-injection tests and CI validation with pinned STIG Manager parsers and
   DISA's CKLB schema.
+- `machine_image` on the `scan` job picks the CircleCI machine image, passed
+  through to the orb's machine executor alongside `resource_class`. The
+  default stays `ubuntu-2404:current`.
 
 ### Breaking
 
