@@ -88,6 +88,7 @@ Error and log messages name a parameter exactly as the YAML does (`rootfs_path`,
 `src/scripts/` follows the shell conventions shared by the juburr orbs. `tests/shell_conventions_test.sh` checks the mechanical ones in `test-scripts`; it is identical in every orb, so never edit this copy.
 
 - Line 1 is `#!/bin/bash` and the first command is `set -euo pipefail`. The generated stig-data staging scripts are the one exception: `# shell-conventions: no-errexit <reason>` plus `set -uo pipefail`, because a staging error must leave an empty path, not fail the step.
+- Expand an array that can be empty as `${arr[@]+"${arr[@]}"}`, not `"${arr[@]}"`: under `-u`, bash before 4.4 treats an empty array as unset and aborts with "unbound variable". `tests/scan_empty_mounts_test.sh` runs scan.sh with empty datastream and tailoring mount arrays.
 - Errors start with `ERROR: `, warnings with `WARN: `, and both go to stderr, continuation lines included; everything else goes to stdout unprefixed. A non-zero exit prints an `ERROR:` line first unless a tool's own error is already in the log. Data keeps its spelling: `summary.txt`'s `WARNING:` lines are content that smoke jobs grep, not log messages.
 - `$BASH_ENV` exports use `printf 'export %s=%q\n'`. `eval` runs only orb code (`"${NAME_SCRIPT}"`). No `set -x`, no `set +o history`.
 - Secrets never go on a command line. Temporary files come from `mktemp` and are removed by the script's single EXIT trap. curl that sends credentials or fetches trusted content uses `--fail --proto '=https'`.
