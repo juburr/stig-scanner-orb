@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Parse the OpenSCAP results.xml produced by scan.sh, write a
 # human-readable summary and a machine-readable provenance.json, apply the
 # optional ignore-list, and enforce two independent gates:
@@ -67,8 +67,13 @@ if [ ! -f "${RESULTS}" ]; then
     exit 2
 fi
 
+# The Python block hands its gate counts to the shell in a private file,
+# never at a fixed name in output_dir.
+GATE_FILE="$(mktemp -t stig-gate.XXXXXX)"
+trap 'rm -f -- "${GATE_FILE}"' EXIT
+
 python3 - "$RESULTS" "$SUMMARY" "${IGNORE_FINDINGS}" "${PLAN}" \
-    "${FAIL_ON_FINDING}" "${REQUIRE_EVALUATED_RULES}" "${PROVENANCE}" "${CHECKLIST}" <<'PY'
+    "${FAIL_ON_FINDING}" "${REQUIRE_EVALUATED_RULES}" "${PROVENANCE}" "${CHECKLIST}" "${GATE_FILE}" <<'PY'
 import hashlib
 import json
 import os
@@ -79,6 +84,7 @@ from collections import Counter
 
 results_path, summary_path, ignore_csv, plan_path, fail_on_finding, require_evaluated, provenance_path = sys.argv[1:8]
 checklist_mode = sys.argv[8]
+gate_path = sys.argv[9]
 
 def local(tag):
     return tag.rsplit("}", 1)[-1]
@@ -584,15 +590,14 @@ with open(provenance_path, "w", encoding="utf-8") as fh:
 
 # The shell enforces the exit code from these counts so the policy lives
 # in one place. Missing file is a hard error, not a pass.
-with open(summary_path + ".gate", "w", encoding="utf-8") as fh:
+with open(gate_path, "w", encoding="utf-8") as fh:
     fh.write(f"actionable={len(actionable)}\n")
     fh.write(f"evaluated={evaluated}\n")
     fh.write(f"rule_results={rule_results}\n")
     fh.write(f"checklist_failed={int(checklist_failed)}\n")
 PY
 
-GATE_FILE="${SUMMARY}.gate"
-if [ ! -f "${GATE_FILE}" ]; then
+if [ ! -s "${GATE_FILE}" ]; then
     echo "ERROR: summarize did not produce a gate file." >&2
     exit 2
 fi
@@ -609,7 +614,6 @@ while IFS='=' read -r key value; do
         checklist_failed) CHECKLIST_FAILED="${value}" ;;
     esac
 done < "${GATE_FILE}"
-rm -f "${GATE_FILE}"
 
 for pair in "actionable:${ACTIONABLE}" "evaluated:${EVALUATED}" "rule_results:${RULE_RESULTS}" "checklist_failed:${CHECKLIST_FAILED}"; do
     name="${pair%%:*}"
@@ -629,20 +633,20 @@ fi
 
 failed=0
 if [ "${CHECKLIST_FAILED}" -ne 0 ]; then
-    echo "==> checklist=${CHECKLIST} policy failed; see Checklist in summary.txt."
+    echo "ERROR: checklist=${CHECKLIST} policy failed; see Checklist in summary.txt." >&2
     failed=1
 fi
 if [ "${EVALUATED}" -eq 0 ] && [ "${REQUIRE_EVALUATED_RULES}" = "true" ]; then
-    echo "==> require_evaluated_rules=true and 0 rules evaluated to pass or fail — failing the build."
-    echo "    That is not evidence of compliance. It usually means the scan was"
-    echo "    mis-dispatched: check target_base, the scanner image (RPM targets need"
-    echo "    rpm probes), and that the target's package database is readable."
-    echo "    If this profile genuinely has no rule that applies to this image, set"
-    echo "    require_evaluated_rules=false on this job to record the baseline on purpose."
+    echo "ERROR: require_evaluated_rules=true and 0 rules evaluated to pass or fail — failing the build." >&2
+    echo "       That is not evidence of compliance. It usually means the scan was" >&2
+    echo "       mis-dispatched: check target_base, the scanner image (RPM targets need" >&2
+    echo "       rpm probes), and that the target's package database is readable." >&2
+    echo "       If this profile genuinely has no rule that applies to this image, set" >&2
+    echo "       require_evaluated_rules=false on this job to record the baseline on purpose." >&2
     failed=1
 fi
 if [ "${ACTIONABLE}" -gt 0 ] && [ "${FAIL_ON_FINDING}" = "true" ]; then
-    echo "==> fail_on_finding=true and ${ACTIONABLE} actionable result(s) (fail, error, or unknown) — failing the build."
+    echo "ERROR: fail_on_finding=true and ${ACTIONABLE} actionable result(s) (fail, error, or unknown) — failing the build." >&2
     failed=1
 fi
 if [ "${failed}" -ne 0 ]; then

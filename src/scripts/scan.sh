@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Run an OpenSCAP STIG scan against a container image or extracted rootfs.
 #
 # Flow:
@@ -204,7 +204,7 @@ pull_image() {
             return 0
         fi
         if [ "${attempt}" -lt 3 ]; then
-            echo "    pull of ${ref} failed (attempt ${attempt}/3); retrying in $((attempt * 10))s" >&2
+            echo "WARN: pull of ${ref} failed (attempt ${attempt}/3); retrying in $((attempt * 10))s" >&2
             sleep "$((attempt * 10))"
         fi
     done
@@ -317,7 +317,7 @@ cleanup() {
     if [ -n "${DATASTREAM_SNAP_DIR}" ]; then
         rm -rf "${DATASTREAM_SNAP_DIR}" 2>/dev/null || true
         if [ -e "${DATASTREAM_SNAP_DIR}" ]; then
-            echo "WARNING: could not remove the datastream snapshot ${DATASTREAM_SNAP_DIR}; remove it manually." >&2
+            echo "WARN: could not remove the datastream snapshot ${DATASTREAM_SNAP_DIR}; remove it manually." >&2
         fi
     fi
     if [ -n "${TAILORING_SNAP_DIR}" ]; then
@@ -326,7 +326,7 @@ cleanup() {
     if [ -n "${OUT_STAGE_DIR}" ]; then
         rm -rf "${OUT_STAGE_DIR}" 2>/dev/null || true
         if [ -e "${OUT_STAGE_DIR}" ]; then
-            echo "WARNING: could not remove the scanner output staging dir ${OUT_STAGE_DIR}; remove it manually." >&2
+            echo "WARN: could not remove the scanner output staging dir ${OUT_STAGE_DIR}; remove it manually." >&2
         fi
     fi
     if [ "${CLEANUP_ROOTFS}" = "1" ] && [ -n "${ROOTFS_DIR}" ] && [ -d "${ROOTFS_DIR}" ]; then
@@ -345,7 +345,7 @@ cleanup() {
         fi
         rmdir "${ROOTFS_DIR}" 2>/dev/null || true
         if [ -e "${ROOTFS_DIR}" ]; then
-            echo "WARNING: could not remove the scratch rootfs ${ROOTFS_DIR} (it holds root-owned files); remove it with root privileges." >&2
+            echo "WARN: could not remove the scratch rootfs ${ROOTFS_DIR} (it holds root-owned files); remove it with root privileges." >&2
         fi
     fi
 }
@@ -579,7 +579,7 @@ detect_target_base() {
     if [ "${has_osr}" = "1" ]; then
         # Surface the offending values via the function's stderr so the
         # caller can quote them in the user-facing error.
-        printf 'unsupported os-release: ID=%q VERSION_ID=%q\n' "${id}" "${version_id}" >&2
+        printf 'ERROR: unsupported os-release: ID=%q VERSION_ID=%q\n' "${id}" "${version_id}" >&2
         return 1
     fi
     # No os-release at all (e.g. distroless): use filesystem-shape hints
@@ -823,9 +823,9 @@ elif [ "${FAMILY}" = "dpkg" ]; then
     esac
 fi
 if [ "${DPKG_STATUS}" = "missing" ]; then
-    echo "WARNING: the target has no usable /var/lib/dpkg/status (${DPKG_STATUS_REASON})." >&2
-    echo "         OpenSCAP's dpkg probe reads only the status file, so package rules" >&2
-    echo "         may error or evaluate false; package absence cannot be verified." >&2
+    echo "WARN: the target has no usable /var/lib/dpkg/status (${DPKG_STATUS_REASON})." >&2
+    echo "      OpenSCAP's dpkg probe reads only the status file, so package rules" >&2
+    echo "      may error or evaluate false; package absence cannot be verified." >&2
 fi
 
 # --- 4. pull scanner image -----------------------------------------------
@@ -1452,7 +1452,7 @@ if [ "${FAMILY}" = "rpm" ]; then
         ""|*[!0-9]*|0)
             RPM_STATUS="missing"
             RPM_STATUS_REASON="the scanner could not query a nonempty RPM inventory through its read-only rootfs mount"
-            echo "WARNING: ${RPM_STATUS_REASON}; package absence cannot be verified." >&2
+            echo "WARN: ${RPM_STATUS_REASON}; package absence cannot be verified." >&2
             ;;
         *) RPM_STATUS="available"; RPM_STATUS_PACKAGES="${rpm_inventory}" ;;
     esac
@@ -1475,7 +1475,7 @@ case "${DATASTREAM_SHA256}" in
     *[!0-9a-f]*) DATASTREAM_SHA256="" ;;
 esac
 if [ "${#DATASTREAM_SHA256}" -ne 64 ]; then
-    echo "WARNING: could not hash ${DATASTREAM_IN_SCANNER_PATH} inside the scanner image; datastream_sha256 will be empty." >&2
+    echo "WARN: could not hash ${DATASTREAM_IN_SCANNER_PATH} inside the scanner image; datastream_sha256 will be empty." >&2
     DATASTREAM_SHA256=""
     if [ -n "${TAILORING_FILE}" ]; then
         echo "ERROR: a tailored scan requires a hashed datastream." >&2

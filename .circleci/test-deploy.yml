@@ -272,8 +272,8 @@ jobs:
     description: >
       Docker-free script tests: summarize gate fixtures (hollow scans
       fail closed, error/unknown gating, ignore-list behavior),
-      provenance rendering, target_base auto-detection, and the pinned
-      default image references.
+      provenance rendering, target_base auto-detection, the pinned
+      default image references, and the shell conventions of src/scripts.
     docker:
       - image: cimg/base:stable
     resource_class: small

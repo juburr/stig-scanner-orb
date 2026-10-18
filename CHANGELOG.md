@@ -154,6 +154,12 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   Scripts that match these messages, such as `auto-detected target-base:`, need
   updating. `summary.txt` field labels (`target-base:`, `fail-on-finding:`) are
   unchanged.
+- Warnings in the step log and on stderr start with `WARN:` instead of
+  `WARNING:`, and a failed image pull attempt that will be retried is now a
+  `WARN:` line. The policy failures that fail the build (`fail_on_finding`,
+  `require_evaluated_rules`, `checklist`, and the scan job's deferred gate) print
+  `ERROR:` lines on stderr instead of `==>` lines on stdout. Scripts that match
+  these messages need updating. `summary.txt` keeps its `WARNING:` lines.
 - Every helper and scanner container now runs with `--network none`; a scan's
   only network traffic is the Docker daemon's image pulls. A test enforces it.
 - A `rootfs_path` that contains a socket, FIFO or device node is refused (exit 2;
