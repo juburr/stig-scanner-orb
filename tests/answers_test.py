@@ -70,7 +70,7 @@ class AnswerTests(unittest.TestCase):
         self.assertEqual((self.out / 'results.xml').read_bytes(), original_results)
         self.assertEqual((self.out / 'scan-plan.env').read_bytes(), original_plan)
         self.assertEqual(self.guard(), 0)
-        result = self.summary('require', findings='true')
+        result = self.summary('require', fail_on='info')
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         prov = json.loads((self.out / 'provenance.json').read_text())
         self.assertEqual(prov['checklist']['answers'], meta['answers'])

@@ -1,9 +1,10 @@
 description: >
   Parse results.xml, write a human-readable summary.txt, apply the
-  optional ignore-list, and enforce the gates. fail_on_finding covers
-  non-ignored fail, error, and unknown results. require_evaluated_rules
-  fails the job when nothing evaluated to pass or fail, so a
-  mis-dispatched, all-notapplicable scan cannot pass as a clean one.
+  optional ignore-list, and enforce the gates. fail_on covers
+  non-ignored fail, error, and unknown results on rules at or above a
+  severity. require_evaluated_rules fails the job when nothing
+  evaluated to pass or fail, so a mis-dispatched, all-notapplicable
+  scan cannot pass as a clean one.
 
 parameters:
   defer_gate:
@@ -25,12 +26,16 @@ parameters:
     type: string
     default: "build/stig"
     description: Same value as passed to the `scan` command.
-  fail_on_finding:
-    type: boolean
-    default: false
+  fail_on:
+    type: enum
+    enum: ["high", "medium", "low", "info", "never"]
+    default: never
     description: >
-      If true, exit non-zero when any non-ignored result is fail,
-      error, or unknown. Default is false so a baseline that actually
+      Exit non-zero when any non-ignored fail, error, or unknown result
+      is on a rule at or above this severity. high, medium, and low are
+      DISA CAT I, II, and III; info counts every severity. A rule with
+      no stated severity counts at every level. The default, never,
+      reports findings without failing, so a baseline that actually
       evaluated rules can be triaged before being gated. An unevaluated
       scan still fails; see require_evaluated_rules.
   require_evaluated_rules:
@@ -61,7 +66,7 @@ steps:
         PARAM_OUTPUT_DIR: <<parameters.output_dir>>
         PARAM_DEFER_GATE: <<parameters.defer_gate>>
         PARAM_CHECKLIST: <<parameters.checklist>>
-        PARAM_FAIL_ON_FINDING: <<parameters.fail_on_finding>>
+        PARAM_FAIL_ON: <<parameters.fail_on>>
         PARAM_REQUIRE_EVALUATED_RULES: <<parameters.require_evaluated_rules>>
         PARAM_IGNORE_FINDINGS: <<parameters.ignore_findings>>
       command: <<include(scripts/summarize.sh)>>

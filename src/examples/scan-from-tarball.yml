@@ -17,7 +17,7 @@ usage:
             image: localhost/myapp:latest
             image_tarball: workspace/images/myapp.tar
             target_base: wolfi
-            fail_on_finding: false
+            fail_on: never
             pre-steps:
               - attach_workspace:
                   at: workspace

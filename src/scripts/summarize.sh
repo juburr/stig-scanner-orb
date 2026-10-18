@@ -3,7 +3,8 @@
 # human-readable summary and a machine-readable provenance.json, apply the
 # optional ignore-list, and enforce two independent gates:
 #
-#   * fail_on_finding — non-ignored fail, error, and unknown results.
+#   * fail_on — non-ignored fail, error, and unknown results on rules at
+#     or above a severity threshold.
 #   * require_evaluated_rules — at least one rule evaluated to pass,
 #     fail, fixed, or informational. An all-notapplicable scan usually
 #     means mis-dispatch (wrong target_base, a scanner missing the probe
@@ -43,9 +44,11 @@ case "${CHECKLIST}" in
     *) echo "ERROR: checklist must be auto, require, or none." >&2; exit 2 ;;
 esac
 IGNORE_FINDINGS="$(subst "${PARAM_IGNORE_FINDINGS:-}")"
-if ! FAIL_ON_FINDING="$(normalize_bool "fail_on_finding" "${PARAM_FAIL_ON_FINDING:-false}")"; then
-    exit 2
-fi
+FAIL_ON="$(subst "${PARAM_FAIL_ON:-never}")"
+case "${FAIL_ON}" in
+    high|medium|low|info|never) ;;
+    *) echo "ERROR: fail_on must be high, medium, low, info, or never; got '${FAIL_ON}'." >&2; exit 2 ;;
+esac
 if ! REQUIRE_EVALUATED_RULES="$(normalize_bool "require_evaluated_rules" "${PARAM_REQUIRE_EVALUATED_RULES:-true}")"; then
     exit 2
 fi
@@ -73,7 +76,7 @@ GATE_FILE="$(mktemp -t stig-gate.XXXXXX)"
 trap 'rm -f -- "${GATE_FILE}"' EXIT
 
 python3 - "$RESULTS" "$SUMMARY" "${IGNORE_FINDINGS}" "${PLAN}" \
-    "${FAIL_ON_FINDING}" "${REQUIRE_EVALUATED_RULES}" "${PROVENANCE}" "${CHECKLIST}" "${GATE_FILE}" <<'PY'
+    "${FAIL_ON}" "${REQUIRE_EVALUATED_RULES}" "${PROVENANCE}" "${CHECKLIST}" "${GATE_FILE}" <<'PY'
 import hashlib
 import json
 import os
@@ -82,7 +85,7 @@ import sys
 import xml.etree.ElementTree as ET
 from collections import Counter
 
-results_path, summary_path, ignore_csv, plan_path, fail_on_finding, require_evaluated, provenance_path = sys.argv[1:8]
+results_path, summary_path, ignore_csv, plan_path, fail_on, require_evaluated, provenance_path = sys.argv[1:8]
 checklist_mode = sys.argv[8]
 gate_path = sys.argv[9]
 
@@ -110,6 +113,18 @@ def normalize(token):
 # not the same thing as a scan that never applied.
 EVALUATED_RESULTS = {"pass", "fail", "fixed", "informational"}
 GATED_RESULTS = ("fail", "error", "unknown")
+
+# XCCDF rule severities, lowest first; high, medium and low are DISA CAT I,
+# II and III. Any other severity, including XCCDF's default "unknown",
+# counts at every fail_on level: content that doesn't state a severity
+# can't show that a finding is below the threshold.
+SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3}
+
+def counts_toward_fail_on(severity):
+    if fail_on == "never":
+        return False
+    rank = SEVERITY_RANK.get((severity or "").lower())
+    return rank is None or rank >= SEVERITY_RANK[fail_on]
 
 ignores = {normalize(t) for t in ignore_csv.split(",") if t.strip()}
 
@@ -229,6 +244,7 @@ if os.path.isfile(plan_path):
                 plan[k] = v
 
 actionable = [rec for name in GATED_RESULTS for rec in gated[name] if not rec["ignored"]]
+gating = [rec for rec in actionable if counts_toward_fail_on(rec["severity"])]
 hollow = rule_results > 0 and evaluated == 0
 
 # --- provenance: scan-plan.env (what ran) + results.xml (what it read) ---
@@ -473,7 +489,7 @@ if plan:
     lines.append(f"  scan-time:         {start_time or ''} .. {end_time or ''}")
     lines.append("")
 
-lines.append(f"  fail-on-finding: {fail_on_finding}")
+lines.append(f"  fail-on: {fail_on}")
 lines.append(f"  require-evaluated-rules: {require_evaluated}")
 lines.append("")
 lines.append(f"Evaluated rules: {evaluated}")
@@ -522,15 +538,16 @@ ungated_errors = [rec for rec in gated["error"] if not rec["ignored"]]
 ungated_unknown = [rec for rec in gated["unknown"] if not rec["ignored"]]
 if ungated_errors or ungated_unknown:
     lines.append("")
-    if fail_on_finding == "true":
+    if fail_on == "never":
         lines.append(
             f"WARNING: {len(ungated_errors)} error and {len(ungated_unknown)} unknown "
-            "result(s) count toward fail_on_finding."
+            "result(s) are present. fail_on=never, so they do not fail the job."
         )
     else:
+        counted = sum(1 for rec in ungated_errors + ungated_unknown if counts_toward_fail_on(rec["severity"]))
         lines.append(
             f"WARNING: {len(ungated_errors)} error and {len(ungated_unknown)} unknown "
-            "result(s) are present. fail_on_finding=false, so they do not fail the job."
+            f"result(s) are present; {counted} of them count toward fail_on={fail_on}."
         )
 
 lines.append("")
@@ -572,7 +589,7 @@ if notchecked_rules:
     lines.append("")
     lines.append(
         f"Notchecked ({len(notchecked_rules)}): no automated result. "
-        "fail_on_finding does not count these. A scan whose rules never "
+        "fail_on does not count these. A scan whose rules never "
         "reach pass or fail still fails when require_evaluated_rules=true."
     )
     for rec in notchecked_rules:
@@ -592,6 +609,7 @@ with open(provenance_path, "w", encoding="utf-8") as fh:
 # in one place. Missing file is a hard error, not a pass.
 with open(gate_path, "w", encoding="utf-8") as fh:
     fh.write(f"actionable={len(actionable)}\n")
+    fh.write(f"gating={len(gating)}\n")
     fh.write(f"evaluated={evaluated}\n")
     fh.write(f"rule_results={rule_results}\n")
     fh.write(f"checklist_failed={int(checklist_failed)}\n")
@@ -603,19 +621,21 @@ if [ ! -s "${GATE_FILE}" ]; then
 fi
 
 ACTIONABLE=""
+GATING=""
 EVALUATED=""
 RULE_RESULTS=""
 CHECKLIST_FAILED=""
 while IFS='=' read -r key value; do
     case "${key}" in
         actionable) ACTIONABLE="${value}" ;;
+        gating) GATING="${value}" ;;
         evaluated) EVALUATED="${value}" ;;
         rule_results) RULE_RESULTS="${value}" ;;
         checklist_failed) CHECKLIST_FAILED="${value}" ;;
     esac
 done < "${GATE_FILE}"
 
-for pair in "actionable:${ACTIONABLE}" "evaluated:${EVALUATED}" "rule_results:${RULE_RESULTS}" "checklist_failed:${CHECKLIST_FAILED}"; do
+for pair in "actionable:${ACTIONABLE}" "gating:${GATING}" "evaluated:${EVALUATED}" "rule_results:${RULE_RESULTS}" "checklist_failed:${CHECKLIST_FAILED}"; do
     name="${pair%%:*}"
     value="${pair#*:}"
     case "${value}" in
@@ -645,8 +665,8 @@ if [ "${EVALUATED}" -eq 0 ] && [ "${REQUIRE_EVALUATED_RULES}" = "true" ]; then
     echo "       require_evaluated_rules=false on this job to record the baseline on purpose." >&2
     failed=1
 fi
-if [ "${ACTIONABLE}" -gt 0 ] && [ "${FAIL_ON_FINDING}" = "true" ]; then
-    echo "ERROR: fail_on_finding=true and ${ACTIONABLE} actionable result(s) (fail, error, or unknown) — failing the build." >&2
+if [ "${GATING}" -gt 0 ] && [ "${FAIL_ON}" != "never" ]; then
+    echo "ERROR: fail_on=${FAIL_ON} and ${GATING} actionable result(s) (fail, error, or unknown) at ${FAIL_ON} severity or above — failing the build." >&2
     failed=1
 fi
 if [ "${failed}" -ne 0 ]; then
@@ -660,4 +680,4 @@ fi
 if [ "${DEFER_GATE}" = "true" ]; then
     (set -o noclobber; printf '0\n' > "${SUMMARY}.exit-code")
 fi
-echo "==> summarize complete (actionable: ${ACTIONABLE}, evaluated: ${EVALUATED}, fail_on_finding=${FAIL_ON_FINDING}, require_evaluated_rules=${REQUIRE_EVALUATED_RULES})"
+echo "==> summarize complete (actionable: ${ACTIONABLE}, evaluated: ${EVALUATED}, fail_on=${FAIL_ON}, require_evaluated_rules=${REQUIRE_EVALUATED_RULES})"

@@ -81,8 +81,16 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   probe family the datastream needs). Set `require_evaluated_rules: false` on a
   job that intentionally records such a baseline; `summary.txt` records the
   opt-out.
-- **`fail_on_finding` also counts `error` and `unknown`.** Non-ignored `error`
-  and `unknown` results now trip the gate alongside `fail`. `ignore_findings`
+- **`fail_on` replaces `fail_on_finding`, and takes a severity.** The gate
+  fails the job on a non-ignored result on a rule at or above `high`, `medium`,
+  or `low` (DISA CAT I, II, III), or on any severity with `info`. A rule whose
+  severity the content doesn't state counts at every level. The default,
+  `never`, keeps the gate off. Replace `fail_on_finding: true` with
+  `fail_on: info` for the same behavior, and drop `fail_on_finding: false`.
+  `summary.txt` records the setting as `fail-on: <level>` instead of
+  `fail-on-finding: <true|false>`.
+- **The finding gate also counts `error` and `unknown`.** Non-ignored `error`
+  and `unknown` results now trip `fail_on` alongside `fail`. `ignore_findings`
   entries apply to them too.
 - **`debian12` default profile is now CIS Level 1 Server**
   (`xccdf_org.ssgproject.content_profile_cis_level1_server`, CIS Debian 12
@@ -150,13 +158,13 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 
 - Error and log messages name parameters as written in YAML (`rootfs_path`,
   `target_base`, `output_dir`, `image_tarball`, `datastream_path`,
-  `fail_on_finding`, ...) instead of hyphenated forms such as `rootfs-path`.
+  `fail_on`, ...) instead of hyphenated forms such as `rootfs-path`.
   Scripts that match these messages, such as `auto-detected target-base:`, need
-  updating. `summary.txt` field labels (`target-base:`, `fail-on-finding:`) are
-  unchanged.
+  updating. Other than `fail-on:` (see Breaking), `summary.txt` field labels
+  such as `target-base:` are unchanged.
 - Warnings in the step log and on stderr start with `WARN:` instead of
   `WARNING:`, and a failed image pull attempt that will be retried is now a
-  `WARN:` line. The policy failures that fail the build (`fail_on_finding`,
+  `WARN:` line. The policy failures that fail the build (`fail_on`,
   `require_evaluated_rules`, `checklist`, and the scan job's deferred gate) print
   `ERROR:` lines on stderr instead of `==>` lines on stdout. Scripts that match
   these messages need updating. `summary.txt` keeps its `WARNING:` lines.

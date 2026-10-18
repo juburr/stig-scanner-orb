@@ -31,7 +31,7 @@ workflows:
           target_base: wolfi
 ```
 
-That's enough to produce `report.html`, `results.xml`, and `summary.txt` as job artifacts. `fail_on_finding` is off by default, so evaluated `fail` results are reported without failing the build and you can triage a baseline before turning that gate on.
+That's enough to produce `report.html`, `results.xml`, and `summary.txt` as job artifacts. `fail_on` is `never` by default, so evaluated `fail` results are reported without failing the build and you can triage a baseline before turning that gate on.
 
 One gate is on by default: a scan in which **zero rules evaluate** to pass or fail fails the job (`require_evaluated_rules: true`). An all-`notapplicable` result is what you get from a mis-dispatched scan (wrong `target_base`, or a scanner without the probes the datastream needs), and before 2.0.0 that was a green build. See [Gates](#-gates).
 
@@ -120,9 +120,11 @@ Google distroless images (`gcr.io/distroless/*-debian12`) ship `/etc/os-release`
 | Gate | Default | Fails the job when |
 |---|---|---|
 | `require_evaluated_rules` | `true` | Zero rules evaluated to `pass`, `fail`, `fixed`, or `informational`. |
-| `fail_on_finding` | `false` | Any non-ignored rule is `fail`, `error`, or `unknown`. |
+| `fail_on` | `never` | A non-ignored `fail`, `error`, or `unknown` result is on a rule at or above the given severity. |
 
-`error` and `unknown` count as findings because the check did not produce a compliance answer. `notchecked` is listed in the summary but does not trip `fail_on_finding`; a scan that is *only* `notchecked` still fails `require_evaluated_rules`. Ignoring a failure removes it from the `fail_on_finding` count but not from "evaluated": a triaged baseline is still an evaluated scan.
+`fail_on` takes a rule severity: `high`, `medium`, or `low` (DISA CAT I, II, and III), or `info` to count every severity. A result on a rule whose severity the content doesn't state counts at every level, since nothing shows it is below the threshold. `never`, the default, reports findings without failing the job. `summary.txt` lists each finding with its severity, and its `fail-on:` line records the setting. In 1.x this gate was the boolean `fail_on_finding`: `true` is now `fail_on: info`, and `false` is `never`.
+
+`error` and `unknown` count as findings because the check did not produce a compliance answer. `notchecked` is listed in the summary but does not trip `fail_on`; a scan that is *only* `notchecked` still fails `require_evaluated_rules`. Ignoring a failure removes it from the `fail_on` count but not from "evaluated": a triaged baseline is still an evaluated scan.
 
 `require_evaluated_rules` exists because an all-`notapplicable` scan looks clean and is not. Each of these produces 0 evaluated rules and, before 2.0.0, a green build:
 
@@ -206,7 +208,7 @@ The checklist output explains N/A conditions without deselecting host rules. Tai
 | `datastream_path` | string | `""` | Host-local datastream file. Skips the donor flow. |
 | `profile_id` | string | `""` | Override the XCCDF profile id (e.g. switch to CIS). |
 | `donor_image` | string | `""` (pinned Chainguard openscap) | Root-privileged helper (extraction, distroless dpkg status, the `rootfs_path` socket check) and the image datastreams are copied out of for RPM targets. Override for air-gap; an override needs a shell and a POSIX userland (`tar`, `find`, `awk`, `cp`, …; busybox is enough) plus the SCAP content under `/usr/share/xml/scap/ssg/content`. |
-| `fail_on_finding` | boolean | `false` | When true, exit 1 on any non-ignored `fail`, `error`, or `unknown` result. |
+| `fail_on` | enum | `never` | `high`, `medium`, `low`, `info`, or `never`. Exit 1 on any non-ignored `fail`, `error`, or `unknown` result on a rule at or above that severity (see [Gates](#-gates)). |
 | `require_evaluated_rules` | boolean | `true` | Fail the job when zero rules evaluate to pass, fail, fixed, or informational. Set false only on a job that intentionally records an all-notapplicable baseline (see [Gates](#-gates)). |
 | `ignore_findings` | string | `""` | Comma-separated rule IDs to subtract from the fail/error/unknown gate count. |
 | `checklist` | enum | `auto` (job, `generate_checklist`); `none` (`summarize`) | `auto` allows documented skips and fails generation errors; `require` also fails skips; `none` disables generation and enforcement. |
@@ -456,7 +458,7 @@ your assessment records to reproduce an answer snapshot; the orb does not
 upload it separately.
 
 **Answers do not change `results.xml`, scan provenance, finding ignores, or any
-scan gate.** `fail_on_finding` still uses the automated scan results even if an
+scan gate.** `fail_on` still uses the automated scan results even if an
 answer changes a checklist row from Open to N/A. `checklist: none` skips reading
 and applying answers. Failed conversions remain enforced by `summarize` under
 `auto` and `require`, with the existing atomic publication and upload guard.
@@ -700,7 +702,7 @@ The pins live in one place, `DEFAULT_CHAINGUARD_IMAGE` and `DEFAULT_RPM_SCANNER_
    ```
 2. Update both constants in `scan.sh` and the table above, keeping the `name:tag@sha256:` form.
 3. Run the local smoke from Local development below against a Wolfi image and a UBI image, and compare the provenance block and rule counts with the previous pin: `ssg-version`, `openscap`, and evaluated/fail counts. Update the measured tables in this README if they moved.
-4. Record the move in `CHANGELOG.md` with old → new SSG and OpenSCAP versions. A content bump changes scan results, and new `fail` results can trip `fail_on_finding`, so release it as at least a minor version.
+4. Record the move in `CHANGELOG.md` with old → new SSG and OpenSCAP versions. A content bump changes scan results, and new `fail` results can trip `fail_on`, so release it as at least a minor version.
 5. For each STIG datastream in the new pin, record its exact SHA-256 and scan
    every accepted `stig`/`stig_gui` profile. Run
    `python3 tools/fingerprint-stig.py results.xml 'releases/*_Manual-xccdf.xml'`
@@ -732,7 +734,7 @@ Entries in `ignore_findings` are matched case-insensitively against:
 - the full XCCDF rule id, or
 - any `<ident>` or `<reference>` value on the rule (CCE, CVE, CCI, a NIST control such as `AC-2`, and so on). A shared reference waives every rule that cites it.
 
-Ignored `fail`, `error`, and `unknown` results still appear in the summary and the HTML report. They are removed from the `fail_on_finding` count, not the audit trail. Ignoring them does not waive `require_evaluated_rules`: a result that actually failed was evaluated.
+Ignored `fail`, `error`, and `unknown` results still appear in the summary and the HTML report. They are removed from the `fail_on` count, not the audit trail. Ignoring them does not waive `require_evaluated_rules`: a result that actually failed was evaluated.
 
 ## 🔐 Info for security teams
 

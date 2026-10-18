@@ -89,7 +89,7 @@ jobs:
       - stig-scanner-orb/summarize:
           checklist: auto
           output_dir: build/stig
-          fail_on_finding: false
+          fail_on: never
       - run:
           name: Assert summary shows real signal
           command: |
@@ -140,9 +140,11 @@ jobs:
   smoke-gate:
     description: >
       Verify the failure gate and ignore-list logic by scanning the
-      same Wolfi target, then re-running summarize twice — once with
-      the gate on and no ignores (must exit 1), once with the gate on
-      and the actual failures listed (must exit 0).
+      same Wolfi target, then re-running summarize three times — with
+      fail_on=info and no ignores (must exit 1), with fail_on=high
+      (must exit 1 only when a high or unstated-severity result is
+      present), and with fail_on=info and the actual failures listed
+      (must exit 0).
     machine:
       image: ubuntu-2404:current
     resource_class: medium
@@ -154,24 +156,51 @@ jobs:
           output_dir: build/stig
       - stig-scanner-orb/summarize:
           output_dir: build/stig
-          fail_on_finding: false
+          fail_on: never
       - run:
           name: Gate ON, no ignores → expect exit 1
           command: |
             set +e
             PARAM_OUTPUT_DIR="build/stig" \
-            PARAM_FAIL_ON_FINDING="true" \
+            PARAM_FAIL_ON="info" \
             PARAM_IGNORE_FINDINGS="" \
             bash src/scripts/summarize.sh >/dev/null 2>&1
             rc=$?
             test "$rc" -eq 1 || { echo "expected exit 1, got $rc"; exit 1; }
+      - run:
+          name: fail_on=high counts only high and unstated-severity results
+          command: |
+            set -e
+            # Fail, Error, and Unknown entries read "  - <id> (<severity>, ...)".
+            # A severity other than info, low, or medium counts at every level.
+            high=$(awk '
+              /^Fail \(/ || /^Error \(/ || /^Unknown \(/ {section=1; next}
+              /^Notchecked \(/ || /^[A-Za-z]/ {section=0}
+              section && $1 == "-" && $2 != "[IGNORED]" {
+                sev = $3; gsub(/[(),]/, "", sev)
+                if (sev != "info" && sev != "low" && sev != "medium") n++
+              }
+              END {print n + 0}
+            ' build/stig/summary.txt)
+            expected=0
+            if [ "$high" -gt 0 ]; then expected=1; fi
+            set +e
+            PARAM_OUTPUT_DIR="build/stig" \
+            PARAM_FAIL_ON="high" \
+            PARAM_IGNORE_FINDINGS="" \
+            bash src/scripts/summarize.sh > high.log 2>&1
+            rc=$?
+            set -e
+            echo "results at high or unstated severity: ${high}; summarize exit ${rc}"
+            grep -q "^  fail-on: high$" build/stig/summary.txt
+            test "$rc" -eq "$expected" || { cat high.log; echo "expected exit ${expected}, got ${rc}"; exit 1; }
       - run:
           name: Gate ON, ignore all real failures → expect exit 0
           command: |
             set -e
             # Short ids from the Fail, Error, and Unknown sections. SV-only
             # matching would miss an error result whose id is not a DISA id,
-            # and fail_on_finding now counts those.
+            # and fail_on counts those.
             fails=$(awk '
               /^Fail \(/ || /^Error \(/ || /^Unknown \(/ {section=1; next}
               /^Notchecked \(/ || /^[A-Za-z]/ {section=0}
@@ -181,7 +210,7 @@ jobs:
             ' build/stig/summary.txt | sort -u | paste -sd, -)
             test -n "$fails" || { echo "no failures parsed; smoke-wolfi precondition broken"; exit 1; }
             PARAM_OUTPUT_DIR="build/stig" \
-            PARAM_FAIL_ON_FINDING="true" \
+            PARAM_FAIL_ON="info" \
             PARAM_IGNORE_FINDINGS="$fails" \
             bash src/scripts/summarize.sh >/dev/null 2>&1
 

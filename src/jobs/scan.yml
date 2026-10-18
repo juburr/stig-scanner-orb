@@ -90,13 +90,17 @@ parameters:
       Root-privileged helper and datastream source. Empty uses the orb's
       digest-pinned Chainguard openscap image. An override needs a shell
       and a POSIX userland (tar, find, awk, cp, ...; busybox is enough).
-  fail_on_finding:
-    type: boolean
-    default: false
+  fail_on:
+    type: enum
+    enum: ["high", "medium", "low", "info", "never"]
+    default: never
     description: >
-      When true, exit 1 if any non-ignored result is fail, error, or
-      unknown. Default false so evaluated findings can be triaged
-      first. Does not waive an unevaluated scan.
+      Exit 1 if any non-ignored fail, error, or unknown result is on a
+      rule at or above this severity: high, medium, or low (DISA CAT I,
+      II, III), or info for every severity. A rule with no stated
+      severity counts at every level. The default, never, reports
+      findings without failing so they can be triaged first. Does not
+      waive an unevaluated scan.
   require_evaluated_rules:
     type: boolean
     default: true
@@ -168,7 +172,7 @@ steps:
       defer_gate: true
       checklist: <<parameters.checklist>>
       output_dir: <<parameters.output_dir>>
-      fail_on_finding: <<parameters.fail_on_finding>>
+      fail_on: <<parameters.fail_on>>
       require_evaluated_rules: <<parameters.require_evaluated_rules>>
       ignore_findings: <<parameters.ignore_findings>>
   # Preserve ordinary evidence before the guard can fail. Never
