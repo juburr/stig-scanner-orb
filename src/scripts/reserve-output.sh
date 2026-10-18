@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Pre-create output_dir so store_artifacts has a path to upload even when
 # the scan fails early. In rootfs_path mode scan.sh creates it instead,
 # after checking that it doesn't overlap the scanned tree, which must not

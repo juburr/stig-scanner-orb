@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Offline STIG checklist generation. summarize remains the job's gatekeeper.
 set -euo pipefail
 subst() {
@@ -2852,5 +2852,5 @@ else
         echo "ERROR: checklist artifact guard could not complete cleanup." >&2
         exit 1
     fi
-    echo "WARNING: checklist generation failed; summarize will report and enforce it." >&2
+    echo "WARN: checklist generation failed; summarize will report and enforce it." >&2
 fi

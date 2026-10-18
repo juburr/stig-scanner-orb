@@ -87,6 +87,7 @@ ${xml_header}
 EOF
 assert_grep "hollow default" "not evidence of compliance"
 assert_grep "hollow default" "require_evaluated_rules=true"
+assert_log "hollow default" stderr "ERROR: require_evaluated_rules=true and 0 rules evaluated"
 pass_count="$(awk '/^  pass / {print $2}' "${LAST_DIR}/summary.txt")"
 if [ "${pass_count}" != "0" ]; then
     fail "hollow default: expected pass count 0, got '${pass_count}'"
@@ -256,7 +257,7 @@ ${xml_header}
 </Benchmark>
 EOF
 assert_grep "fail gated" "telnet"
-assert_log "fail gated" stdout "fail_on_finding=true and 1 actionable result(s)"
+assert_log "fail gated" stderr "ERROR: fail_on_finding=true and 1 actionable result(s)"
 
 # --- empty results are a broken scan, not a hollow opt-out ---
 run_case "no rule results" 2 PARAM_REQUIRE_EVALUATED_RULES=false <<EOF
@@ -274,6 +275,30 @@ ${xml_header}
 </Benchmark>
 EOF
 assert_log "bad bool" stderr "ERROR: require_evaluated_rules must be 'true', 'false', '1', or '0'; got 'yes'."
+
+# --- the gate counts never pass through a fixed name in output_dir ---
+# A summary.txt.gate left in output_dir (here a symlink) must not be
+# written through: the counts go through a private mktemp file.
+dir="$(mktemp -d)"
+cat > "${dir}/results.xml" <<EOF
+${xml_header}
+  <TestResult>
+    <rule-result idref="xccdf_org.ssgproject.content_rule_file_ok"><result>pass</result></rule-result>
+  </TestResult>
+</Benchmark>
+EOF
+printf 'untouched\n' > "${dir}/outside"
+ln -s "${dir}/outside" "${dir}/summary.txt.gate"
+set +e
+PARAM_OUTPUT_DIR="${dir}" bash "${SUMMARIZE}" > /dev/null 2>&1
+rc=$?
+set -e
+if [ "${rc}" -ne 0 ]; then
+    fail "private gate file: expected exit 0, got ${rc}"
+fi
+if [ "$(cat "${dir}/outside")" != "untouched" ]; then
+    fail "private gate file: summarize wrote its gate counts through ${dir}/summary.txt.gate"
+fi
 
 # --- missing results.xml ---
 dir="$(mktemp -d)"

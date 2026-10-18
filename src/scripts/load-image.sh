@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Optional helper: docker load an image tarball into the local daemon
 # so the scan step can find it. Useful when the previous job in the
 # workflow built the image and persisted the tar via store/attach
