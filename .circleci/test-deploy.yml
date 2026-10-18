@@ -1,7 +1,7 @@
 version: 2.1
 
 orbs:
-  orb-tools: circleci/orb-tools@12.3
+  orb-tools: circleci/orb-tools@12.5
   # The orb definition is injected into the pipeline by the setup workflow.
   stig-scanner-orb: {}
 
