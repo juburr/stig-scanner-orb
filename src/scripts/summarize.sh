@@ -43,13 +43,13 @@ case "${CHECKLIST}" in
     *) echo "ERROR: checklist must be auto, require, or none." >&2; exit 2 ;;
 esac
 IGNORE_FINDINGS="$(subst "${PARAM_IGNORE_FINDINGS:-}")"
-if ! FAIL_ON_FINDING="$(normalize_bool "fail-on-finding" "${PARAM_FAIL_ON_FINDING:-false}")"; then
+if ! FAIL_ON_FINDING="$(normalize_bool "fail_on_finding" "${PARAM_FAIL_ON_FINDING:-false}")"; then
     exit 2
 fi
-if ! REQUIRE_EVALUATED_RULES="$(normalize_bool "require-evaluated-rules" "${PARAM_REQUIRE_EVALUATED_RULES:-true}")"; then
+if ! REQUIRE_EVALUATED_RULES="$(normalize_bool "require_evaluated_rules" "${PARAM_REQUIRE_EVALUATED_RULES:-true}")"; then
     exit 2
 fi
-if ! DEFER_GATE="$(normalize_bool "defer-gate" "${PARAM_DEFER_GATE:-false}")"; then
+if ! DEFER_GATE="$(normalize_bool "defer_gate" "${PARAM_DEFER_GATE:-false}")"; then
     exit 2
 fi
 
@@ -642,7 +642,7 @@ if [ "${EVALUATED}" -eq 0 ] && [ "${REQUIRE_EVALUATED_RULES}" = "true" ]; then
     failed=1
 fi
 if [ "${ACTIONABLE}" -gt 0 ] && [ "${FAIL_ON_FINDING}" = "true" ]; then
-    echo "==> fail-on-finding=true and ${ACTIONABLE} actionable result(s) (fail, error, or unknown) — failing the build."
+    echo "==> fail_on_finding=true and ${ACTIONABLE} actionable result(s) (fail, error, or unknown) — failing the build."
     failed=1
 fi
 if [ "${failed}" -ne 0 ]; then
@@ -656,4 +656,4 @@ fi
 if [ "${DEFER_GATE}" = "true" ]; then
     (set -o noclobber; printf '0\n' > "${SUMMARY}.exit-code")
 fi
-echo "==> summarize complete (actionable: ${ACTIONABLE}, evaluated: ${EVALUATED}, fail-on-finding ${FAIL_ON_FINDING}, require-evaluated-rules ${REQUIRE_EVALUATED_RULES})"
+echo "==> summarize complete (actionable: ${ACTIONABLE}, evaluated: ${EVALUATED}, fail_on_finding=${FAIL_ON_FINDING}, require_evaluated_rules=${REQUIRE_EVALUATED_RULES})"

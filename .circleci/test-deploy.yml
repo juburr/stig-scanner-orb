@@ -80,14 +80,11 @@ jobs:
     resource_class: medium
     steps:
       - checkout
-      - run:
-          name: Pull a tiny Wolfi target into the local docker daemon
-          command: docker pull cgr.dev/chainguard/static:latest
       - stig-scanner-orb/scan:
           image: cgr.dev/chainguard/static:latest
           target_base: wolfi
           output_dir: build/stig
-      - stig-scanner-orb/checklist:
+      - stig-scanner-orb/generate_checklist:
           output_dir: build/stig
       - stig-scanner-orb/summarize:
           checklist: auto
@@ -151,9 +148,6 @@ jobs:
     resource_class: medium
     steps:
       - checkout
-      - run:
-          name: Produce a results.xml with known failures
-          command: docker pull cgr.dev/chainguard/static:latest
       - stig-scanner-orb/scan:
           image: cgr.dev/chainguard/static:latest
           target_base: wolfi
@@ -204,9 +198,6 @@ jobs:
     resource_class: medium
     steps:
       - checkout
-      - run:
-          name: Pull a Wolfi target
-          command: docker pull cgr.dev/chainguard/static:latest
       - stig-scanner-orb/scan:
           image: cgr.dev/chainguard/static:latest
           target_base: rhel9

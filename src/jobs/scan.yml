@@ -156,7 +156,7 @@ steps:
       output_dir: <<parameters.output_dir>>
       donor_image: <<parameters.donor_image>>
       no_output_timeout: <<parameters.no_output_timeout>>
-  - checklist:
+  - generate_checklist:
       output_dir: <<parameters.output_dir>>
       checklist: <<parameters.checklist>>
       checklist_formats: <<parameters.checklist_formats>>

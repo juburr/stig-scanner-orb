@@ -209,7 +209,7 @@ The checklist output explains N/A conditions without deselecting host rules. Tai
 | `fail_on_finding` | boolean | `false` | When true, exit 1 on any non-ignored `fail`, `error`, or `unknown` result. |
 | `require_evaluated_rules` | boolean | `true` | Fail the job when zero rules evaluate to pass, fail, fixed, or informational. Set false only on a job that intentionally records an all-notapplicable baseline (see [Gates](#-gates)). |
 | `ignore_findings` | string | `""` | Comma-separated rule IDs to subtract from the fail/error/unknown gate count. |
-| `checklist` | enum | `auto` (job/checklist); `none` (summarize) | `auto` allows documented skips and fails generation errors; `require` also fails skips; `none` disables generation and enforcement. |
+| `checklist` | enum | `auto` (job, `generate_checklist`); `none` (`summarize`) | `auto` allows documented skips and fails generation errors; `require` also fails skips; `none` disables generation and enforcement. |
 | `checklist_formats` | string | `ckl,cklb` | One or both formats; trimmed, case-insensitive, comma-separated. Empty or unknown formats are errors. |
 | `checklist_answers` | string | `""` | Release-bound site answers JSON, at most 1 MiB. Keep outside output_dir. Overrides checklist decisions and wording, retaining automated evidence. |
 | `checklist_default_answers` | enum | `none` | `container-host` opts into reviewed manual host answers for RHEL 9 V2R9 container images. Site answers take precedence. |
@@ -222,7 +222,7 @@ The checklist output explains N/A conditions without deselecting host rules. Tai
 
 CircleCI's standard `pre-steps` and `post-steps` job-injection points work as usual — use them for `attach_workspace`, `docker login`, etc.
 
-The orb also exposes `stig-scanner-orb/scan` (command), `stig-scanner-orb/summarize`, and `stig-scanner-orb/load_image` for callers who want to assemble a custom job.
+The orb also exposes `stig-scanner-orb/scan` (command), `stig-scanner-orb/generate_checklist`, `stig-scanner-orb/summarize`, and `stig-scanner-orb/load_image` for callers who want to assemble a custom job.
 
 ## 📦 Outputs
 
@@ -290,7 +290,7 @@ one bounded in-memory snapshot, hashes the exact XCCDF bytes it parses, and
 records the original file's SHA-256 separately when the source is a ZIP.
 ZIPs must contain exactly one manual XCCDF member; the archive and decompressed
 member are each capped at 16 MiB. Members are never extracted. Fetch or stage
-the file before the checklist command; generation remains offline.
+the file before the `generate_checklist` command; generation remains offline.
 
 The supplied file determines the checklist's STIG release, full Rule IDs,
 severity, official requirement/check/fix text, CCIs and every DISA row. Rows
@@ -461,7 +461,7 @@ answer changes a checklist row from Open to N/A. `checklist: none` skips reading
 and applying answers. Failed conversions remain enforced by `summarize` under
 `auto` and `require`, with the existing atomic publication and upload guard.
 Standalone command users must pass `checklist_answers` to both `scan` (protects
-the input from cleanup) and `checklist` (applies it).
+the input from cleanup) and `generate_checklist` (applies it).
 
 #### Opt-in container host answers
 
@@ -638,10 +638,11 @@ unremovable invalid output, prevents checklist uploads. Standalone summarize
 continues to enforce policy immediately (`defer_gate: false`).
 
 Existing standalone `scan` → `summarize` callers keep working: the summarize
-command defaults to `checklist: none`. Custom jobs can insert the `checklist`
-command between them, passing the same `checklist` mode and `output_dir` to
-checklist and summarize. The packaged scan job also provides pre-scan cleanup
-and the always-run upload guard; prefer it when those guarantees are required.
+command defaults to `checklist: none`. Custom jobs can insert the
+`generate_checklist` command between them, passing the same `checklist` mode
+and `output_dir` to `generate_checklist` and `summarize`. The packaged scan job
+also provides pre-scan cleanup and the always-run upload guard; prefer it when
+those guarantees are required.
 No checklist generation step makes additional network requests.
 
 ## 🔁 Reproducibility and provenance

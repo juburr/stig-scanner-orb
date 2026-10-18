@@ -20,7 +20,7 @@ parameters:
     description: >
       Checklist gate: auto fails conversion errors; require also fails skips;
       none preserves standalone scan/summarize callers. Valid meta is reported
-      in every mode. Pass the same value used by the checklist command.
+      in every mode. Pass the same value used by the generate_checklist command.
   output_dir:
     type: string
     default: "build/stig"

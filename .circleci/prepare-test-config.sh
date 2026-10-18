@@ -21,7 +21,7 @@ yq -o=json '.' "${STIG_CI_PACKED}" | jq --slurpfile template "${STIG_CI_TEMPLATE
         else . end) |
     .orbs."stig-scanner-orb" = $orb |
     .orbs."matrix-stig-scanner-orb" = $orb |
-    (.orbs."matrix-stig-scanner-orb".commands.checklist.steps[] |
+    (.orbs."matrix-stig-scanner-orb".commands.generate_checklist.steps[] |
         select(.run.name | startswith("Stage bundled DISA reference ("))).run.command |=
         (capture("(?<alias>rhel8|rhel9|rhel10|ubuntu2204)").alias |
          "bash src/scripts/stig-data/" + . + ".sh") |
@@ -46,16 +46,16 @@ yq -o=json '.' "${STIG_CI_PACKED}" | jq --slurpfile template "${STIG_CI_TEMPLATE
 echo "Verifying adapter and full packed-orb smoke"
 cmp \
     <(jq -S '.orbs."stig-scanner-orb" |
-        del(.commands.checklist.steps[0].run.command,
-            .commands.checklist.steps[1].run.command,
-            .commands.checklist.steps[2].run.command,
-            .commands.checklist.steps[3].run.command) |
+        del(.commands.generate_checklist.steps[0].run.command,
+            .commands.generate_checklist.steps[1].run.command,
+            .commands.generate_checklist.steps[2].run.command,
+            .commands.generate_checklist.steps[3].run.command) |
         (.jobs.scan.steps[] | select(.run.name? == "Guard checklist artifacts before upload")).run |= del(.command)' /tmp/stig-test-config.yml) \
     <(jq -S '.orbs."matrix-stig-scanner-orb" |
-        del(.commands.checklist.steps[0].run.command,
-            .commands.checklist.steps[1].run.command,
-            .commands.checklist.steps[2].run.command,
-            .commands.checklist.steps[3].run.command) |
+        del(.commands.generate_checklist.steps[0].run.command,
+            .commands.generate_checklist.steps[1].run.command,
+            .commands.generate_checklist.steps[2].run.command,
+            .commands.generate_checklist.steps[3].run.command) |
         (.jobs.scan.steps[] | select(.run.name? == "Guard checklist artifacts before upload")).run |= del(.command)' /tmp/stig-test-config.yml)
 jq -e '[.orbs."matrix-stig-scanner-orb".jobs.scan.steps[] |
        select(.run.name? == "Guard checklist artifacts before upload") | .run.command] |

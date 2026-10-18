@@ -56,9 +56,13 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 - Offline STIG Viewer `.ckl` and `.cklb` artifacts for verified pinned RHEL
   8/9/10 and Ubuntu 22.04 STIG profiles, with V-ID aggregation, derived N/A
   reasons, architecture-aware applicability, and per-row provenance.
+- `generate_checklist` command, which the scan job runs between `scan` and
+  `summarize`. Custom jobs can run it there too, passing the same `checklist`
+  mode and `output_dir` to it and to `summarize`.
 - `checklist` (`auto` / `require` / `none`), `checklist_formats`, and
-  `checklist_asset_name`. The scan job defaults to `auto`; standalone summarize
-  defaults to `none`. SSG-only checklists omit CCIs and manual-only rows.
+  `checklist_asset_name`. The scan job and `generate_checklist` default to
+  `auto`; standalone summarize defaults to `none`. SSG-only checklists omit
+  CCIs and manual-only rows.
 - Checklist metadata, summary/provenance reporting, result/file hash validation,
   pre-scan cleanup, and an always-run artifact guard.
   Ordinary evidence uploads even on failure; checklist uploads require a
@@ -144,6 +148,12 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 
 ### Changed
 
+- Error and log messages name parameters as written in YAML (`rootfs_path`,
+  `target_base`, `output_dir`, `image_tarball`, `datastream_path`,
+  `fail_on_finding`, ...) instead of hyphenated forms such as `rootfs-path`.
+  Scripts that match these messages, such as `auto-detected target-base:`, need
+  updating. `summary.txt` field labels (`target-base:`, `fail-on-finding:`) are
+  unchanged.
 - Every helper and scanner container now runs with `--network none`; a scan's
   only network traffic is the Docker daemon's image pulls. A test enforces it.
 - A `rootfs_path` that contains a socket, FIFO or device node is refused (exit 2;

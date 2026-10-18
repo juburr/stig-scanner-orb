@@ -17,7 +17,7 @@ subst() {
 OUTPUT_DIR="$(subst "${PARAM_OUTPUT_DIR:-build/stig}")"
 ROOTFS_PATH="$(subst "${PARAM_ROOTFS_PATH:-}")"
 
-# Answers are read later by checklist; protect them before any output cleanup.
+# Answers are read later by generate_checklist; protect them before any output cleanup.
 CHECKLIST_ANSWERS="$(subst "${PARAM_CHECKLIST_ANSWERS:-}")"
 if [ -n "${CHECKLIST_ANSWERS}" ]; then
     python3 - "${CHECKLIST_ANSWERS}" "${OUTPUT_DIR}" <<'PY_ANSWER_INPUT'
