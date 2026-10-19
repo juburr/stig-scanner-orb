@@ -3,7 +3,7 @@
 All notable changes to the STIG Scanner Orb are documented here. Releases use
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased — 2.0.0
+## 2.0.0
 
 This is a major release: scans that passed under 1.x can fail under 2.0.0.
 
@@ -219,6 +219,14 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 - Documentation no longer claims the RHEL host STIG yields 0 evaluated rules
   against a container. With current content it evaluates 49–70 rules against
   UBI 8/9 images, with real findings.
+- The usage examples match the recipes CI tests. The extracted-filesystem
+  example, renamed `scan-extracted-rootfs`, stages a full UBI 9 rootfs: the
+  unpacked payload of a single RPM has no RPM database, so it evaluated no
+  rules. It, the README recipe and CI extract the tree as root, so it keeps
+  the image's file owners; extracted as the job's user, every file had that
+  user's owner and ownership rules failed. The tarball example defines the job
+  that builds the archive and attaches the workspace outside the project
+  directory, where it no longer breaks the job's checkout.
 
 ## 1.0.0
 
