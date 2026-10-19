@@ -63,7 +63,18 @@ The dispatch table lives once in `src/scripts/scan.sh` (the big `case "${TARGET_
 3. `target_base: auto` reads `/etc/os-release` from the extracted rootfs (parsed field-by-field with `awk` as untrusted data — never `source`d, because the file comes from the target image and could carry arbitrary shell), falling back to filesystem-shape hints (`apk` DB → wolfi, `rpm` DB → rhel9, dpkg `status` or distroless `status.d/` → debian12). `tests/detect_target_base_test.sh` covers the table without docker (stub `docker`/`circleci` on PATH). An os-release that's present but names an unsupported OS/version is authoritative and errors out; the filesystem-shape fallback only runs when there's no os-release at all (e.g. some distroless images).
 4. dpkg family only: if the rootfs has `/var/lib/dpkg/status.d/` but no `status` (Google distroless), image mode synthesizes `status` from the stanzas *inside the donor container* (it sees only the scratch rootfs, so a hostile symlink can't redirect the write off the host's scratch dir; a `readlink -f` check refuses a symlinked `var/lib/dpkg`, and temporaries live in the container's own `/tmp`, never at a fixed path in the image where a planted symlink could redirect the write onto another rootfs file). A `status.d/` with no package stanzas or a symlinked `var/lib/dpkg` records `dpkg_status=missing` plus `dpkg_status_reason` and warns. OpenSCAP's dpkginfo probe reads only `<root>/var/lib/dpkg/status` (`fopen` in `dpkginfo-helper.c`) and treats a final stanza with no trailing blank line as a match for *any* package name, so every synthesized stanza must end in a blank line. The helper run is recorded as `donor_used_for` role `dpkg-status`. rootfs_path trees are never modified — they get `dpkg_status=missing` and a warning. Auto-detection's filesystem-shape hints (`apk`/`rpm`/`dpkg` paths) go through `rootfs_has`, which only trusts a path that resolves inside the rootfs, as `os-release` does.
 5. Run scanner via `docker run -v rootfs:/target:ro -v out:/out` → `oscap-chroot /target xccdf eval ... > /out/...`. Always `-u 0:0` inside; results get `chown`-ed back to host UID/GID at the end.
-6. `summarize.sh` parses `results.xml` with Python's stdlib `xml.etree`, applies the ignore-list (matches against short DISA id, full XCCDF rule id, and any `<ident>` value — case-insensitive), and enforces the `fail_on` severity threshold's exit codes.
+6. `summarize.sh` parses `results.xml` with Python's stdlib `xml.etree`, applies the compliance ignore-list (matches against short DISA id, full XCCDF rule id, and any `<ident>` value — case-insensitive), and enforces independent compliance and scan-quality policies.
+
+`fail_on` (default `never`) gates only non-ignored `fail` results at or above a
+severity. `fail_on_scan_error` (default `true` on the job and summarize command)
+gates every `error`/`unknown` result and a recorded `dpkg_status=missing` or
+`rpm_status=missing`, regardless of ignore lists, severity or checklist mode.
+Inventory availability comes from scan-plan.env; standalone results without a
+plan still enforce error/unknown results. Keep `require_evaluated_rules`
+independent. `provenance.json.gates` records each policy's setting, outcome and
+counts; a quality opt-out keeps the warnings. Policy failures use the existing
+deferred artifact upload flow. `tests/scan_quality_test.py` runs from
+`tests/summarize_gate_test.sh`.
 
 ## YAML ↔ shell convention
 

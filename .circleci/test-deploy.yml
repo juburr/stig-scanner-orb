@@ -142,9 +142,10 @@ jobs:
       Verify the failure gate and ignore-list logic by scanning the
       same Wolfi target, then re-running summarize three times — with
       fail_on=info and no ignores (must exit 1), with fail_on=high
-      (must exit 1 only when a high or unstated-severity result is
+      (must exit 1 only when a high or unstated-severity fail result is
       present), and with fail_on=info and the actual failures listed
-      (must exit 0).
+      (must exit 0). The scan-quality gate stays on throughout: the
+      pinned Wolfi scan has no error or unknown results.
     machine:
       image: ubuntu-2404:current
     resource_class: medium
@@ -171,11 +172,12 @@ jobs:
           name: fail_on=high counts only high and unstated-severity results
           command: |
             set -e
-            # Fail, Error, and Unknown entries read "  - <id> (<severity>, ...)".
-            # A severity other than info, low, or medium counts at every level.
+            # Fail entries read "  - <id> (<severity>, ...)". fail_on counts
+            # only fail results; a severity other than info, low, or medium
+            # counts at every level.
             high=$(awk '
-              /^Fail \(/ || /^Error \(/ || /^Unknown \(/ {section=1; next}
-              /^Notchecked \(/ || /^[A-Za-z]/ {section=0}
+              /^Fail \(/ {section=1; next}
+              /^[A-Za-z]/ {section=0}
               section && $1 == "-" && $2 != "[IGNORED]" {
                 sev = $3; gsub(/[(),]/, "", sev)
                 if (sev != "info" && sev != "low" && sev != "medium") n++
@@ -191,19 +193,19 @@ jobs:
             bash src/scripts/summarize.sh > high.log 2>&1
             rc=$?
             set -e
-            echo "results at high or unstated severity: ${high}; summarize exit ${rc}"
+            echo "fail results at high or unstated severity: ${high}; summarize exit ${rc}"
             grep -q "^  fail-on: high$" build/stig/summary.txt
             test "$rc" -eq "$expected" || { cat high.log; echo "expected exit ${expected}, got ${rc}"; exit 1; }
       - run:
           name: Gate ON, ignore all real failures → expect exit 0
           command: |
             set -e
-            # Short ids from the Fail, Error, and Unknown sections. SV-only
-            # matching would miss an error result whose id is not a DISA id,
-            # and fail_on counts those.
+            # Short ids from the Fail section. Only compliance failures can be
+            # ignored; the scan-quality gate stays on and would reject any
+            # error or unknown result.
             fails=$(awk '
-              /^Fail \(/ || /^Error \(/ || /^Unknown \(/ {section=1; next}
-              /^Notchecked \(/ || /^[A-Za-z]/ {section=0}
+              /^Fail \(/ {section=1; next}
+              /^[A-Za-z]/ {section=0}
               section && $1 == "-" {
                 if ($2 == "[IGNORED]") print $3; else print $2
               }
@@ -245,8 +247,11 @@ jobs:
           name: Explicit opt-out → expect exit 0, warning still recorded
           command: |
             set -e
+            # A Wolfi image scanned as rhel9 has no RPM database, a
+            # scan-quality issue, so this opt-out covers both gates.
             PARAM_OUTPUT_DIR="build/stig" \
             PARAM_REQUIRE_EVALUATED_RULES="false" \
+            PARAM_FAIL_ON_SCAN_ERROR="false" \
             bash src/scripts/summarize.sh
             grep -q "require_evaluated_rules=false" build/stig/summary.txt
             grep -q "not evidence of compliance" build/stig/summary.txt
@@ -711,8 +716,12 @@ workflows:
           name: smoke-distroless-rootfs
           # rootfs_path trees belong to the caller and are never modified,
           # so the distroless layout must surface as a loud warning instead.
+          # The missing dpkg status is a scan-quality issue: keep this
+          # incomplete evidence on purpose, then check that the default
+          # policy rejects the same real scan.
           rootfs_path: /tmp/distroless-rootfs
           target_base: debian12
+          fail_on_scan_error: false
           checkout: false
           pre-steps:
             - run:
@@ -733,6 +742,24 @@ workflows:
                   grep -q "^WARNING: the target has no usable /var/lib/dpkg/status" build/stig/summary.txt
                   grep -q "the orb does not modify a rootfs_path tree" build/stig/summary.txt
                   grep -q "package absence cannot be verified" build/stig/summary.txt
+                  python3 -c '
+                  import json
+                  g = json.load(open("build/stig/provenance.json"))["gates"]
+                  assert not g["scan_quality"]["enabled"], g
+                  assert g["scan_quality"]["unavailable_inventories"] == ["dpkg"], g
+                  '
+                  set +e
+                  PARAM_OUTPUT_DIR=build/stig PARAM_FAIL_ON=never PARAM_FAIL_ON_SCAN_ERROR=true \
+                    bash src/scripts/summarize.sh
+                  rc=$?
+                  set -e
+                  test "$rc" -eq 1 || { echo "expected a scan-quality failure, got $rc"; exit 1; }
+                  python3 -c '
+                  import json
+                  g = json.load(open("build/stig/provenance.json"))["gates"]
+                  assert g["scan_quality"]["failed"], g
+                  assert not g["compliance"]["failed"], g
+                  '
           filters: *filters
       - stig-scanner-orb/scan:
           name: smoke-fedora

@@ -7,7 +7,7 @@ description: >
 usage:
   version: 2.1
   orbs:
-    stig-scanner-orb: juburr/stig-scanner-orb@2.0.0
+    stig-scanner-orb: juburr/stig-scanner-orb@2.0.1
   jobs:
     build-image:
       machine:

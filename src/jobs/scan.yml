@@ -96,12 +96,22 @@ parameters:
     enum: ["high", "medium", "low", "info", "never"]
     default: never
     description: >
-      Exit 1 if any non-ignored fail, error, or unknown result is on a
-      rule at or above this severity: high, medium, or low (DISA CAT I,
-      II, III), or info for every severity. A rule with no stated
+      Exit 1 if any non-ignored fail result (a compliance finding) is on
+      a rule at or above this severity: high, medium, or low (DISA CAT
+      I, II, III), or info for every severity. A rule with no stated
       severity counts at every level. The default, never, reports
-      findings without failing so they can be triaged first. Does not
-      waive an unevaluated scan.
+      findings without failing so they can be triaged first. Scan-quality
+      issues are gated by fail_on_scan_error, and an unevaluated scan by
+      require_evaluated_rules.
+  fail_on_scan_error:
+    type: boolean
+    default: true
+    description: >
+      Fail on any error or unknown result, or package inventory (dpkg or
+      RPM) the scan recorded as missing, at every severity and whatever
+      ignore_findings lists. Those mean the scan did not produce a
+      compliance answer. Set false only to keep incomplete evidence on
+      purpose; the summary still reports the issues.
   require_evaluated_rules:
     type: boolean
     default: true
@@ -184,6 +194,7 @@ steps:
       checklist: <<parameters.checklist>>
       output_dir: <<parameters.output_dir>>
       fail_on: <<parameters.fail_on>>
+      fail_on_scan_error: <<parameters.fail_on_scan_error>>
       require_evaluated_rules: <<parameters.require_evaluated_rules>>
       ignore_findings: <<parameters.ignore_findings>>
   # Preserve ordinary evidence before the guard can fail. Never

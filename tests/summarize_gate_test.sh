@@ -25,6 +25,7 @@ run_case() {
         cd "${dir}"
         export PARAM_OUTPUT_DIR="${dir}"
         export PARAM_FAIL_ON="${PARAM_FAIL_ON-never}"
+        export PARAM_FAIL_ON_SCAN_ERROR="${PARAM_FAIL_ON_SCAN_ERROR-true}"
         export PARAM_REQUIRE_EVALUATED_RULES="${PARAM_REQUIRE_EVALUATED_RULES-true}"
         export PARAM_IGNORE_FINDINGS="${PARAM_IGNORE_FINDINGS-}"
         # shellcheck disable=SC2086
@@ -139,8 +140,9 @@ EOF
 assert_grep "notchecked only" "manual_review"
 assert_grep "notchecked only" "not evidence of compliance"
 
-# --- error counts toward the finding gate, and is listed ---
-run_case "error gated" 1 PARAM_FAIL_ON=high <<EOF
+# --- error counts toward the scan-quality gate, and is listed, even with
+# the compliance gate off ---
+run_case "error gated" 1 PARAM_FAIL_ON=never <<EOF
 ${xml_header}
   <Rule id="xccdf_org.ssgproject.content_rule_rpm_probe" severity="high">
     <title>RPM probe</title>
@@ -156,10 +158,13 @@ ${xml_header}
 </Benchmark>
 EOF
 assert_grep "error gated" "rpm_probe"
+assert_grep "error gated" "scan-quality-gate: failed"
+assert_grep "error gated" "compliance-gate: disabled"
 assert_not_grep "error gated" "not evidence of compliance"
 
-# Gate off: errors are visible and do not fail a scan that did evaluate rules.
-run_case "error ungated" 0 PARAM_FAIL_ON=never <<EOF
+# Quality opt-out: errors stay visible and do not fail a scan that did
+# evaluate rules, even with the compliance gate on.
+run_case "error ungated" 0 PARAM_FAIL_ON=info PARAM_FAIL_ON_SCAN_ERROR=0 <<EOF
 ${xml_header}
   <TestResult>
     <rule-result idref="xccdf_org.ssgproject.content_rule_file_ok"><result>pass</result></rule-result>
@@ -167,12 +172,11 @@ ${xml_header}
   </TestResult>
 </Benchmark>
 EOF
-assert_grep "error ungated" "fail_on=never, so they do not fail the job"
+assert_grep "error ungated" "fail_on_scan_error=false — these scan-quality issues do not fail the job"
 assert_grep "error ungated" "rpm_probe"
 
-# --- unknown counts toward the finding gate, and a rule with no stated
-# severity counts even at the highest threshold ---
-run_case "unknown gated" 1 PARAM_FAIL_ON=high <<EOF
+# --- unknown counts toward the scan-quality gate ---
+run_case "unknown gated" 1 PARAM_FAIL_ON=never <<EOF
 ${xml_header}
   <TestResult>
     <rule-result idref="xccdf_org.ssgproject.content_rule_file_ok"><result>pass</result></rule-result>
@@ -182,8 +186,8 @@ ${xml_header}
 EOF
 assert_grep "unknown gated" "mystery"
 
-# --- all-error scan is hollow, so it fails even with the finding gate off ---
-run_case "errors only" 1 PARAM_FAIL_ON=never <<EOF
+# --- all-error scan is hollow, so it fails even with both other gates off ---
+run_case "errors only" 1 PARAM_FAIL_ON=never PARAM_FAIL_ON_SCAN_ERROR=false <<EOF
 ${xml_header}
   <TestResult>
     <rule-result idref="xccdf_org.ssgproject.content_rule_rpm_probe"><result>error</result></rule-result>
@@ -259,7 +263,7 @@ ${xml_header}
 EOF
 assert_grep "fail gated" "telnet"
 assert_grep "fail gated" "^  fail-on: info$"
-assert_log "fail gated" stderr "ERROR: fail_on=info and 1 actionable result(s) (fail, error, or unknown) at info severity or above"
+assert_log "fail gated" stderr "ERROR: fail_on=info and 1 non-ignored fail result(s) at info severity or above"
 
 # --- fail_on is a severity threshold: one fail on each of a low, a
 # medium, and a high rule ---
@@ -277,7 +281,7 @@ for level_count in info:3 low:3 medium:2 high:1; do
     level="${level_count%%:*}"
     count="${level_count#*:}"
     run_case "threshold ${level}" 1 PARAM_FAIL_ON="${level}" <<< "${threshold_xml}"
-    assert_log "threshold ${level}" stderr "ERROR: fail_on=${level} and ${count} actionable result(s)"
+    assert_log "threshold ${level}" stderr "ERROR: fail_on=${level} and ${count} non-ignored fail result(s)"
 done
 run_case "threshold never" 0 PARAM_FAIL_ON=never <<< "${threshold_xml}"
 assert_grep "threshold never" "^  fail-on: never$"
@@ -291,8 +295,9 @@ assert_grep "threshold high ignored" "\\[IGNORED\\] cat1"
 assert_grep "threshold high ignored" "  - cat2 (medium)"
 assert_grep "threshold high ignored" "  - cat3 (low)"
 
-# An error below the threshold is reported but does not count.
-run_case "error below threshold" 0 PARAM_FAIL_ON=high <<EOF
+# An error below the fail_on threshold still fails the scan-quality gate:
+# fail_on counts only fail results.
+run_case "error below threshold" 1 PARAM_FAIL_ON=high <<EOF
 ${xml_header}
   <Rule id="xccdf_org.ssgproject.content_rule_rpm_probe" severity="low"><title>RPM probe</title></Rule>
   <TestResult>
@@ -301,8 +306,21 @@ ${xml_header}
   </TestResult>
 </Benchmark>
 EOF
-assert_grep "error below threshold" "0 of them count toward fail_on=high"
+assert_grep "error below threshold" "scan-quality-gate: failed"
+assert_grep "error below threshold" "compliance-gate: passed"
 assert_grep "error below threshold" "rpm_probe"
+
+# The ignore-list waives fail results only; an ignored error still fails.
+run_case "ignored error" 1 PARAM_FAIL_ON=info PARAM_IGNORE_FINDINGS="rpm_probe" <<EOF
+${xml_header}
+  <TestResult>
+    <rule-result idref="xccdf_org.ssgproject.content_rule_file_ok"><result>pass</result></rule-result>
+    <rule-result idref="xccdf_org.ssgproject.content_rule_rpm_probe"><result>error</result></rule-result>
+  </TestResult>
+</Benchmark>
+EOF
+assert_grep "ignored error" "ignore_findings does not waive scan-quality issues"
+assert_not_grep "ignored error" "\\[IGNORED\\] rpm_probe"
 
 # --- bad fail_on value; the old boolean form is rejected too ---
 for value in true yes HIGH; do
@@ -366,3 +384,4 @@ if [ "${failures}" -ne 0 ]; then
     exit 1
 fi
 echo "summarize gate fixtures passed"
+python3 "${ROOT}/tests/scan_quality_test.py"

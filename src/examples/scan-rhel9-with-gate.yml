@@ -1,7 +1,9 @@
 description: >
   Scan a UBI 9 image against the DISA STIG for RHEL 9 and fail the job
-  on any non-ignored fail, error, or unknown result on a CAT I or CAT II
-  (high or medium severity) rule. The ignore list waives two triaged
+  on any non-ignored fail result on a CAT I or CAT II (high or medium
+  severity) rule, and on any scan-quality issue: an error or unknown
+  result, or missing package inventory, at any severity. The ignore
+  list waives compliance findings only. Here it waives two triaged
   findings that do not apply to a container image: multiple DNS servers
   in /etc/resolv.conf (the container runtime writes that file) and the
   rootfiles tmpfiles.d entry (systemd-tmpfiles does not run in a
@@ -13,7 +15,7 @@ description: >
 usage:
   version: 2.1
   orbs:
-    stig-scanner-orb: juburr/stig-scanner-orb@2.0.0
+    stig-scanner-orb: juburr/stig-scanner-orb@2.0.1
   workflows:
     scan:
       jobs:
@@ -21,4 +23,5 @@ usage:
             image: registry.access.redhat.com/ubi9/ubi-minimal:latest
             target_base: rhel9
             fail_on: medium
+            fail_on_scan_error: true
             ignore_findings: "SV-257948r1045004,xccdf_org.ssgproject.content_rule_rootfiles_configured"

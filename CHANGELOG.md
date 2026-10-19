@@ -3,6 +3,28 @@
 All notable changes to the STIG Scanner Orb are documented here. Releases use
 [Semantic Versioning](https://semver.org/).
 
+## 2.0.1
+
+This release changes gate behavior. It ships as a patch because 2.0.0 had only
+just been published; scans that passed under 2.0.0 can fail under 2.0.1.
+
+### Breaking
+
+- **Separate scan-quality and compliance gates.** New `fail_on_scan_error`
+  defaults to `true` on the scan job and summarize command. It fails on any
+  `error` or `unknown` result, at every severity, and on dpkg or RPM inventory
+  that `scan-plan.env` records as missing, even when other checks pass and
+  whatever `fail_on` is set to. `fail_on` now counts only non-ignored `fail`
+  results, and `ignore_findings` waives only `fail` results: it cannot hide a
+  scan-quality problem. To keep incomplete evidence on purpose, set
+  `fail_on_scan_error: false`; the summary still reports the issues.
+  `require_evaluated_rules` and the checklist policy are unchanged and
+  independent, and the scan job still enforces policy failures after it
+  uploads the evidence.
+- **`summary.txt` and `provenance.json`** add `fail-on-scan-error:`,
+  `scan-quality-gate:` and `compliance-gate:` lines, and a `gates` object with
+  each gate's setting, outcome and counts.
+
 ## 2.0.0
 
 This is a major release: scans that passed under 1.x can fail under 2.0.0.

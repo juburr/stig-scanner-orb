@@ -48,7 +48,7 @@ Chainguard's OpenSCAP build has no RPM probes, and the scanner that has them shi
 <tr>
 <td width="33%" valign="top">
 🚦 <b>Gates that don't pass hollow scans</b><br><br>
-A scan in which nothing evaluated fails by default instead of looking clean. Add a severity threshold with <code>fail_on</code> and waive triaged findings with <code>ignore_findings</code>. <a href="#-gates">Gates</a>
+A scan in which nothing evaluated, or that returned errors, fails by default instead of looking clean. Add a severity threshold with <code>fail_on</code> and waive triaged findings with <code>ignore_findings</code>. <a href="#-gates">Gates</a>
 </td>
 <td width="33%" valign="top">
 🔁 <b>Evidence an assessor can trace</b><br><br>
@@ -121,7 +121,7 @@ Add the orb and point the `scan` job at an image. Copy this into `.circleci/conf
 ```yaml
 version: 2.1
 orbs:
-  stig-scanner-orb: juburr/stig-scanner-orb@2.0.0
+  stig-scanner-orb: juburr/stig-scanner-orb@2.0.1
 
 workflows:
   scan:
@@ -134,10 +134,10 @@ workflows:
 That's enough to produce `report.html`, `results.xml`, `summary.txt` and `provenance.json`, plus STIG Viewer checklists for supported profiles, under `stig/` in the job's **Artifacts** tab. Swap in your own image: any tag the runner can pull, or one an earlier job built (see [Recipes](#-recipes)). Leave out `target_base` to have the orb detect the OS from the image's `/etc/os-release`.
 
 > [!NOTE]
-> `fail_on` is `never` by default, so evaluated `fail` results are reported without failing the build and you can triage a baseline before turning that gate on. One gate is on by default: a scan in which **zero rules evaluate** to pass or fail fails the job (`require_evaluated_rules: true`). An all-`notapplicable` result is what you get from a mis-dispatched scan (wrong `target_base`, or a scanner without the probes the datastream needs), and before 2.0.0 that was a green build. See [Gates](#-gates).
+> `fail_on` is `never` by default, so evaluated `fail` results are reported without failing the build and you can triage a baseline before turning that gate on. Two gates are on by default, because neither result is a compliance answer: a scan with any `error` or `unknown` result, or no readable package inventory, fails the job (`fail_on_scan_error: true`), and so does a scan in which **zero rules evaluate** to pass or fail (`require_evaluated_rules: true`). An all-`notapplicable` result is what you get from a mis-dispatched scan (wrong `target_base`, or a scanner without the probes the datastream needs), and before 2.0.0 that was a green build. See [Gates](#-gates).
 
 > [!TIP]
-> Upgrading from 1.x? `fail_on_finding` is now `fail_on`, hollow scans fail, and `debian12` scans use a different default profile. See [From 1.x to 2.0.0](#from-1x-to-200).
+> Upgrading? From 2.0.0, `fail_on` counts only `fail` results, and `error` and `unknown` results fail the job by default through the new `fail_on_scan_error`. From 1.x, `fail_on_finding` is now `fail_on`, hollow scans fail, and `debian12` scans use a different default profile. See [Upgrading](#-upgrading).
 
 ## 🎯 Supported Targets
 
@@ -194,8 +194,8 @@ To keep the 1.x result, set `profile_id: xccdf_org.ssgproject.content_profile_an
 
 Google distroless images (`gcr.io/distroless/*-debian12`) ship `/etc/os-release` (`ID=debian`, `VERSION_ID=12`), so `auto` resolves them to `debian12`. They do not ship `/var/lib/dpkg/status`: each installed package is a stanza in its own file under `/var/lib/dpkg/status.d/`. OpenSCAP's dpkg probe reads only the status file, so without it every package check comes back `error`, and "package X must not be installed" rules are never evaluated.
 
-- **Image mode:** the orb builds `/var/lib/dpkg/status` from the `status.d/` stanzas in its scratch copy of the rootfs (never in the image), adding the `Status: install ok installed` line dpkg would have recorded. `summary.txt` shows `dpkg-status: synthesized … (N packages)`, and `provenance.json` records `target.dpkg_status`. Against `cc-debian12` this turns 27 `error` results into evaluated rules with the default CIS Level 1 Server profile (5 with the legacy `anssi_np_nt28_high`). If no usable status file exists and it can't be built (the package database is absent, the status file is not a readable regular file inside the rootfs, `status.d/` holds no package stanzas, or `/var/lib/dpkg` is a symlink, which the orb won't write through), the scan records `dpkg_status: missing` with the reason and warns, as in `rootfs_path` mode.
-- **`rootfs_path` mode:** the orb never modifies your tree. The orb checks availability as root in a read-only helper container, matching the scanner privileges rather than the runner's permissions. When no readable regular status file resolves inside your tree, it records `dpkg_status: missing` (even if `status.d/` is also absent) and prints a warning in the log and `summary.txt`. To fix it, add the file to your extracted tree before the scan (with the same `Status` line image mode adds):
+- **Image mode:** the orb builds `/var/lib/dpkg/status` from the `status.d/` stanzas in its scratch copy of the rootfs (never in the image), adding the `Status: install ok installed` line dpkg would have recorded. `summary.txt` shows `dpkg-status: synthesized … (N packages)`, and `provenance.json` records `target.dpkg_status`. Against `cc-debian12` this turns 27 `error` results into evaluated rules with the default CIS Level 1 Server profile (5 with the legacy `anssi_np_nt28_high`). If no usable status file exists and it can't be built (the package database is absent, the status file is not a readable regular file inside the rootfs, `status.d/` holds no package stanzas, or `/var/lib/dpkg` is a symlink, which the orb won't write through), the scan records `dpkg_status: missing` with the reason, warns, and fails the job through `fail_on_scan_error`, as in `rootfs_path` mode.
+- **`rootfs_path` mode:** the orb never modifies your tree. The orb checks availability as root in a read-only helper container, matching the scanner privileges rather than the runner's permissions. When no readable regular status file resolves inside your tree, it records `dpkg_status: missing` (even if `status.d/` is also absent), prints a warning in the log and `summary.txt`, and fails the job through `fail_on_scan_error` unless you set it to `false`. To fix it, add the file to your extracted tree before the scan (with the same `Status` line image mode adds):
   ```sh
   d=/path/to/rootfs/var/lib/dpkg
   for f in "$d"/status.d/*; do
@@ -208,16 +208,19 @@ Google distroless images (`gcr.io/distroless/*-debian12`) ship `/etc/os-release`
 
 ## 🚦 Gates
 
-`summarize` applies two independent gates and states both settings in `summary.txt`:
+`summarize` applies three independent gates. `summary.txt` states each setting and outcome, and `provenance.json` records them under `gates` with their counts:
 
 | Gate | Default | Fails the job when |
 | --- | --- | --- |
 | `require_evaluated_rules` | `true` | Zero rules evaluated to `pass`, `fail`, `fixed`, or `informational`. |
-| `fail_on` | `never` | A non-ignored `fail`, `error`, or `unknown` result is on a rule at or above the given severity. |
+| `fail_on_scan_error` | `true` | Any rule is `error` or `unknown`, or the scan recorded missing dpkg or RPM inventory. `ignore_findings` doesn't waive these. |
+| `fail_on` | `never` | A non-ignored `fail` result (a compliance finding) is on a rule at or above the given severity. |
 
 `fail_on` takes a rule severity: `high`, `medium`, or `low` (DISA CAT I, II, and III), or `info` to count every severity. A result on a rule whose severity the content doesn't state counts at every level, since nothing shows it is below the threshold. `never`, the default, reports findings without failing the job. `summary.txt` lists each finding with its severity, and its `fail-on:` line records the setting. In 1.x this gate was the boolean `fail_on_finding`: `true` is now `fail_on: info`, and `false` is `never`.
 
-`error` and `unknown` count as findings because the check did not produce a compliance answer. `notchecked` is listed in the summary but does not trip `fail_on`; a scan that is *only* `notchecked` still fails `require_evaluated_rules`. Ignoring a failure removes it from the `fail_on` count but not from "evaluated": a triaged baseline is still an evaluated scan.
+`fail_on_scan_error` keeps scan quality separate from compliance. An `error` or `unknown` result means the check didn't produce a compliance answer, and missing package inventory means package absence and applicability can't be verified, even when other checks pass. Neither is a finding to triage, so they fail the job whatever `fail_on` is set to: while you triage a baseline with `fail_on: never`, the scan still has to be complete. Set `fail_on_scan_error: false` only to keep incomplete evidence on purpose; `summary.txt` still lists the issues and records the gate as disabled. The opt-out doesn't waive `require_evaluated_rules` or the checklist policy. A standalone `summarize` without `scan-plan.env` still gates `error` and `unknown` results, but can't tell whether package inventory was missing.
+
+`notchecked` is listed in the summary but trips neither gate; a scan that is *only* `notchecked` still fails `require_evaluated_rules`. Ignoring a failure removes it from the `fail_on` count but not from "evaluated": a triaged baseline is still an evaluated scan.
 
 `require_evaluated_rules` exists because an all-`notapplicable` scan looks clean and is not. Each of these produces 0 evaluated rules and, before 2.0.0, a green build:
 
@@ -233,7 +236,7 @@ Entries in `ignore_findings` are matched case-insensitively against:
 - the full XCCDF rule id, or
 - any `<ident>` or `<reference>` value on the rule (CCE, CVE, CCI, a NIST control such as `AC-2`, and so on). A shared reference waives every rule that cites it.
 
-Ignored `fail`, `error`, and `unknown` results still appear in the summary and the HTML report. They are removed from the `fail_on` count, not the audit trail. Ignoring them does not waive `require_evaluated_rules`: a result that actually failed was evaluated. The ignore-list affects the build gate only, never [checklist](#-stig-viewer-checklists) verdicts.
+Ignored `fail` results still appear in the summary and the HTML report. They are removed from the `fail_on` count, not the audit trail. `error` and `unknown` results can't be ignored: they stay listed and count toward `fail_on_scan_error` even when an entry matches them. Ignoring a failure does not waive `require_evaluated_rules`: a result that actually failed was evaluated. The ignore-list affects the build gate only, never [checklist](#-stig-viewer-checklists) verdicts.
 
 ### Recording an Intentional Notapplicable Baseline
 
@@ -302,7 +305,7 @@ The checklist output explains N/A conditions without deselecting host rules. For
 
 ### Fail on CAT I and CAT II Findings
 
-Fail the job on any non-ignored `fail`, `error` or `unknown` result on a high or medium severity rule. The ignore list here waives two triaged findings that do not apply to a container image: multiple DNS servers in `/etc/resolv.conf` (the container runtime writes that file) and the rootfiles `tmpfiles.d` entry (`systemd-tmpfiles` does not run in a container). Copy the IDs from `summary.txt` after a baseline run; see [Ignore-List Semantics](#ignore-list-semantics) for the forms they can take.
+Fail the job on any non-ignored `fail` result on a high or medium severity rule; `error` and `unknown` results fail it at any severity through the default `fail_on_scan_error`. The ignore list here waives two triaged findings that do not apply to a container image: multiple DNS servers in `/etc/resolv.conf` (the container runtime writes that file) and the rootfiles `tmpfiles.d` entry (`systemd-tmpfiles` does not run in a container). Copy the IDs from `summary.txt` after a baseline run; see [Ignore-List Semantics](#ignore-list-semantics) for the forms they can take.
 
 ```yaml
 workflows:
@@ -323,7 +326,7 @@ Save the image with `docker save` in the build job, pass the archive through the
 version: 2.1
 
 orbs:
-  stig-scanner-orb: juburr/stig-scanner-orb@2.0.0
+  stig-scanner-orb: juburr/stig-scanner-orb@2.0.1
 
 jobs:
   build-image:
@@ -387,7 +390,7 @@ Under `<output_dir>/`, uploaded under `stig/` in the job's **Artifacts** tab:
 
 - `report.html` — the XCCDF HTML report. CircleCI inlines this in the Artifacts tab so an assessor can open it from the build page.
 - `results.xml` — the XCCDF results document, machine-readable.
-- `summary.txt` — a provenance block, pass / fail / error / unknown / notapplicable counts, the rule list for fail, error, unknown, and notchecked, and a hollow-scan warning when nothing evaluated. The "ignored" tier appears separately for auditing.
+- `summary.txt` — a provenance block, each gate's setting and outcome, pass / fail / error / unknown / notapplicable counts, the rule list for fail, error, unknown, and notchecked, and a hollow-scan warning when nothing evaluated. The "ignored" tier appears separately for auditing.
 - `provenance.json` — the same provenance, machine-readable (see [What Each Scan Records](#what-each-scan-records)).
 - `checklist.ckl`, `checklist.cklb` — STIG Viewer checklists for a supported STIG scan.
 - `checklist-meta.json` — generation outcome/reason, source and artifact hashes, STIG release, asset identity, status counts, and N/A reasons.
@@ -596,6 +599,7 @@ Docker resolves the digest and ignores the tag, which is kept so a reader can se
 | `datastream.name`, `.source`, `.sha256` | The datastream file, where it came from (`bundled` in the scanner, `donated` from the donor, or `datastream_path`), and the sha256 of the exact file `oscap` evaluated, hashed inside the scanner container (from the per-scan snapshot for `donated` and `datastream_path`). |
 | `datastream.benchmark_id`, `.benchmark_version`, `.ssg_version` | The XCCDF benchmark and its version; `ssg_version` is the ComplianceAsCode/SSG release when the benchmark is SSG content, otherwise `null` (the Wolfi GPOS datastream is not). |
 | `scan.start_time`, `scan.end_time` | From the XCCDF `TestResult`. |
+| `gates.scan_quality`, `.compliance`, `.evaluated_rules`, `.checklist` | Each gate's setting, whether it failed, and its counts: `error` and `unknown` results and unavailable package inventories for scan quality, non-ignored and gating `fail` results for compliance, evaluated rules, and the checklist mode. `provenance.json` only. |
 
 Cite `repo_digests` as the image digest, together with `platform`: the pinned Chainguard digest is a multi-platform index, which names the amd64 and arm64 builds at once, and the platform says which of its manifests ran (`summary.txt` prints it in brackets after each digest). `image_id` is store-dependent: on Docker's classic image store it is the config digest, on the containerd store it is the manifest or index digest. Every helper and scanner container runs from the resolved image id, so the recorded image is the one that ran even if a tag moved mid-scan.
 
@@ -627,9 +631,10 @@ End-to-end STIG scan of a container image or an extracted filesystem. The job lo
 | `donor_image` | *(empty)* | Root-privileged helper (extraction, distroless dpkg status, the `rootfs_path` socket check) and the image datastreams are copied out of for RPM targets. Empty uses the pinned Chainguard openscap image. Override for air-gap; an override needs a shell and a POSIX userland (`tar`, `find`, `awk`, `cp`, …; busybox is enough) plus the SCAP content under `/usr/share/xml/scap/ssg/content`. |
 | `datastream_name` | *(empty)* | Override the bundled datastream filename. |
 | `datastream_path` | *(empty)* | Host-local datastream file. Skips the donor flow. |
-| `fail_on` | `never` | `high`, `medium`, `low`, `info`, or `never`. Exit 1 on any non-ignored `fail`, `error`, or `unknown` result on a rule at or above that severity (see [Gates](#-gates)). |
+| `fail_on` | `never` | `high`, `medium`, `low`, `info`, or `never`. Exit 1 on any non-ignored `fail` result on a rule at or above that severity (see [Gates](#-gates)). |
+| `fail_on_scan_error` | `true` | Boolean. Fail the job on any `error` or `unknown` result, or missing dpkg or RPM inventory, whatever `ignore_findings` lists. Set `false` only to keep incomplete evidence on purpose (see [Gates](#-gates)). |
 | `require_evaluated_rules` | `true` | Boolean. Fail the job when zero rules evaluate to pass, fail, fixed, or informational. Set `false` only on a job that intentionally records an all-notapplicable baseline (see [Gates](#-gates)). |
-| `ignore_findings` | *(empty)* | Comma-separated rule IDs to subtract from the fail/error/unknown gate count. See [Ignore-List Semantics](#ignore-list-semantics). |
+| `ignore_findings` | *(empty)* | Comma-separated rule IDs whose `fail` results to subtract from the `fail_on` count. See [Ignore-List Semantics](#ignore-list-semantics). |
 | `checklist` | `auto` | `auto`, `require` or `none`. `auto` allows documented skips and fails generation errors; `require` also fails skips; `none` disables generation and enforcement. |
 | `checklist_formats` | `ckl,cklb` | One or both formats; trimmed, case-insensitive, comma-separated. Empty or unknown formats are errors. |
 | `checklist_asset_name` | *(empty)* | Stable unique asset name; defaults to the image reference. Required for `rootfs_path` checklists. XML-safe, trimmed, capped at 255 characters. |
@@ -681,14 +686,15 @@ Generates offline STIG Viewer `.ckl` and `.cklb` checklists from `results.xml`. 
 
 ### `stig-scanner-orb/summarize`
 
-Parses `results.xml`, writes a human-readable `summary.txt` and `provenance.json`, applies the optional ignore-list, and enforces the [gates](#-gates). `fail_on` covers non-ignored `fail`, `error` and `unknown` results on rules at or above a severity, and `require_evaluated_rules` fails the job when nothing evaluated, so a mis-dispatched, all-`notapplicable` scan can't pass as a clean one. Run it after `scan` (and `generate_checklist`, if you use it) with the same `output_dir`.
+Parses `results.xml`, writes a human-readable `summary.txt` and `provenance.json`, applies the optional ignore-list, and enforces the [gates](#-gates). `fail_on` covers non-ignored `fail` results on rules at or above a severity, `fail_on_scan_error` covers `error` and `unknown` results and missing package inventory, and `require_evaluated_rules` fails the job when nothing evaluated, so a mis-dispatched, all-`notapplicable` scan can't pass as a clean one. Run it after `scan` (and `generate_checklist`, if you use it) with the same `output_dir`.
 
 | Parameter | Default | Description |
 | --- | --- | --- |
 | `output_dir` | `build/stig` | Same value as passed to `scan`. |
-| `fail_on` | `never` | `high`, `medium`, `low`, `info` or `never`. Exit non-zero when any non-ignored `fail`, `error` or `unknown` result is on a rule at or above this severity. A rule with no stated severity counts at every level. An unevaluated scan still fails; see `require_evaluated_rules`. |
+| `fail_on` | `never` | `high`, `medium`, `low`, `info` or `never`. Exit non-zero when any non-ignored `fail` result is on a rule at or above this severity. A rule with no stated severity counts at every level. Scan-quality issues and an unevaluated scan still fail; see `fail_on_scan_error` and `require_evaluated_rules`. |
+| `fail_on_scan_error` | `true` | Boolean. Exit non-zero on any `error` or `unknown` result, or package inventory that `scan-plan.env` records as missing, whatever `ignore_findings` lists. Set `false` only to keep incomplete evidence on purpose. Without `scan-plan.env`, only `error` and `unknown` results can be detected. |
 | `require_evaluated_rules` | `true` | Boolean. Fail the job when zero rules evaluate to pass, fail, fixed or informational. Set `false` only on a job that intentionally records an all-notapplicable baseline. The summary says so either way. |
-| `ignore_findings` | *(empty)* | Comma-separated rule IDs to subtract from the fail/error/unknown gate count (still listed in `summary.txt` as ignored): a short DISA id (`SV-257779r925318`), a full XCCDF rule id, or any value from the rule's `<ident>` or `<reference>` text. Matching is case-insensitive and whitespace-tolerant. |
+| `ignore_findings` | *(empty)* | Comma-separated rule IDs whose `fail` results to subtract from the `fail_on` count (still listed in `summary.txt` as ignored; `error` and `unknown` results are never ignored): a short DISA id (`SV-257779r925318`), a full XCCDF rule id, or any value from the rule's `<ident>` or `<reference>` text. Matching is case-insensitive and whitespace-tolerant. |
 | `checklist` | `none` | `auto`, `require` or `none`. Checklist gate: `auto` fails conversion errors; `require` also fails skips; `none` preserves standalone `scan` → `summarize` callers. Valid meta is reported in every mode. Pass the same value used by `generate_checklist`. |
 | `defer_gate` | `false` | Boolean. Record the policy exit status instead of exiting 1. The `scan` job sets it so validated artifacts upload before its last step enforces finding and checklist policies; parsing and configuration errors still fail. Leave it `false` in custom jobs, where nothing else enforces the recorded status. |
 
@@ -715,6 +721,16 @@ Linux machine executor, required because the scan host-extracts the target rootf
 
 ## 📦 Upgrading
 
+### From 2.0.0 to 2.0.1
+
+2.0.1 separates scan quality from compliance. It changes gate behavior, so check pipelines that set `fail_on` or `ignore_findings`, or that scan images whose results include `error` or `unknown`.
+
+Behavior changes:
+- **`fail_on_scan_error` is new and defaults to `true`.** Any `error` or `unknown` result, or dpkg or RPM inventory the scan recorded as missing, fails the job whatever `fail_on` is set to. To keep such a scan passing on purpose, set `fail_on_scan_error: false`; the summary still reports the issues.
+- **`fail_on` counts only `fail` results.** In 2.0.0 it also counted `error` and `unknown`, which now belong to `fail_on_scan_error`.
+- **`ignore_findings` waives only `fail` results.** An entry that matches an `error` or `unknown` result no longer removes it from any gate.
+- **`summary.txt` and `provenance.json`** add `fail-on-scan-error:`, `scan-quality-gate:` and `compliance-gate:` lines, and a `gates` object with each gate's setting, outcome and counts.
+
 ### From 1.x to 2.0.0
 
 This is a major release: scans that passed under 1.x can fail under 2.0.0. Release notes, including the breaking changes in 2.0.0, are in [CHANGELOG.md](CHANGELOG.md).
@@ -726,7 +742,7 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0. Relea
 
 Behavior changes:
 - **`require_evaluated_rules` is new and defaults to `true`.** `summarize` fails the job when zero rules evaluate to `pass`, `fail`, `fixed`, or `informational`, which 1.x reported as a green build. See [Recording an Intentional Notapplicable Baseline](#recording-an-intentional-notapplicable-baseline) for the opt-out.
-- **The finding gate also counts `error` and `unknown`**, alongside `fail`. `ignore_findings` entries apply to them too.
+- **The finding gate also counts `error` and `unknown`**, alongside `fail`. `ignore_findings` entries apply to them too. (2.0.1 moves them to `fail_on_scan_error`.)
 - **The `debian12` default profile is CIS Level 1 Server** instead of `anssi_np_nt28_high`, so expect more `fail` results on Debian targets. To keep the 1.x result, set `profile_id: xccdf_org.ssgproject.content_profile_anssi_np_nt28_high`. See [Debian 12 Profiles](#debian-12-profiles).
 - **Scanner and donor defaults are pinned by digest**, so an orb version always runs the same scanner and content. The `donor_image` default is now empty, meaning the pin. See [Pinned Images](#pinned-images).
 - **`summary.txt` layout.** It states both gate settings and the evaluated rule count, records `fail-on: <level>` instead of `fail-on-finding: <true|false>`, and lists rules under separate `Fail`, `Error`, `Unknown`, and `Notchecked` headings. Scripts that parsed the old `Failures (...)` heading need updating.
