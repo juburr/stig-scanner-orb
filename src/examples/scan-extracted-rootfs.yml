@@ -1,0 +1,30 @@
+description: >
+  Scan a filesystem tree that's already on disk, such as a mounted VM disk,
+  rather than a container image. The job skips the docker export step and
+  runs oscap-chroot against the supplied path. The tree must include the
+  operating system's package database: SSG's RHEL content decides whether a
+  rule applies from the RPM database, so a tree without one (the unpacked
+  payload of a single RPM, for example) evaluates no rules and fails
+  require_evaluated_rules. Set checklist_asset_name so checklists are
+  generated for the tree.
+
+usage:
+  version: 2.1
+  orbs:
+    stig-scanner-orb: juburr/stig-scanner-orb@2.0.0
+  workflows:
+    scan:
+      jobs:
+        - stig-scanner-orb/scan:
+            rootfs_path: /tmp/stig-rootfs
+            target_base: rhel9
+            checklist_asset_name: myapp-rootfs
+            pre-steps:
+              - run:
+                  name: Stage an extracted rootfs
+                  command: |
+                    docker pull registry.access.redhat.com/ubi9/ubi:latest
+                    cid=$(docker create --entrypoint /placeholder registry.access.redhat.com/ubi9/ubi:latest)
+                    mkdir -p /tmp/stig-rootfs
+                    docker export "$cid" | tar -C /tmp/stig-rootfs -xf - --numeric-owner --exclude='dev/*'
+                    docker rm "$cid"
