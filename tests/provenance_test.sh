@@ -33,7 +33,7 @@ check_summary() {
 }
 
 summarize() {
-    PARAM_OUTPUT_DIR="$1" PARAM_FAIL_ON_FINDING=false PARAM_FAIL_ON_SCAN_ERROR=false PARAM_REQUIRE_EVALUATED_RULES=true \
+    PARAM_OUTPUT_DIR="$1" PARAM_FAIL_ON=never PARAM_FAIL_ON_SCAN_ERROR=false PARAM_REQUIRE_EVALUATED_RULES=true \
         bash "${SUMMARIZE}" > "$1/stdout.txt" 2>&1
 }
 

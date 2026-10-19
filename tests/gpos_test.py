@@ -233,7 +233,7 @@ class GposTests(unittest.TestCase):
         self.assertNotIn('Open', meta['status'])
         self.assertIn('Site deployment assessed.', self.rows()[1]['comments'])
         self.assertIn('Chainguard vendor rationale', self.rows()[1]['finding_details'])
-        self.assertEqual(self.summary('require', 'true').returncode, 1)
+        self.assertEqual(self.summary('require', 'info').returncode, 1)
         self.assertEqual(self.generate('--default-answers=container-host')[1]['outcome'], 'failed')
 
     def test_fingerprint_tool_native_ids_and_ambiguity(self):

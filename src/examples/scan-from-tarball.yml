@@ -1,12 +1,29 @@
 description: >
-  Scan an image that a previous job built and persisted to the
-  workspace as a docker-saved tar. The job loads the tar before the
-  scan, then runs the standard flow.
+  Scan an image that an earlier job built and passed through the workspace
+  as a docker save archive. The scan job loads the archive before the scan,
+  so the image's tag never has to be pullable. Attach the workspace outside
+  the project directory, so the job's checkout still finds it empty.
 
 usage:
   version: 2.1
   orbs:
-    stig-scanner-orb: juburr/stig-scanner-orb@2.0.0
+    stig-scanner-orb: juburr/stig-scanner-orb@2.0.1
+  jobs:
+    build-image:
+      machine:
+        image: ubuntu-2404:current
+      steps:
+        - checkout
+        - run:
+            name: Build and save the image
+            command: |
+              mkdir -p /tmp/workspace
+              docker build -t localhost/myapp:latest .
+              docker save localhost/myapp:latest -o /tmp/workspace/myapp.tar
+        - persist_to_workspace:
+            root: /tmp/workspace
+            paths:
+              - myapp.tar
   workflows:
     build-and-scan:
       jobs:
@@ -15,9 +32,7 @@ usage:
             requires:
               - build-image
             image: localhost/myapp:latest
-            image_tarball: workspace/images/myapp.tar
-            target_base: wolfi
-            fail_on_finding: false
+            image_tarball: /tmp/workspace/myapp.tar
             pre-steps:
               - attach_workspace:
-                  at: workspace
+                  at: /tmp/workspace

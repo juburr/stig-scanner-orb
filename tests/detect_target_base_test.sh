@@ -19,12 +19,12 @@ fail() {
 stub="$(mktemp -d)"
 printf '#!/bin/sh\nexit 1\n' > "${stub}/docker"
 printf '#!/bin/sh\nexit 0\n' > "${stub}/sleep"
+# Like the real CLI, read the value from stdin. subst() never passes it as
+# an argument, which the CLI would parse as a flag if it started with "-".
 cat > "${stub}/circleci" <<'EOF'
 #!/bin/sh
-[ "$1 $2" = "env subst" ] || exit 1
-shift 2
-if [ "$1" = "--" ]; then shift; fi
-printf '%s\n' "$1"
+[ "$1 $2" = "env subst" ] && [ "$#" -eq 2 ] || exit 1
+cat
 EOF
 chmod +x "${stub}/docker" "${stub}/circleci" "${stub}/sleep"
 
@@ -35,12 +35,12 @@ expect() {
         PARAM_OUTPUT_DIR="$(mktemp -d)" bash "${SCAN}" 2>&1 || true)"
     if [ "${want}" = "ERROR" ]; then
         case "${out}" in
-            *"could not auto-detect a supported target-base"*) ;;
+            *"could not auto-detect a supported target_base"*) ;;
             *) fail "${name}: expected a detection error, got: ${out}" ;;
         esac
     else
         case "${out}" in
-            *"auto-detected target-base: ${want}"*) ;;
+            *"auto-detected target_base: ${want}"*) ;;
             *) fail "${name}: expected '${want}', got: $(printf '%s' "${out}" | head -3)" ;;
         esac
     fi

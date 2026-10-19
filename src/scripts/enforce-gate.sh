@@ -1,9 +1,9 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Finish the scan job after validated checklists and ordinary evidence upload.
 set -euo pipefail
 subst() {
     if command -v circleci >/dev/null 2>&1; then
-        circleci env subst -- "$1"
+        printf '%s' "$1" | circleci env subst
     else
         printf '%s\n' "$1"
     fi
@@ -31,6 +31,6 @@ GATE_EXIT="$(cat -- "${GATE_FILE}")"
 rm -f -- "${GATE_FILE}"
 case "${GATE_EXIT}" in
     0) echo "==> Summarized scan policies passed." ;;
-    1) echo "==> Summarized scan policies failed; see summary.txt."; exit 1 ;;
+    1) echo "ERROR: Summarized scan policies failed; see summary.txt." >&2; exit 1 ;;
     *) echo "ERROR: invalid deferred policy result." >&2; exit 2 ;;
 esac

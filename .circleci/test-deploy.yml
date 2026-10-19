@@ -1,7 +1,7 @@
 version: 2.1
 
 orbs:
-  orb-tools: circleci/orb-tools@12.3
+  orb-tools: circleci/orb-tools@12.5
   # The orb definition is injected into the pipeline by the setup workflow.
   stig-scanner-orb: {}
 
@@ -80,19 +80,16 @@ jobs:
     resource_class: medium
     steps:
       - checkout
-      - run:
-          name: Pull a tiny Wolfi target into the local docker daemon
-          command: docker pull cgr.dev/chainguard/static:latest
       - stig-scanner-orb/scan:
           image: cgr.dev/chainguard/static:latest
           target_base: wolfi
           output_dir: build/stig
-      - stig-scanner-orb/checklist:
+      - stig-scanner-orb/generate_checklist:
           output_dir: build/stig
       - stig-scanner-orb/summarize:
           checklist: auto
           output_dir: build/stig
-          fail_on_finding: false
+          fail_on: never
       - run:
           name: Assert summary shows real signal
           command: |
@@ -143,40 +140,69 @@ jobs:
   smoke-gate:
     description: >
       Verify the failure gate and ignore-list logic by scanning the
-      same Wolfi target, then re-running summarize twice — once with
-      the gate on and no ignores (must exit 1), once with the gate on
-      and the actual failures listed (must exit 0).
+      same Wolfi target, then re-running summarize three times — with
+      fail_on=info and no ignores (must exit 1), with fail_on=high
+      (must exit 1 only when a high or unstated-severity fail result is
+      present), and with fail_on=info and the actual failures listed
+      (must exit 0). The scan-quality gate stays on throughout: the
+      pinned Wolfi scan has no error or unknown results.
     machine:
       image: ubuntu-2404:current
     resource_class: medium
     steps:
       - checkout
-      - run:
-          name: Produce a results.xml with known failures
-          command: docker pull cgr.dev/chainguard/static:latest
       - stig-scanner-orb/scan:
           image: cgr.dev/chainguard/static:latest
           target_base: wolfi
           output_dir: build/stig
       - stig-scanner-orb/summarize:
           output_dir: build/stig
-          fail_on_finding: false
+          fail_on: never
       - run:
           name: Gate ON, no ignores → expect exit 1
           command: |
             set +e
             PARAM_OUTPUT_DIR="build/stig" \
-            PARAM_FAIL_ON_FINDING="true" \
+            PARAM_FAIL_ON="info" \
             PARAM_IGNORE_FINDINGS="" \
             bash src/scripts/summarize.sh >/dev/null 2>&1
             rc=$?
             test "$rc" -eq 1 || { echo "expected exit 1, got $rc"; exit 1; }
       - run:
+          name: fail_on=high counts only high and unstated-severity results
+          command: |
+            set -e
+            # Fail entries read "  - <id> (<severity>, ...)". fail_on counts
+            # only fail results; a severity other than info, low, or medium
+            # counts at every level.
+            high=$(awk '
+              /^Fail \(/ {section=1; next}
+              /^[A-Za-z]/ {section=0}
+              section && $1 == "-" && $2 != "[IGNORED]" {
+                sev = $3; gsub(/[(),]/, "", sev)
+                if (sev != "info" && sev != "low" && sev != "medium") n++
+              }
+              END {print n + 0}
+            ' build/stig/summary.txt)
+            expected=0
+            if [ "$high" -gt 0 ]; then expected=1; fi
+            set +e
+            PARAM_OUTPUT_DIR="build/stig" \
+            PARAM_FAIL_ON="high" \
+            PARAM_IGNORE_FINDINGS="" \
+            bash src/scripts/summarize.sh > high.log 2>&1
+            rc=$?
+            set -e
+            echo "fail results at high or unstated severity: ${high}; summarize exit ${rc}"
+            grep -q "^  fail-on: high$" build/stig/summary.txt
+            test "$rc" -eq "$expected" || { cat high.log; echo "expected exit ${expected}, got ${rc}"; exit 1; }
+      - run:
           name: Gate ON, ignore all real failures → expect exit 0
           command: |
             set -e
-            # Only compliance failures are waivable. The independent quality
-            # gate stays enabled and would reject any error/unknown results.
+            # Short ids from the Fail section. Only compliance failures can be
+            # ignored; the scan-quality gate stays on and would reject any
+            # error or unknown result.
             fails=$(awk '
               /^Fail \(/ {section=1; next}
               /^[A-Za-z]/ {section=0}
@@ -186,7 +212,7 @@ jobs:
             ' build/stig/summary.txt | sort -u | paste -sd, -)
             test -n "$fails" || { echo "no failures parsed; smoke-wolfi precondition broken"; exit 1; }
             PARAM_OUTPUT_DIR="build/stig" \
-            PARAM_FAIL_ON_FINDING="true" \
+            PARAM_FAIL_ON="info" \
             PARAM_IGNORE_FINDINGS="$fails" \
             bash src/scripts/summarize.sh >/dev/null 2>&1
 
@@ -203,9 +229,6 @@ jobs:
     resource_class: medium
     steps:
       - checkout
-      - run:
-          name: Pull a Wolfi target
-          command: docker pull cgr.dev/chainguard/static:latest
       - stig-scanner-orb/scan:
           image: cgr.dev/chainguard/static:latest
           target_base: rhel9
@@ -224,6 +247,8 @@ jobs:
           name: Explicit opt-out → expect exit 0, warning still recorded
           command: |
             set -e
+            # A Wolfi image scanned as rhel9 has no RPM database, a
+            # scan-quality issue, so this opt-out covers both gates.
             PARAM_OUTPUT_DIR="build/stig" \
             PARAM_REQUIRE_EVALUATED_RULES="false" \
             PARAM_FAIL_ON_SCAN_ERROR="false" \
@@ -281,8 +306,8 @@ jobs:
     description: >
       Docker-free script tests: summarize gate fixtures (hollow scans
       fail closed, error/unknown gating, ignore-list behavior),
-      provenance rendering, target_base auto-detection, and the pinned
-      default image references.
+      provenance rendering, target_base auto-detection, the pinned
+      default image references, and the shell conventions of src/scripts.
     docker:
       - image: cimg/base:stable
     resource_class: small
@@ -690,8 +715,10 @@ workflows:
       - stig-scanner-orb/scan:
           name: smoke-distroless-rootfs
           # rootfs_path trees belong to the caller and are never modified,
-          # so deliberately retain incomplete evidence, then verify that the
-          # default quality policy rejects this same real scan.
+          # so the distroless layout must surface as a loud warning instead.
+          # The missing dpkg status is a scan-quality issue: keep this
+          # incomplete evidence on purpose, then check that the default
+          # policy rejects the same real scan.
           rootfs_path: /tmp/distroless-rootfs
           target_base: debian12
           fail_on_scan_error: false
@@ -703,7 +730,7 @@ workflows:
                   set -e
                   cid=$(docker create --entrypoint /placeholder gcr.io/distroless/cc-debian12:latest)
                   mkdir -p /tmp/distroless-rootfs
-                  docker export "$cid" | tar -C /tmp/distroless-rootfs -xf - --numeric-owner --exclude='dev/*'
+                  docker export "$cid" | sudo tar -C /tmp/distroless-rootfs -xf - --numeric-owner --exclude='dev/*'
                   docker rm "$cid"
           post-steps:
             - run:
@@ -722,11 +749,11 @@ workflows:
                   assert g["scan_quality"]["unavailable_inventories"] == ["dpkg"], g
                   '
                   set +e
-                  PARAM_OUTPUT_DIR=build/stig PARAM_FAIL_ON_FINDING=false PARAM_FAIL_ON_SCAN_ERROR=true \
+                  PARAM_OUTPUT_DIR=build/stig PARAM_FAIL_ON=never PARAM_FAIL_ON_SCAN_ERROR=true \
                     bash src/scripts/summarize.sh
                   rc=$?
                   set -e
-                  test "$rc" -eq 1 || { echo "expected quality failure, got $rc"; exit 1; }
+                  test "$rc" -eq 1 || { echo "expected a scan-quality failure, got $rc"; exit 1; }
                   python3 -c '
                   import json
                   g = json.load(open("build/stig/provenance.json"))["gates"]
@@ -820,7 +847,7 @@ workflows:
                   docker pull registry.access.redhat.com/ubi9/ubi:latest
                   cid=$(docker create --entrypoint /placeholder registry.access.redhat.com/ubi9/ubi:latest)
                   mkdir -p /tmp/stig-rootfs
-                  docker export "$cid" | tar -C /tmp/stig-rootfs -xf - --numeric-owner --exclude='dev/*'
+                  docker export "$cid" | sudo tar -C /tmp/stig-rootfs -xf - --numeric-owner --exclude='dev/*'
                   docker rm "$cid"
           post-steps:
             - run:
@@ -846,6 +873,8 @@ workflows:
           image_tarball: /tmp/stig-image.tar
           target_base: wolfi
           checkout: false
+          # Not the default image, to prove machine_image reaches the executor.
+          machine_image: ubuntu-2204:current
           pre-steps:
             - run:
                 name: Build a non-pullable image tarball
@@ -860,6 +889,7 @@ workflows:
                 name: Assert scan ran against the tarball-loaded image
                 command: |
                   set -e
+                  grep -qx 'VERSION_ID="22.04"' /etc/os-release
                   test -f build/stig/summary.txt
                   na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
                   echo "notapplicable=${na:-0}"
@@ -881,7 +911,7 @@ workflows:
                   docker pull registry.access.redhat.com/ubi9/ubi:latest
                   cid=$(docker create --entrypoint /placeholder registry.access.redhat.com/ubi9/ubi:latest)
                   mkdir -p /tmp/stig-rootfs
-                  docker export "$cid" | tar -C /tmp/stig-rootfs -xf - --numeric-owner --exclude='dev/*'
+                  docker export "$cid" | sudo tar -C /tmp/stig-rootfs -xf - --numeric-owner --exclude='dev/*'
                   docker rm "$cid"
           post-steps:
             - run:

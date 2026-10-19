@@ -44,23 +44,24 @@ class ScanQualityTests(unittest.TestCase):
 
     def test_gate_matrix(self):
         # Mixed scans must fail quality even though some checks evaluated.
-        for statuses, finding, quality in itertools.product(
+        # fail_on=info gates every fail result; never disables the compliance gate.
+        for statuses, fail_on, quality in itertools.product(
             (("pass",), ("fail",), ("pass", "error"), ("pass", "unknown"), ("fail", "error")),
-            ("true", "false"), ("true", "false"),
+            ("info", "never"), ("true", "false"),
         ):
-            with self.subTest(statuses=statuses, finding=finding, quality=quality):
+            with self.subTest(statuses=statuses, fail_on=fail_on, quality=quality):
                 self.prepare(statuses)
-                compliance_failed = finding == "true" and "fail" in statuses
+                compliance_failed = fail_on == "info" and "fail" in statuses
                 quality_failed = quality == "true" and any(s in statuses for s in ("error", "unknown"))
-                result = self.run_script(fail_on_finding=finding, fail_on_scan_error=quality)
+                result = self.run_script(fail_on=fail_on, fail_on_scan_error=quality)
                 self.assertEqual(result.returncode, int(compliance_failed or quality_failed), result.stderr)
                 gates = self.gates()
                 self.assertEqual(gates["compliance"]["failed"], compliance_failed)
                 self.assertEqual(gates["scan_quality"]["failed"], quality_failed)
                 summary = (self.out / "summary.txt").read_text()
-                for name, enabled, failed in (("compliance", finding, compliance_failed),
-                                               ("scan-quality", quality, quality_failed)):
-                    outcome = "disabled" if enabled == "false" else "failed" if failed else "passed"
+                for name, enabled, failed in (("compliance", fail_on != "never", compliance_failed),
+                                               ("scan-quality", quality == "true", quality_failed)):
+                    outcome = "disabled" if not enabled else "failed" if failed else "passed"
                     self.assertIn(f"{name}-gate: {outcome}", summary)
 
     def test_quality_default_and_circleci_boolean_serialization(self):
@@ -73,7 +74,7 @@ class ScanQualityTests(unittest.TestCase):
 
     def test_ignore_list_only_waives_compliance_failures(self):
         self.prepare(("fail", "error", "unknown"))
-        result = self.run_script(fail_on_finding="true", ignore_findings="rule_0,rule_1,rule_2")
+        result = self.run_script(fail_on="info", ignore_findings="rule_0,rule_1,rule_2")
         self.assertEqual(result.returncode, 1, result.stderr)
         gates = self.gates()
         self.assertFalse(gates["compliance"]["failed"])
@@ -84,7 +85,7 @@ class ScanQualityTests(unittest.TestCase):
         self.assertIn("[IGNORED] rule_0", summary)
         self.assertNotIn("[IGNORED] rule_1", summary)
         self.assertNotIn("[IGNORED] rule_2", summary)
-        self.assertEqual(self.run_script(fail_on_finding="true", fail_on_scan_error="false",
+        self.assertEqual(self.run_script(fail_on="info", fail_on_scan_error="false",
                                          ignore_findings="rule_0").returncode, 0)
 
     def test_missing_inventory_fails_even_with_passing_rules(self):

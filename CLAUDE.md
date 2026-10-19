@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A CircleCI orb that runs OpenSCAP DISA STIG scans against container images and extracted filesystems. The user-facing surface is `juburr/stig-scanner-orb/scan` (a job) plus `scan` / `checklist` / `summarize` / `load_image` (commands).
+A CircleCI orb that runs OpenSCAP DISA STIG scans against container images and extracted filesystems. The user-facing surface is `juburr/stig-scanner-orb/scan` (a job) plus `scan` / `generate_checklist` / `summarize` / `load_image` (commands). The `generate_checklist` command takes a `checklist` mode parameter (`auto` / `require` / `none`) and runs `src/scripts/checklist-packed.sh`.
 
 ## Local working notes
 
@@ -65,15 +65,16 @@ The dispatch table lives once in `src/scripts/scan.sh` (the big `case "${TARGET_
 5. Run scanner via `docker run -v rootfs:/target:ro -v out:/out` → `oscap-chroot /target xccdf eval ... > /out/...`. Always `-u 0:0` inside; results get `chown`-ed back to host UID/GID at the end.
 6. `summarize.sh` parses `results.xml` with Python's stdlib `xml.etree`, applies the compliance ignore-list (matches against short DISA id, full XCCDF rule id, and any `<ident>` value — case-insensitive), and enforces independent compliance and scan-quality policies.
 
-`fail_on_finding` (default false) gates only non-ignored `fail` results.
-`fail_on_scan_error` (default true on the job and summarize command) gates all
-`error`/`unknown` results and recorded `dpkg_status=missing` or
-`rpm_status=missing`, regardless of ignore lists or checklist mode. Inventory
-availability comes from scan-plan.env; standalone results without a plan still
-enforce error/unknown results. Keep `require_evaluated_rules` independent.
-`provenance.json.gates` records policy settings/outcomes and counts; quality
-opt-outs retain warnings. Policy failures use the existing deferred artifact
-upload flow. `tests/scan_quality_test.py` runs via summarize_gate_test.sh.
+`fail_on` (default `never`) gates only non-ignored `fail` results at or above a
+severity. `fail_on_scan_error` (default `true` on the job and summarize command)
+gates every `error`/`unknown` result and a recorded `dpkg_status=missing` or
+`rpm_status=missing`, regardless of ignore lists, severity or checklist mode.
+Inventory availability comes from scan-plan.env; standalone results without a
+plan still enforce error/unknown results. Keep `require_evaluated_rules`
+independent. `provenance.json.gates` records each policy's setting, outcome and
+counts; a quality opt-out keeps the warnings. Policy failures use the existing
+deferred artifact upload flow. `tests/scan_quality_test.py` runs from
+`tests/summarize_gate_test.sh`.
 
 ## YAML ↔ shell convention
 
@@ -87,9 +88,22 @@ Every command is a thin YAML wrapper around a script in `src/scripts/`. Pattern:
     command: <<include(scripts/foo.sh)>>
 ```
 
-Inside the script, every `PARAM_*` env var goes through a `subst()` shim that calls `circleci env subst -- "$1"` if present, else passes through. The `--` is required: values starting with a dash must not become CLI flags or help text. This is what lets the scripts run locally as plain bash — no CircleCI runtime dependency for development.
+Inside the script, every `PARAM_*` env var goes through a `subst()` shim that pipes the value into `circleci env subst` on stdin (`printf '%s' "$1" | circleci env subst`) if the CLI is present, else passes it through with `printf '%s\n'` (not `echo`, which would swallow `-n` or `-e`). Never pass the value as an argument: values starting with a dash must not become CLI flags or help text. Stdin avoids the CLI's argument parsing entirely and is the form all juburr orbs use; `tests/env_subst_test.sh` enforces it. This is what lets the scripts run locally as plain bash — no CircleCI runtime dependency for development.
 
 When adding a parameter, edit four places: the command's `parameters:` block, the command's `environment:` block, the corresponding pass-through in `jobs/scan.yml`, and the script's variable read at the top.
+
+Error and log messages name a parameter exactly as the YAML does (`rootfs_path`, `target_base`), never a hyphenated form. Data-contract keys keep their spelling: `scan-plan.env` and `provenance.json` keys, the `summary.txt` field labels that smoke jobs and consumers grep (`target-base:`, `fail-on:`), and checklist.sh's internal argparse flags (`--rootfs-path=`).
+
+## Shell conventions
+
+`src/scripts/` follows the shell conventions shared by the juburr orbs. `tests/shell_conventions_test.sh` checks the mechanical ones in `test-scripts`; it is identical in every orb, so never edit this copy.
+
+- Line 1 is `#!/bin/bash` and the first command is `set -euo pipefail`. The generated stig-data staging scripts are the one exception: `# shell-conventions: no-errexit <reason>` plus `set -uo pipefail`, because a staging error must leave an empty path, not fail the step.
+- Expand an array that can be empty as `${arr[@]+"${arr[@]}"}`, not `"${arr[@]}"`: under `-u`, bash before 4.4 treats an empty array as unset and aborts with "unbound variable". `tests/scan_empty_mounts_test.sh` runs scan.sh with empty datastream and tailoring mount arrays.
+- Errors start with `ERROR: `, warnings with `WARN: `, and both go to stderr, continuation lines included; everything else goes to stdout unprefixed. A non-zero exit prints an `ERROR:` line first unless a tool's own error is already in the log. Data keeps its spelling: `summary.txt`'s `WARNING:` lines are content that smoke jobs grep, not log messages.
+- `$BASH_ENV` exports use `printf 'export %s=%q\n'`. `eval` runs only orb code (`"${NAME_SCRIPT}"`). No `set -x`, no `set +o history`.
+- Secrets never go on a command line. Temporary files come from `mktemp` and are removed by the script's single EXIT trap. curl that sends credentials or fetches trusted content uses `--fail --proto '=https'`.
+- Generated scripts get their header from the generator: edit the template in `tools/pack-checklist.py` or `tools/refresh-stig-data.py` and regenerate.
 
 ## Pitfalls / non-obvious knowledge
 
@@ -104,7 +118,7 @@ When adding a parameter, edit four places: the command's `parameters:` block, th
 
 ## Tests
 
-`.circleci/test-deploy.yml` runs a matrix of integration jobs, each driving the real `stig-scanner-orb/scan` job (so the machine executor and the load → scan → summarize → store_artifacts wiring are exercised, not just the commands): `smoke-wolfi` (real signal — pass and N/A both > 50 against `cgr.dev/chainguard/static`, the summary must not be a hollow scan, and `provenance.json` must record the pinned scanner digest and a hashed datastream), `smoke-gate` (verifies `fail_on_finding` + ignore-list exit codes), `test-scripts` (runs every `tests/*_test.sh`, no docker: summarize gate fixtures, provenance rendering, pinned-image refs incl. README digest drift, `--network none` on every container), `smoke-ubuntu2204` and `smoke-debian12-auto` (dpkg probes; the latter also exercises `target_base: auto`), `smoke-rhel8-auto` and `smoke-rhel9` (the RPM path — compliance-operator scanner + datastream donation; `smoke-rhel8-auto` also exercises `target_base: auto` on the RPM family; both run at the default `require_evaluated_rules` gate and assert evaluated > 0 plus the host-STIG N/A baseline, never a pass count), `smoke-rhel10-auto` (RHEL 10 on `ubi10/ubi` via `auto`: the same RPM-path and gate assertions, plus the profile pinned to the DISA STIG for RHEL 10 and 0 `error`/`unknown`), `smoke-rhel9-cis` (the `profile_id` override — CIS Level 1, which unlike the host STIG profile yields evaluated pass/fail signal against a container), `smoke-fedora` (second RPM datastream/profile; dispatch + complete-output assertion, no count threshold), `smoke-hollow` (real-scanner negative test: a deliberately mis-dispatched scan must fail `require_evaluated_rules` and pass with the explicit opt-out), `smoke-rootfs-socket` (non-root runner, socket hidden in a root-owned 0700 dir of a `rootfs_path`: the root helper check must find it and the scan must exit 2), `smoke-ubi9-minimal` / `smoke-ubi8-minimal-cis` (ubi-minimal bases via `auto`; STIG and CIS L1 respectively; assert 0 `error`), `smoke-distroless-debian12` (dpkg status synthesis must happen and leave 0 `error`) and `smoke-distroless-rootfs` (the same layout via `rootfs_path` must stay unmodified and warn), `smoke-datastream-path` (`datastream_path` mode with a root-owned 0600 file the runner can't read: the snapshot copy must run as root like the scan, and provenance must record that file's sha256), `smoke-rootfs` (`rootfs_path` mode), and `smoke-tarball` (`image_tarball` load mode). Distroless pulls from `gcr.io`. RHEL/UBI targets pull from `registry.access.redhat.com` and fedora from `quay.io` to dodge Docker Hub anonymous pull-rate limits. All run on every push and gate publish; publish only fires on `v*` tags.
+`.circleci/test-deploy.yml` runs a matrix of integration jobs, each driving the real `stig-scanner-orb/scan` job (so the machine executor and the load → scan → summarize → store_artifacts wiring are exercised, not just the commands): `smoke-wolfi` (real signal — pass and N/A both > 50 against `cgr.dev/chainguard/static`, the summary must not be a hollow scan, and `provenance.json` must record the pinned scanner digest and a hashed datastream), `smoke-gate` (verifies `fail_on` threshold + ignore-list exit codes), `test-scripts` (runs every `tests/*_test.sh`, no docker: summarize gate fixtures, provenance rendering, pinned-image refs incl. README digest drift, `--network none` on every container, shell conventions), `smoke-ubuntu2204` and `smoke-debian12-auto` (dpkg probes; the latter also exercises `target_base: auto`), `smoke-rhel8-auto` and `smoke-rhel9` (the RPM path — compliance-operator scanner + datastream donation; `smoke-rhel8-auto` also exercises `target_base: auto` on the RPM family; both run at the default `require_evaluated_rules` gate and assert evaluated > 0 plus the host-STIG N/A baseline, never a pass count), `smoke-rhel10-auto` (RHEL 10 on `ubi10/ubi` via `auto`: the same RPM-path and gate assertions, plus the profile pinned to the DISA STIG for RHEL 10 and 0 `error`/`unknown`), `smoke-rhel9-cis` (the `profile_id` override — CIS Level 1, which unlike the host STIG profile yields evaluated pass/fail signal against a container), `smoke-fedora` (second RPM datastream/profile; dispatch + complete-output assertion, no count threshold), `smoke-hollow` (real-scanner negative test: a deliberately mis-dispatched scan must fail `require_evaluated_rules` and pass with the explicit opt-out), `smoke-rootfs-socket` (non-root runner, socket hidden in a root-owned 0700 dir of a `rootfs_path`: the root helper check must find it and the scan must exit 2), `smoke-ubi9-minimal` / `smoke-ubi8-minimal-cis` (ubi-minimal bases via `auto`; STIG and CIS L1 respectively; assert 0 `error`), `smoke-distroless-debian12` (dpkg status synthesis must happen and leave 0 `error`) and `smoke-distroless-rootfs` (the same layout via `rootfs_path` must stay unmodified and warn), `smoke-datastream-path` (`datastream_path` mode with a root-owned 0600 file the runner can't read: the snapshot copy must run as root like the scan, and provenance must record that file's sha256), `smoke-rootfs` (`rootfs_path` mode), and `smoke-tarball` (`image_tarball` load mode). Distroless pulls from `gcr.io`. RHEL/UBI targets pull from `registry.access.redhat.com` and fedora from `quay.io` to dodge Docker Hub anonymous pull-rate limits. All run on every push and gate publish; publish only fires on `v*` tags.
 
 `smoke-rhel10-auto` is the only CI coverage for `rhel10`, and the compliance-operator scanner predates RHEL 10 (OpenSCAP 1.3.6 and rpm 4.14 on RHEL 8.7). It finds the target's rpmdb (`/usr/lib/sysimage/rpm`) only through RHEL 10's `/var/lib/rpm` compatibility symlink. An unreadable rpmdb doesn't show up as `error`s: SSG's RHEL Benchmark platform is an `rpminfo` test on `redhat-release`, so every rule goes `notapplicable` and the default `require_evaluated_rules` gate fails the job (measured by deleting the symlink from a ubi10 tree). The job also asserts that `ssg-rhel10-ds.xml` still ships `content_profile_stig` as the DISA STIG for RHEL 10; if a pin bump breaks that, the `rhel10` default in `scan.sh` is what's wrong, not the assertion.
 
@@ -117,8 +131,9 @@ When debugging a scan-script change, the local end-to-end smoke against `cgr.dev
 selection/reference fingerprints, V-ID counts, unmapped allowlists and DISA
 release identity. Never infer release identity from a profile title.
 `tools/fingerprint-stig.py` verifies new pins against candidate DISA releases.
-The scan job runs checklist between scan and summarize; summarize is the only
-gatekeeper. Job/checklist defaults are `auto`, standalone summarize is `none`.
+The scan job runs `generate_checklist` between scan and summarize; summarize is
+the only gatekeeper. Job/`generate_checklist` defaults are `auto`, standalone
+summarize is `none`.
 
 Cleanup invalidates meta first, following the physical overlap check in rootfs
 mode. The always-run guard also receives rootfs_path to avoid modifying a tree
@@ -257,11 +272,11 @@ smoke. Every matrix job must checkout before bundle staging.
 ## Checklist answers
 
 `checklist_answers` is a runner-readable UTF-8 JSON file outside output_dir,
-bounded to 1 MiB and snapshotted once by checklist. The strict v1 schema binds
+bounded to 1 MiB and snapshotted once by generate_checklist. The strict v1 schema binds
 benchmark_id/version/releaseinfo; rejects duplicate/unknown keys, malformed text,
 unknown V-IDs and invalid statuses. Text is literal (no templating). A status
 requires comments. `scan` and reserve-output protect it before cleanup, including
-hard links. Standalone callers pass the path to scan and checklist.
+hard links. Standalone callers pass the path to scan and generate_checklist.
 `apply_answers` runs after all automatic model/eligibility checks. Preserve original
 verdict/comments/evidence and hash-bound decisions in both formats. Order: opt-in
 curated default, category wording, explicit row answer. Category wording changes

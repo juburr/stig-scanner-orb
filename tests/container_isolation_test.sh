@@ -23,11 +23,11 @@ if [ "${runs}" -eq 0 ]; then
     exit 1
 fi
 
-# output-dir belongs to the caller (it may be shared, hold sockets, or
+# output_dir belongs to the caller (it may be shared, hold sockets, or
 # contain the scratch rootfs); no container may mount it. The scanner
 # writes to a private staging dir that the host copies out of.
 if grep -nE 'OUTPUT_DIR(_ABS)?\}?"?:/' "${ROOT}"/src/scripts/*.sh; then
-    echo "FAIL: a container mounts output-dir (see above)" >&2
+    echo "FAIL: a container mounts output_dir (see above)" >&2
     failures=$((failures + 1))
 fi
 
@@ -38,12 +38,12 @@ fi
 stub="$(mktemp -d)"
 printf '#!/bin/sh\nexit 1\n' > "${stub}/docker"
 printf '#!/bin/sh\nexit 0\n' > "${stub}/sleep"
+# Like the real CLI, read the value from stdin. subst() never passes it as
+# an argument, which the CLI would parse as a flag if it started with "-".
 cat > "${stub}/circleci" <<'EOF'
 #!/bin/sh
-[ "$1 $2" = "env subst" ] || exit 1
-shift 2
-if [ "$1" = "--" ]; then shift; fi
-printf '%s\n' "$1"
+[ "$1 $2" = "env subst" ] && [ "$#" -eq 2 ] || exit 1
+cat
 EOF
 chmod +x "${stub}/docker" "${stub}/circleci" "${stub}/sleep"
 tree="$(mktemp -d)"
@@ -74,18 +74,18 @@ case "${out}" in
 esac
 # The output dir must not overlap the scanned tree in either direction:
 # the scanner mounts it read-write.
-refused "output = rootfs" "overlaps rootfs-path" "${tree}" "${tree}"
-refused "output inside rootfs" "overlaps rootfs-path" "${tree}" "${tree}/run"
-refused "rootfs inside output" "overlaps rootfs-path" "${tree}" "$(dirname "${tree}")"
-# Refused before output-dir is created: nothing may be written into the tree.
-refused "new output dir inside rootfs" "overlaps rootfs-path" "${tree}" "${tree}/new/reports"
+refused "output = rootfs" "overlaps rootfs_path" "${tree}" "${tree}"
+refused "output inside rootfs" "overlaps rootfs_path" "${tree}" "${tree}/run"
+refused "rootfs inside output" "overlaps rootfs_path" "${tree}" "$(dirname "${tree}")"
+# Refused before output_dir is created: nothing may be written into the tree.
+refused "new output dir inside rootfs" "overlaps rootfs_path" "${tree}" "${tree}/new/reports"
 if [ -e "${tree}/new" ]; then
     echo "FAIL: a refused scan created ${tree}/new inside the scanned tree" >&2
     failures=$((failures + 1))
 fi
 # ".." after a not-yet-existing component still lands in the tree.
 sibling="$(mktemp -d)"
-refused "dot-dot into rootfs" "overlaps rootfs-path" "${tree}" \
+refused "dot-dot into rootfs" "overlaps rootfs_path" "${tree}" \
     "${sibling}/new/../../$(basename "${tree}")/reports"
 if [ -e "${tree}/reports" ]; then
     echo "FAIL: a refused scan created ${tree}/reports inside the scanned tree" >&2
@@ -126,7 +126,7 @@ fi
 # TMPDIR inside the tree: refused before any mktemp writes into it.
 mkdir -p "${tree}/tmp"
 outside="$(mktemp -d)"
-TMPDIR="${tree}/tmp" refused "TMPDIR inside rootfs" "TMPDIR ('${tree}/tmp') is inside rootfs-path" \
+TMPDIR="${tree}/tmp" refused "TMPDIR inside rootfs" "TMPDIR ('${tree}/tmp') is inside rootfs_path" \
     "${tree}" "${outside}"
 if [ -n "$(ls -A "${tree}/tmp")" ]; then
     echo "FAIL: a refused scan created files under ${tree}/tmp" >&2

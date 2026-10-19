@@ -1,11 +1,13 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Parse the OpenSCAP results.xml produced by scan.sh, write a
 # human-readable summary and a machine-readable provenance.json, apply the
 # optional ignore-list, and enforce independent gates:
 #
-#   * fail_on_finding — non-ignored compliance failures.
-#   * fail_on_scan_error — error/unknown results and recorded missing
-#     package inventory, regardless of the compliance ignore-list.
+#   * fail_on — non-ignored fail results (compliance findings) on rules at
+#     or above a severity threshold.
+#   * fail_on_scan_error — error and unknown results, and package inventory
+#     the scan plan records as missing. The ignore-list does not waive these:
+#     they mean the scan did not produce a compliance answer.
 #   * require_evaluated_rules — at least one rule evaluated to pass,
 #     fail, fixed, or informational. An all-notapplicable scan usually
 #     means mis-dispatch (wrong target_base, a scanner missing the probe
@@ -16,9 +18,9 @@ set -euo pipefail
 
 subst() {
     if command -v circleci >/dev/null 2>&1; then
-        circleci env subst -- "$1"
+        printf '%s' "$1" | circleci env subst
     else
-        echo "$1"
+        printf '%s\n' "$1"
     fi
 }
 
@@ -45,16 +47,18 @@ case "${CHECKLIST}" in
     *) echo "ERROR: checklist must be auto, require, or none." >&2; exit 2 ;;
 esac
 IGNORE_FINDINGS="$(subst "${PARAM_IGNORE_FINDINGS:-}")"
-if ! FAIL_ON_FINDING="$(normalize_bool "fail-on-finding" "${PARAM_FAIL_ON_FINDING:-false}")"; then
+FAIL_ON="$(subst "${PARAM_FAIL_ON:-never}")"
+case "${FAIL_ON}" in
+    high|medium|low|info|never) ;;
+    *) echo "ERROR: fail_on must be high, medium, low, info, or never; got '${FAIL_ON}'." >&2; exit 2 ;;
+esac
+if ! FAIL_ON_SCAN_ERROR="$(normalize_bool "fail_on_scan_error" "${PARAM_FAIL_ON_SCAN_ERROR:-true}")"; then
     exit 2
 fi
-if ! FAIL_ON_SCAN_ERROR="$(normalize_bool "fail-on-scan-error" "${PARAM_FAIL_ON_SCAN_ERROR:-true}")"; then
+if ! REQUIRE_EVALUATED_RULES="$(normalize_bool "require_evaluated_rules" "${PARAM_REQUIRE_EVALUATED_RULES:-true}")"; then
     exit 2
 fi
-if ! REQUIRE_EVALUATED_RULES="$(normalize_bool "require-evaluated-rules" "${PARAM_REQUIRE_EVALUATED_RULES:-true}")"; then
-    exit 2
-fi
-if ! DEFER_GATE="$(normalize_bool "defer-gate" "${PARAM_DEFER_GATE:-false}")"; then
+if ! DEFER_GATE="$(normalize_bool "defer_gate" "${PARAM_DEFER_GATE:-false}")"; then
     exit 2
 fi
 
@@ -72,8 +76,14 @@ if [ ! -f "${RESULTS}" ]; then
     exit 2
 fi
 
+# The Python block hands its gate counts to the shell in a private file,
+# never at a fixed name in output_dir.
+GATE_FILE="$(mktemp -t stig-gate.XXXXXX)"
+trap 'rm -f -- "${GATE_FILE}"' EXIT
+
 python3 - "$RESULTS" "$SUMMARY" "${IGNORE_FINDINGS}" "${PLAN}" \
-    "${FAIL_ON_FINDING}" "${REQUIRE_EVALUATED_RULES}" "${PROVENANCE}" "${CHECKLIST}" "${FAIL_ON_SCAN_ERROR}" <<'PY'
+    "${FAIL_ON}" "${REQUIRE_EVALUATED_RULES}" "${PROVENANCE}" "${CHECKLIST}" "${GATE_FILE}" \
+    "${FAIL_ON_SCAN_ERROR}" <<'PY'
 import hashlib
 import json
 import os
@@ -82,9 +92,10 @@ import sys
 import xml.etree.ElementTree as ET
 from collections import Counter
 
-results_path, summary_path, ignore_csv, plan_path, fail_on_finding, require_evaluated, provenance_path = sys.argv[1:8]
+results_path, summary_path, ignore_csv, plan_path, fail_on, require_evaluated, provenance_path = sys.argv[1:8]
 checklist_mode = sys.argv[8]
-fail_on_scan_error = sys.argv[9]
+gate_path = sys.argv[9]
+fail_on_scan_error = sys.argv[10]
 
 def local(tag):
     return tag.rsplit("}", 1)[-1]
@@ -110,6 +121,19 @@ def normalize(token):
 # not the same thing as a scan that never applied.
 EVALUATED_RESULTS = {"pass", "fail", "fixed", "informational"}
 GATED_RESULTS = ("fail", "error", "unknown")
+
+# XCCDF rule severities, lowest first; high, medium and low are DISA CAT I,
+# II and III. Any other severity, including XCCDF's default "unknown",
+# counts at every fail_on level: content that doesn't state a severity
+# can't show that a finding is below the threshold. fail_on counts only
+# fail results; error and unknown belong to fail_on_scan_error.
+SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3}
+
+def counts_toward_fail_on(severity):
+    if fail_on == "never":
+        return False
+    rank = SEVERITY_RANK.get((severity or "").lower())
+    return rank is None or rank >= SEVERITY_RANK[fail_on]
 
 ignores = {normalize(t) for t in ignore_csv.split(",") if t.strip()}
 
@@ -196,7 +220,8 @@ for el in root.iter():
     matchable = {normalize(short_id(rid)), normalize(rid)}
     matchable.update(normalize(i) for i in idents)
     matchable.update(normalize(a) for a in rule_aliases.get(rid, []))
-    # A compliance exception cannot establish a missing scanner verdict.
+    # The ignore-list waives compliance findings. It cannot stand in for a
+    # verdict the scanner never produced, so error and unknown stay counted.
     is_ignored = bool(result == "fail" and (ignores & matchable))
 
     if is_ignored:
@@ -230,6 +255,7 @@ if os.path.isfile(plan_path):
                 plan[k] = v
 
 actionable = [rec for rec in gated["fail"] if not rec["ignored"]]
+gating = [rec for rec in actionable if counts_toward_fail_on(rec["severity"])]
 unavailable_inventories = [name for name in ("dpkg", "rpm") if plan.get(name + "_status") == "missing"]
 quality_issues = len(gated["error"]) + len(gated["unknown"]) + len(unavailable_inventories)
 hollow = rule_results > 0 and evaluated == 0
@@ -413,9 +439,11 @@ provenance["gates"] = {
         "unavailable_inventories": unavailable_inventories,
     },
     "compliance": {
-        "enabled": fail_on_finding == "true",
-        "failed": fail_on_finding == "true" and bool(actionable),
+        "fail_on": fail_on,
+        "enabled": fail_on != "never",
+        "failed": fail_on != "never" and bool(gating),
         "actionable_failures": len(actionable),
+        "gating_failures": len(gating),
     },
     "evaluated_rules": {
         "enabled": require_evaluated == "true",
@@ -496,7 +524,7 @@ if plan:
     lines.append(f"  scan-time:         {start_time or ''} .. {end_time or ''}")
     lines.append("")
 
-lines.append(f"  fail-on-finding: {fail_on_finding}")
+lines.append(f"  fail-on: {fail_on}")
 lines.append(f"  fail-on-scan-error: {fail_on_scan_error}")
 lines.append(f"  require-evaluated-rules: {require_evaluated}")
 for name in ("scan_quality", "compliance"):
@@ -598,7 +626,7 @@ if notchecked_rules:
     lines.append("")
     lines.append(
         f"Notchecked ({len(notchecked_rules)}): no automated result. "
-        "fail_on_finding does not count these. A scan whose rules never "
+        "Neither fail_on nor fail_on_scan_error counts these. A scan whose rules never "
         "reach pass or fail still fails when require_evaluated_rules=true."
     )
     for rec in notchecked_rules:
@@ -616,21 +644,22 @@ with open(provenance_path, "w", encoding="utf-8") as fh:
 
 # The shell enforces the exit code from these counts so the policy lives
 # in one place. Missing file is a hard error, not a pass.
-with open(summary_path + ".gate", "w", encoding="utf-8") as fh:
+with open(gate_path, "w", encoding="utf-8") as fh:
     fh.write(f"actionable={len(actionable)}\n")
+    fh.write(f"gating={len(gating)}\n")
     fh.write(f"quality_issues={quality_issues}\n")
     fh.write(f"evaluated={evaluated}\n")
     fh.write(f"rule_results={rule_results}\n")
     fh.write(f"checklist_failed={int(checklist_failed)}\n")
 PY
 
-GATE_FILE="${SUMMARY}.gate"
-if [ ! -f "${GATE_FILE}" ]; then
+if [ ! -s "${GATE_FILE}" ]; then
     echo "ERROR: summarize did not produce a gate file." >&2
     exit 2
 fi
 
 ACTIONABLE=""
+GATING=""
 QUALITY_ISSUES=""
 EVALUATED=""
 RULE_RESULTS=""
@@ -638,15 +667,15 @@ CHECKLIST_FAILED=""
 while IFS='=' read -r key value; do
     case "${key}" in
         actionable) ACTIONABLE="${value}" ;;
+        gating) GATING="${value}" ;;
         quality_issues) QUALITY_ISSUES="${value}" ;;
         evaluated) EVALUATED="${value}" ;;
         rule_results) RULE_RESULTS="${value}" ;;
         checklist_failed) CHECKLIST_FAILED="${value}" ;;
     esac
 done < "${GATE_FILE}"
-rm -f "${GATE_FILE}"
 
-for pair in "actionable:${ACTIONABLE}" "quality_issues:${QUALITY_ISSUES}" "evaluated:${EVALUATED}" "rule_results:${RULE_RESULTS}" "checklist_failed:${CHECKLIST_FAILED}"; do
+for pair in "actionable:${ACTIONABLE}" "gating:${GATING}" "quality_issues:${QUALITY_ISSUES}" "evaluated:${EVALUATED}" "rule_results:${RULE_RESULTS}" "checklist_failed:${CHECKLIST_FAILED}"; do
     name="${pair%%:*}"
     value="${pair#*:}"
     case "${value}" in
@@ -664,24 +693,24 @@ fi
 
 failed=0
 if [ "${CHECKLIST_FAILED}" -ne 0 ]; then
-    echo "==> checklist=${CHECKLIST} policy failed; see Checklist in summary.txt."
+    echo "ERROR: checklist=${CHECKLIST} policy failed; see Checklist in summary.txt." >&2
     failed=1
 fi
 if [ "${EVALUATED}" -eq 0 ] && [ "${REQUIRE_EVALUATED_RULES}" = "true" ]; then
-    echo "==> require_evaluated_rules=true and 0 rules evaluated to pass or fail — failing the build."
-    echo "    That is not evidence of compliance. It usually means the scan was"
-    echo "    mis-dispatched: check target_base, the scanner image (RPM targets need"
-    echo "    rpm probes), and that the target's package database is readable."
-    echo "    If this profile genuinely has no rule that applies to this image, set"
-    echo "    require_evaluated_rules=false on this job to record the baseline on purpose."
+    echo "ERROR: require_evaluated_rules=true and 0 rules evaluated to pass or fail — failing the build." >&2
+    echo "       That is not evidence of compliance. It usually means the scan was" >&2
+    echo "       mis-dispatched: check target_base, the scanner image (RPM targets need" >&2
+    echo "       rpm probes), and that the target's package database is readable." >&2
+    echo "       If this profile genuinely has no rule that applies to this image, set" >&2
+    echo "       require_evaluated_rules=false on this job to record the baseline on purpose." >&2
     failed=1
 fi
-if [ "${ACTIONABLE}" -gt 0 ] && [ "${FAIL_ON_FINDING}" = "true" ]; then
-    echo "==> fail-on-finding=true and ${ACTIONABLE} non-ignored compliance failure(s) — failing the build."
+if [ "${GATING}" -gt 0 ] && [ "${FAIL_ON}" != "never" ]; then
+    echo "ERROR: fail_on=${FAIL_ON} and ${GATING} non-ignored fail result(s) at ${FAIL_ON} severity or above — failing the build." >&2
     failed=1
 fi
 if [ "${QUALITY_ISSUES}" -gt 0 ] && [ "${FAIL_ON_SCAN_ERROR}" = "true" ]; then
-    echo "==> fail-on-scan-error=true and ${QUALITY_ISSUES} scan-quality issue(s) — failing the build."
+    echo "ERROR: fail_on_scan_error=true and ${QUALITY_ISSUES} scan-quality issue(s) (error or unknown results, or missing package inventory) — failing the build." >&2
     failed=1
 fi
 if [ "${failed}" -ne 0 ]; then
@@ -695,4 +724,4 @@ fi
 if [ "${DEFER_GATE}" = "true" ]; then
     (set -o noclobber; printf '0\n' > "${SUMMARY}.exit-code")
 fi
-echo "==> summarize complete (actionable: ${ACTIONABLE}, quality issues: ${QUALITY_ISSUES}, evaluated: ${EVALUATED}, fail-on-finding ${FAIL_ON_FINDING}, fail-on-scan-error ${FAIL_ON_SCAN_ERROR}, require-evaluated-rules ${REQUIRE_EVALUATED_RULES})"
+echo "==> summarize complete (actionable: ${ACTIONABLE}, quality issues: ${QUALITY_ISSUES}, evaluated: ${EVALUATED}, fail_on=${FAIL_ON}, fail_on_scan_error=${FAIL_ON_SCAN_ERROR}, require_evaluated_rules=${REQUIRE_EVALUATED_RULES})"

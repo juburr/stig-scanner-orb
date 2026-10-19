@@ -6,6 +6,7 @@ description: >
 
 executor:
   name: machine
+  image: <<parameters.machine_image>>
   resource_class: <<parameters.resource_class>>
 
 parameters:
@@ -90,20 +91,27 @@ parameters:
       Root-privileged helper and datastream source. Empty uses the orb's
       digest-pinned Chainguard openscap image. An override needs a shell
       and a POSIX userland (tar, find, awk, cp, ...; busybox is enough).
-  fail_on_finding:
-    type: boolean
-    default: false
+  fail_on:
+    type: enum
+    enum: ["high", "medium", "low", "info", "never"]
+    default: never
     description: >
-      When true, exit 1 if any non-ignored result is fail. Default false
-      so evaluated compliance findings can be triaged first. Scan-quality
-      issues are independently controlled by fail_on_scan_error.
+      Exit 1 if any non-ignored fail result (a compliance finding) is on
+      a rule at or above this severity: high, medium, or low (DISA CAT
+      I, II, III), or info for every severity. A rule with no stated
+      severity counts at every level. The default, never, reports
+      findings without failing so they can be triaged first. Scan-quality
+      issues are gated by fail_on_scan_error, and an unevaluated scan by
+      require_evaluated_rules.
   fail_on_scan_error:
     type: boolean
     default: true
     description: >
-      Fail on error/unknown results or recorded missing dpkg/RPM inventory.
-      Independent of compliance findings and ignore_findings. Set false
-      only to retain explicitly accepted incomplete scan evidence.
+      Fail on any error or unknown result, or package inventory (dpkg or
+      RPM) the scan recorded as missing, at every severity and whatever
+      ignore_findings lists. Those mean the scan did not produce a
+      compliance answer. Set false only to keep incomplete evidence on
+      purpose; the summary still reports the issues.
   require_evaluated_rules:
     type: boolean
     default: true
@@ -118,9 +126,19 @@ parameters:
   output_dir:
     type: string
     default: "build/stig"
+  machine_image:
+    type: string
+    default: "ubuntu-2404:current"
+    description: >
+      CircleCI machine image the job runs on, passed to the orb's machine
+      executor. The scan needs a machine executor with a local Docker
+      daemon, because it extracts the target filesystem through Docker.
   resource_class:
     type: string
     default: "medium"
+    description: >
+      CircleCI resource class the job runs on, passed to the orb's machine
+      executor.
   no_output_timeout:
     type: string
     default: "30m"
@@ -163,7 +181,7 @@ steps:
       output_dir: <<parameters.output_dir>>
       donor_image: <<parameters.donor_image>>
       no_output_timeout: <<parameters.no_output_timeout>>
-  - checklist:
+  - generate_checklist:
       output_dir: <<parameters.output_dir>>
       checklist: <<parameters.checklist>>
       checklist_formats: <<parameters.checklist_formats>>
@@ -175,7 +193,7 @@ steps:
       defer_gate: true
       checklist: <<parameters.checklist>>
       output_dir: <<parameters.output_dir>>
-      fail_on_finding: <<parameters.fail_on_finding>>
+      fail_on: <<parameters.fail_on>>
       fail_on_scan_error: <<parameters.fail_on_scan_error>>
       require_evaluated_rules: <<parameters.require_evaluated_rules>>
       ignore_findings: <<parameters.ignore_findings>>

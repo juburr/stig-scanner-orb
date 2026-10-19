@@ -3,7 +3,29 @@
 All notable changes to the STIG Scanner Orb are documented here. Releases use
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased — 2.0.0
+## 2.0.1
+
+This release changes gate behavior. It ships as a patch because 2.0.0 had only
+just been published; scans that passed under 2.0.0 can fail under 2.0.1.
+
+### Breaking
+
+- **Separate scan-quality and compliance gates.** New `fail_on_scan_error`
+  defaults to `true` on the scan job and summarize command. It fails on any
+  `error` or `unknown` result, at every severity, and on dpkg or RPM inventory
+  that `scan-plan.env` records as missing, even when other checks pass and
+  whatever `fail_on` is set to. `fail_on` now counts only non-ignored `fail`
+  results, and `ignore_findings` waives only `fail` results: it cannot hide a
+  scan-quality problem. To keep incomplete evidence on purpose, set
+  `fail_on_scan_error: false`; the summary still reports the issues.
+  `require_evaluated_rules` and the checklist policy are unchanged and
+  independent, and the scan job still enforces policy failures after it
+  uploads the evidence.
+- **`summary.txt` and `provenance.json`** add `fail-on-scan-error:`,
+  `scan-quality-gate:` and `compliance-gate:` lines, and a `gates` object with
+  each gate's setting, outcome and counts.
+
+## 2.0.0
 
 This is a major release: scans that passed under 1.x can fail under 2.0.0.
 
@@ -56,9 +78,13 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 - Offline STIG Viewer `.ckl` and `.cklb` artifacts for verified pinned RHEL
   8/9/10 and Ubuntu 22.04 STIG profiles, with V-ID aggregation, derived N/A
   reasons, architecture-aware applicability, and per-row provenance.
+- `generate_checklist` command, which the scan job runs between `scan` and
+  `summarize`. Custom jobs can run it there too, passing the same `checklist`
+  mode and `output_dir` to it and to `summarize`.
 - `checklist` (`auto` / `require` / `none`), `checklist_formats`, and
-  `checklist_asset_name`. The scan job defaults to `auto`; standalone summarize
-  defaults to `none`. SSG-only checklists omit CCIs and manual-only rows.
+  `checklist_asset_name`. The scan job and `generate_checklist` default to
+  `auto`; standalone summarize defaults to `none`. SSG-only checklists omit
+  CCIs and manual-only rows.
 - Checklist metadata, summary/provenance reporting, result/file hash validation,
   pre-scan cleanup, and an always-run artifact guard.
   Ordinary evidence uploads even on failure; checklist uploads require a
@@ -67,17 +93,11 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   CircleCI substitution, and rootfs N/A wording supports VM and host assets.
 - Fault-injection tests and CI validation with pinned STIG Manager parsers and
   DISA's CKLB schema.
+- `machine_image` on the `scan` job picks the CircleCI machine image, passed
+  through to the orb's machine executor alongside `resource_class`. The
+  default stays `ubuntu-2404:current`.
 
 ### Breaking
-
-- **Separate scan-quality and compliance gates.** New `fail_on_scan_error`
-  defaults to `true` on the scan job and summarize command, failing on any
-  `error`/`unknown` result or recorded missing dpkg/RPM inventory, even when
-  other checks pass. `fail_on_finding` now covers only non-ignored `fail`
-  results. `ignore_findings` waives compliance failures only; it cannot hide
-  scan-quality problems. To deliberately retain incomplete evidence, explicitly
-  set `fail_on_scan_error: false`; hollow-scan and checklist policies still apply.
-  Summary and provenance report both gate settings, outcomes and quality counts.
 
 - **`require_evaluated_rules` (new, default `true`).** `summarize` fails the
   job when zero rules evaluate to `pass`, `fail`, `fixed`, or `informational`.
@@ -86,6 +106,17 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   probe family the datastream needs). Set `require_evaluated_rules: false` on a
   job that intentionally records such a baseline; `summary.txt` records the
   opt-out.
+- **`fail_on` replaces `fail_on_finding`, and takes a severity.** The gate
+  fails the job on a non-ignored result on a rule at or above `high`, `medium`,
+  or `low` (DISA CAT I, II, III), or on any severity with `info`. A rule whose
+  severity the content doesn't state counts at every level. The default,
+  `never`, keeps the gate off. Replace `fail_on_finding: true` with
+  `fail_on: info` for the same behavior, and drop `fail_on_finding: false`.
+  `summary.txt` records the setting as `fail-on: <level>` instead of
+  `fail-on-finding: <true|false>`.
+- **The finding gate also counts `error` and `unknown`.** Non-ignored `error`
+  and `unknown` results now trip `fail_on` alongside `fail`. `ignore_findings`
+  entries apply to them too.
 - **`debian12` default profile is now CIS Level 1 Server**
   (`xccdf_org.ssgproject.content_profile_cis_level1_server`, CIS Debian 12
   Benchmark v1.1.0) instead of `anssi_np_nt28_high`. There is no DISA STIG for
@@ -97,7 +128,7 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
   CIS L1 is not a DISA-accepted STIG substitute; see the README for what it
   is, and for a known SSG 0.1.82 defect in its banner rules that affects
   `rootfs_path` scans of Debian hosts (container images are unaffected).
-- **`summary.txt` layout.** It now states gate settings/outcomes and the evaluated
+- **`summary.txt` layout.** It now states both gate settings and the evaluated
   rule count, always prints the `pass`/`fail`/`error`/`unknown`/
   `notapplicable`/`notchecked` rows (including zeros), and lists rules under
   separate `Fail`, `Error`, `Unknown`, and `Notchecked` headings. Scripts that
@@ -150,6 +181,18 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 
 ### Changed
 
+- Error and log messages name parameters as written in YAML (`rootfs_path`,
+  `target_base`, `output_dir`, `image_tarball`, `datastream_path`,
+  `fail_on`, ...) instead of hyphenated forms such as `rootfs-path`.
+  Scripts that match these messages, such as `auto-detected target-base:`, need
+  updating. Other than `fail-on:` (see Breaking), `summary.txt` field labels
+  such as `target-base:` are unchanged.
+- Warnings in the step log and on stderr start with `WARN:` instead of
+  `WARNING:`, and a failed image pull attempt that will be retried is now a
+  `WARN:` line. The policy failures that fail the build (`fail_on`,
+  `require_evaluated_rules`, `checklist`, and the scan job's deferred gate) print
+  `ERROR:` lines on stderr instead of `==>` lines on stdout. Scripts that match
+  these messages need updating. `summary.txt` keeps its `WARNING:` lines.
 - Every helper and scanner container now runs with `--network none`; a scan's
   only network traffic is the Docker daemon's image pulls. A test enforces it.
 - A `rootfs_path` that contains a socket, FIFO or device node is refused (exit 2;
@@ -198,6 +241,14 @@ This is a major release: scans that passed under 1.x can fail under 2.0.0.
 - Documentation no longer claims the RHEL host STIG yields 0 evaluated rules
   against a container. With current content it evaluates 49–70 rules against
   UBI 8/9 images, with real findings.
+- The usage examples match the recipes CI tests. The extracted-filesystem
+  example, renamed `scan-extracted-rootfs`, stages a full UBI 9 rootfs: the
+  unpacked payload of a single RPM has no RPM database, so it evaluated no
+  rules. It, the README recipe and CI extract the tree as root, so it keeps
+  the image's file owners; extracted as the job's user, every file had that
+  user's owner and ownership rules failed. The tarball example defines the job
+  that builds the archive and attaches the workspace outside the project
+  directory, where it no longer breaks the job's checkout.
 
 ## 1.0.0
 

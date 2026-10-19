@@ -1,11 +1,11 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Run an OpenSCAP STIG scan against a container image or extracted rootfs.
 #
 # Flow:
-#   1. Validate inputs (exactly one of image / rootfs-path).
+#   1. Validate inputs (exactly one of image / rootfs_path).
 #   2. If image mode: docker create + docker export the target rootfs to
 #      a host temp dir.
-#   3. Resolve target-base → (scanner-image, datastream, profile-id) by
+#   3. Resolve target_base → (scanner_image, datastream, profile_id) by
 #      auto-detection from /etc/os-release if needed.
 #   3b. For dpkg-family targets laid out like Google distroless (per-
 #      package stanzas in /var/lib/dpkg/status.d/, no status file),
@@ -26,9 +26,9 @@ set -euo pipefail
 # --- env-substitution shim: works in CircleCI and locally -----------------
 subst() {
     if command -v circleci >/dev/null 2>&1; then
-        circleci env subst -- "$1"
+        printf '%s' "$1" | circleci env subst
     else
-        echo "$1"
+        printf '%s\n' "$1"
     fi
 }
 
@@ -64,7 +64,7 @@ DONOR_IMAGE="$(subst "${PARAM_DONOR_IMAGE:-}")"
 if [ -n "${DATASTREAM_NAME_OVERRIDE}" ]; then
     case "${DATASTREAM_NAME_OVERRIDE}" in
         */*|*\\*|.|..)
-            echo "ERROR: datastream-name must be a filename, not a path: '${DATASTREAM_NAME_OVERRIDE}'." >&2
+            echo "ERROR: datastream_name must be a filename, not a path: '${DATASTREAM_NAME_OVERRIDE}'." >&2
             exit 2 ;;
     esac
 fi
@@ -80,11 +80,11 @@ esac
 
 # --- 1. validate input shape ---------------------------------------------
 if [ -n "${IMAGE}" ] && [ -n "${ROOTFS_PATH}" ]; then
-    echo "ERROR: specify exactly one of 'image' or 'rootfs-path'." >&2
+    echo "ERROR: specify exactly one of 'image' or 'rootfs_path'." >&2
     exit 2
 fi
 if [ -z "${IMAGE}" ] && [ -z "${ROOTFS_PATH}" ]; then
-    echo "ERROR: must specify either 'image' (an image tag in the local docker daemon) or 'rootfs-path' (a directory on disk)." >&2
+    echo "ERROR: must specify either 'image' (an image tag in the local docker daemon) or 'rootfs_path' (a directory on disk)." >&2
     exit 2
 fi
 
@@ -123,13 +123,13 @@ phys_path() {
 
 # In rootfs_path mode the reports stay out of the scanned tree, and the
 # tree out of the reports dir, so the orb doesn't write into the caller's
-# tree. Checked before output-dir is created, so a refused scan hasn't
+# tree. Checked before output_dir is created, so a refused scan hasn't
 # already made a directory inside the tree. The comparison is by physical
 # path: a bind-mount alias of the tree that the caller set up themselves
-# is not detected (the scanner never sees output-dir either way).
+# is not detected (the scanner never sees output_dir either way).
 if [ -n "${ROOTFS_PATH}" ] && [ -d "${ROOTFS_PATH}" ] \
         && paths_overlap "$(phys_path "${OUTPUT_DIR}")" "$(cd "${ROOTFS_PATH}" && pwd -P)"; then
-    echo "ERROR: output-dir '${OUTPUT_DIR}' overlaps rootfs-path '${ROOTFS_PATH}'." >&2
+    echo "ERROR: output_dir '${OUTPUT_DIR}' overlaps rootfs_path '${ROOTFS_PATH}'." >&2
     echo "       Keep the output dir outside the scanned tree (and vice versa)." >&2
     exit 2
 fi
@@ -156,7 +156,7 @@ reject_source_output_collision() {
 reject_source_output_collision "${TAILORING_FILE}" tailoring_file
 reject_source_output_collision "${DATASTREAM_PATH_OVERRIDE}" datastream_path
 
-# Answers are read later by checklist; protect them before any output cleanup.
+# Answers are read later by generate_checklist; protect them before any output cleanup.
 CHECKLIST_ANSWERS="$(subst "${PARAM_CHECKLIST_ANSWERS:-}")"
 if [ -n "${CHECKLIST_ANSWERS}" ]; then
     python3 - "${CHECKLIST_ANSWERS}" "${OUTPUT_DIR}" <<'PY_ANSWER_INPUT'
@@ -204,7 +204,7 @@ pull_image() {
             return 0
         fi
         if [ "${attempt}" -lt 3 ]; then
-            echo "    pull of ${ref} failed (attempt ${attempt}/3); retrying in $((attempt * 10))s" >&2
+            echo "WARN: pull of ${ref} failed (attempt ${attempt}/3); retrying in $((attempt * 10))s" >&2
             sleep "$((attempt * 10))"
         fi
     done
@@ -317,7 +317,7 @@ cleanup() {
     if [ -n "${DATASTREAM_SNAP_DIR}" ]; then
         rm -rf "${DATASTREAM_SNAP_DIR}" 2>/dev/null || true
         if [ -e "${DATASTREAM_SNAP_DIR}" ]; then
-            echo "WARNING: could not remove the datastream snapshot ${DATASTREAM_SNAP_DIR}; remove it manually." >&2
+            echo "WARN: could not remove the datastream snapshot ${DATASTREAM_SNAP_DIR}; remove it manually." >&2
         fi
     fi
     if [ -n "${TAILORING_SNAP_DIR}" ]; then
@@ -326,7 +326,7 @@ cleanup() {
     if [ -n "${OUT_STAGE_DIR}" ]; then
         rm -rf "${OUT_STAGE_DIR}" 2>/dev/null || true
         if [ -e "${OUT_STAGE_DIR}" ]; then
-            echo "WARNING: could not remove the scanner output staging dir ${OUT_STAGE_DIR}; remove it manually." >&2
+            echo "WARN: could not remove the scanner output staging dir ${OUT_STAGE_DIR}; remove it manually." >&2
         fi
     fi
     if [ "${CLEANUP_ROOTFS}" = "1" ] && [ -n "${ROOTFS_DIR}" ] && [ -d "${ROOTFS_DIR}" ]; then
@@ -345,7 +345,7 @@ cleanup() {
         fi
         rmdir "${ROOTFS_DIR}" 2>/dev/null || true
         if [ -e "${ROOTFS_DIR}" ]; then
-            echo "WARNING: could not remove the scratch rootfs ${ROOTFS_DIR} (it holds root-owned files); remove it with root privileges." >&2
+            echo "WARN: could not remove the scratch rootfs ${ROOTFS_DIR} (it holds root-owned files); remove it with root privileges." >&2
         fi
     fi
 }
@@ -356,7 +356,7 @@ if [ -n "${IMAGE}" ]; then
         echo "==> Image '${IMAGE}' not in local daemon, pulling..."
         if ! pull_image "${IMAGE}"; then
             echo "ERROR: image '${IMAGE}' not in local daemon and pull failed (3 attempts)." >&2
-            echo "       Either pre-load it via image-tarball or ensure the tag is pullable." >&2
+            echo "       Either pre-load it via image_tarball or ensure the tag is pullable." >&2
             exit 2
         fi
     fi
@@ -400,7 +400,7 @@ if [ -n "${IMAGE}" ]; then
     CID=""
 else
     if [ ! -d "${ROOTFS_PATH}" ]; then
-        echo "ERROR: rootfs-path '${ROOTFS_PATH}' is not a directory." >&2
+        echo "ERROR: rootfs_path '${ROOTFS_PATH}' is not a directory." >&2
         exit 2
     fi
     # Physical path: a symlinked rootfs_path (e.g. /tmp/rootfs -> /) is
@@ -411,7 +411,7 @@ else
     # mktemp under TMPDIR; one inside the tree would write into it.
     case "$(phys_path "${TMPDIR:-/tmp}")/" in
         "${ROOTFS_DIR%/}/"*)
-            echo "ERROR: TMPDIR ('${TMPDIR:-/tmp}') is inside rootfs-path '${ROOTFS_PATH}'; set TMPDIR outside the scanned tree." >&2
+            echo "ERROR: TMPDIR ('${TMPDIR:-/tmp}') is inside rootfs_path '${ROOTFS_PATH}'; set TMPDIR outside the scanned tree." >&2
             exit 2 ;;
     esac
     # -v SRC:DST:ro makes mounts nested in SRC read-only only on kernels
@@ -425,11 +425,11 @@ else
     if [ "${nested_rc}" -ne 1 ]; then
         case "${ROOTFS_DIR}" in
             *,*)
-                echo "ERROR: rootfs-path '${ROOTFS_PATH}' may have nested mounts and has a comma in its path, which --mount can't express." >&2
+                echo "ERROR: rootfs_path '${ROOTFS_PATH}' may have nested mounts and has a comma in its path, which --mount can't express." >&2
                 exit 2 ;;
         esac
         if [ "${nested_rc}" -eq 0 ]; then
-            echo "==> rootfs-path has nested mounts; requiring a recursively read-only bind (Docker 25+, kernel 5.12+)"
+            echo "==> rootfs_path has nested mounts; requiring a recursively read-only bind (Docker 25+, kernel 5.12+)"
         else
             echo "==> can't read /proc/self/mountinfo to look for nested mounts; requiring a recursively read-only bind (Docker 25+, kernel 5.12+)"
         fi
@@ -456,29 +456,29 @@ else
         # helper image -- never in the scanner image the check protects --
         # and fail closed if that can't complete either. Plain POSIX find
         # options only, so any helper with a find works.
-        echo "==> rootfs-path is not fully readable by this user; checking it for sockets, FIFOs and devices as root in the helper image"
+        echo "==> rootfs_path is not fully readable by this user; checking it for sockets, FIFOs and devices as root in the helper image"
         resolve_donor rootfs-check
         find_rc=0
         sock="$(docker run --rm --network none -u 0:0 "${ROOTFS_MOUNT[@]}" \
             --entrypoint find "${DONOR_ID}" /target \( -type s -o -type p -o -type c -o -type b \) -print)" || find_rc=$?
         sock="${sock%%$'\n'*}"
         if [ -z "${sock}" ] && [ "${find_rc}" -ne 0 ]; then
-            echo "ERROR: could not check rootfs-path '${ROOTFS_PATH}' for sockets/FIFOs/devices as root" >&2
+            echo "ERROR: could not check rootfs_path '${ROOTFS_PATH}' for sockets/FIFOs/devices as root" >&2
             echo "       (find in the helper image exited ${find_rc}; the helper image needs find)." >&2
             exit 2
         fi
         sock="${sock:+${ROOTFS_DIR%/}${sock#/target}}"
     fi
     if [ -n "${sock}" ]; then
-        echo "ERROR: rootfs-path '${ROOTFS_PATH}' contains a socket, FIFO or device node: ${sock}" >&2
-        echo "       Point rootfs-path at an offline extracted tree, not a live filesystem, and" >&2
+        echo "ERROR: rootfs_path '${ROOTFS_PATH}' contains a socket, FIFO or device node: ${sock}" >&2
+        echo "       Point rootfs_path at an offline extracted tree, not a live filesystem, and" >&2
         echo "       extract it without dev/ (tar --exclude='dev/*'); the scanner could use such a" >&2
         echo "       node through its read-only mount." >&2
         exit 2
     fi
 fi
 
-# --- 3. resolve target-base → (scanner, datastream, profile, family) -----
+# --- 3. resolve target_base → (scanner, datastream, profile, family) -----
 # Parse a single field out of an os-release-format file as DATA — never
 # `source` it. The file is from the target image and could contain
 # arbitrary shell if an attacker controls the build, which would execute
@@ -528,7 +528,7 @@ detect_target_base() {
     rootfs_real="$(cd "${rootfs}" && pwd -P)"
     # Strip a trailing slash so the "${rootfs_real}/"* containment pattern
     # below stays a single separator when rootfs_real is itself "/" (e.g.
-    # rootfs-path: / to scan a mounted disk at the filesystem root) —
+    # rootfs_path: / to scan a mounted disk at the filesystem root) —
     # otherwise it would require a doubled "//" prefix that no real path
     # under /etc or /usr/lib ever has, rejecting every candidate.
     rootfs_real="${rootfs_real%/}"
@@ -579,12 +579,12 @@ detect_target_base() {
     if [ "${has_osr}" = "1" ]; then
         # Surface the offending values via the function's stderr so the
         # caller can quote them in the user-facing error.
-        printf 'unsupported os-release: ID=%q VERSION_ID=%q\n' "${id}" "${version_id}" >&2
+        printf 'ERROR: unsupported os-release: ID=%q VERSION_ID=%q\n' "${id}" "${version_id}" >&2
         return 1
     fi
     # No os-release at all (e.g. distroless): use filesystem-shape hints
     # as the only available signal. A consumer who lands here on a
-    # supported-but-unrecognized image should set target-base explicitly.
+    # supported-but-unrecognized image should set target_base explicitly.
     # Each hint must resolve inside the rootfs, like os-release above.
     if rootfs_has -d "${rootfs_real}" "${rootfs}/lib/apk/db" \
             || rootfs_has -f "${rootfs_real}" "${rootfs}/sbin/apk"; then
@@ -606,16 +606,16 @@ TARGET_BASE_REQUESTED="${TARGET_BASE}"
 TARGET_BASE_SOURCE="parameter"
 if [ "${TARGET_BASE}" = "auto" ]; then
     if ! detected="$(detect_target_base "${ROOTFS_DIR}")"; then
-        echo "ERROR: could not auto-detect a supported target-base from the rootfs." >&2
+        echo "ERROR: could not auto-detect a supported target_base from the rootfs." >&2
         echo "       Either /etc/os-release is missing and no recognized package DB" >&2
         echo "       is present, or os-release names an OS/version this orb does not" >&2
-        echo "       ship a default for. Set 'target-base' explicitly to one of:" >&2
+        echo "       ship a default for. Set 'target_base' explicitly to one of:" >&2
         echo "         wolfi, debian12, ubuntu2204, rhel8, rhel9, rhel10, fedora" >&2
         exit 2
     fi
     TARGET_BASE="${detected% *}"
     TARGET_BASE_SOURCE="${detected#* }"
-    echo "==> auto-detected target-base: ${TARGET_BASE} (from ${TARGET_BASE_SOURCE})"
+    echo "==> auto-detected target_base: ${TARGET_BASE} (from ${TARGET_BASE_SOURCE})"
 fi
 
 case "${TARGET_BASE}" in
@@ -661,7 +661,7 @@ case "${TARGET_BASE}" in
         PROFILE="xccdf_org.ssgproject.content_profile_standard"
         FAMILY="rpm" ;;
     *)
-        echo "ERROR: unknown target-base '${TARGET_BASE}'." >&2
+        echo "ERROR: unknown target_base '${TARGET_BASE}'." >&2
         exit 2 ;;
 esac
 
@@ -673,7 +673,7 @@ esac
 [ -n "${DATASTREAM_PATH_OVERRIDE}" ] && DATASTREAM="$(basename "${DATASTREAM_PATH_OVERRIDE}")"
 
 echo "==> Scan plan"
-echo "    target-base:   ${TARGET_BASE}"
+echo "    target_base:   ${TARGET_BASE}"
 echo "    scanner:       ${SCANNER}"
 echo "    datastream:    ${DATASTREAM}"
 echo "    profile:       ${PROFILE}"
@@ -823,9 +823,9 @@ elif [ "${FAMILY}" = "dpkg" ]; then
     esac
 fi
 if [ "${DPKG_STATUS}" = "missing" ]; then
-    echo "WARNING: the target has no usable /var/lib/dpkg/status (${DPKG_STATUS_REASON})." >&2
-    echo "         OpenSCAP's dpkg probe reads only the status file, so package rules" >&2
-    echo "         may error or evaluate false; package absence cannot be verified." >&2
+    echo "WARN: the target has no usable /var/lib/dpkg/status (${DPKG_STATUS_REASON})." >&2
+    echo "      OpenSCAP's dpkg probe reads only the status file, so package rules" >&2
+    echo "      may error or evaluate false; package absence cannot be verified." >&2
 fi
 
 # --- 4. pull scanner image -----------------------------------------------
@@ -877,7 +877,7 @@ snapshot_datastream() {
 
 if [ -n "${DATASTREAM_PATH_OVERRIDE}" ]; then
     if [ ! -f "${DATASTREAM_PATH_OVERRIDE}" ]; then
-        echo "ERROR: datastream-path '${DATASTREAM_PATH_OVERRIDE}' not found." >&2
+        echo "ERROR: datastream_path '${DATASTREAM_PATH_OVERRIDE}' not found." >&2
         exit 2
     fi
     ds_src="$(cd "$(dirname "${DATASTREAM_PATH_OVERRIDE}")" && pwd)/$(basename "${DATASTREAM_PATH_OVERRIDE}")"
@@ -885,19 +885,19 @@ if [ -n "${DATASTREAM_PATH_OVERRIDE}" ]; then
     # The scanner image is the one image every scan has.
     if ! snapshot_datastream "${SCANNER_ID}" /src/datastream.xml \
         -v "${ds_src}:/src/datastream.xml:ro"; then
-        echo "ERROR: could not read datastream-path '${DATASTREAM_PATH_OVERRIDE}' (or it is empty)." >&2
+        echo "ERROR: could not read datastream_path '${DATASTREAM_PATH_OVERRIDE}' (or it is empty)." >&2
         exit 2
     fi
     DATASTREAM_SOURCE="datastream_path"
 elif [ "${FAMILY}" != "rpm" ]; then
     # Non-RPM target families resolve to a Chainguard-shape scanner that
     # bundles every major datastream at /usr/share/xml/scap/ssg/content.
-    # Key off FAMILY rather than a literal scanner-image match so that
-    # air-gap consumers who set scanner-image to a mirror (e.g.
+    # Key off FAMILY rather than a literal scanner_image match so that
+    # air-gap consumers who set scanner_image to a mirror (e.g.
     # registry.local/openscap:latest-dev) still take this path instead
     # of falling into the donor flow and pulling the upstream Chainguard
     # image. If a consumer is mirroring a non-Chainguard-shape image for
-    # a non-RPM target, they should set datastream-path explicitly.
+    # a non-RPM target, they should set datastream_path explicitly.
     if [ -n "${TAILORING_FILE}" ]; then
         snapshot_datastream "${SCANNER_ID}" "/usr/share/xml/scap/ssg/content/${DATASTREAM}"
     fi
@@ -1452,13 +1452,13 @@ if [ "${FAMILY}" = "rpm" ]; then
         ""|*[!0-9]*|0)
             RPM_STATUS="missing"
             RPM_STATUS_REASON="the scanner could not query a nonempty RPM inventory through its read-only rootfs mount"
-            echo "WARNING: ${RPM_STATUS_REASON}; package absence cannot be verified." >&2
+            echo "WARN: ${RPM_STATUS_REASON}; package absence cannot be verified." >&2
             ;;
         *) RPM_STATUS="available"; RPM_STATUS_PACKAGES="${rpm_inventory}" ;;
     esac
 fi
-# The scanner writes into a fresh private dir, never into output-dir
-# itself: output-dir is the caller's (it may be shared, hold sockets, or
+# The scanner writes into a fresh private dir, never into output_dir
+# itself: output_dir is the caller's (it may be shared, hold sockets, or
 # contain the scratch rootfs), and /out is the scanner's one writable
 # mount. The two reports are copied out afterwards.
 OUT_STAGE_DIR="$(mktemp -d -t stig-out.XXXXXX)"
@@ -1475,7 +1475,7 @@ case "${DATASTREAM_SHA256}" in
     *[!0-9a-f]*) DATASTREAM_SHA256="" ;;
 esac
 if [ "${#DATASTREAM_SHA256}" -ne 64 ]; then
-    echo "WARNING: could not hash ${DATASTREAM_IN_SCANNER_PATH} inside the scanner image; datastream_sha256 will be empty." >&2
+    echo "WARN: could not hash ${DATASTREAM_IN_SCANNER_PATH} inside the scanner image; datastream_sha256 will be empty." >&2
     DATASTREAM_SHA256=""
     if [ -n "${TAILORING_FILE}" ]; then
         echo "ERROR: a tailored scan requires a hashed datastream." >&2
