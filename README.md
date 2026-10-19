@@ -358,7 +358,7 @@ workflows:
 
 ### Scan an Extracted Filesystem
 
-`rootfs_path` scans a tree that's already on disk, such as a mounted VM disk, and skips the `docker export` step. Stage it in `pre-steps`, outside `output_dir` and without `dev/`, and set `checklist_asset_name` so checklists are generated. This is the layout CI tests:
+`rootfs_path` scans a tree that's already on disk, such as a mounted VM disk, and skips the `docker export` step. Stage it in `pre-steps`, outside `output_dir` and without `dev/`, and set `checklist_asset_name` so checklists are generated. Extract it as root, as image mode does, so the tree keeps the image's file owners: `tar` run as the job's user gives every file that user's owner, and ownership rules such as "/etc/shadow must be owned by root" then fail. This is the layout CI tests:
 
 ```yaml
 - stig-scanner-orb/scan:
@@ -372,7 +372,7 @@ workflows:
             docker pull registry.access.redhat.com/ubi9/ubi:latest
             cid=$(docker create --entrypoint /placeholder registry.access.redhat.com/ubi9/ubi:latest)
             mkdir -p /tmp/stig-rootfs
-            docker export "$cid" | tar -C /tmp/stig-rootfs -xf - --numeric-owner --exclude='dev/*'
+            docker export "$cid" | sudo tar -C /tmp/stig-rootfs -xf - --numeric-owner --exclude='dev/*'
             docker rm "$cid"
 ```
 

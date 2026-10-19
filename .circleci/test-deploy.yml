@@ -721,7 +721,7 @@ workflows:
                   set -e
                   cid=$(docker create --entrypoint /placeholder gcr.io/distroless/cc-debian12:latest)
                   mkdir -p /tmp/distroless-rootfs
-                  docker export "$cid" | tar -C /tmp/distroless-rootfs -xf - --numeric-owner --exclude='dev/*'
+                  docker export "$cid" | sudo tar -C /tmp/distroless-rootfs -xf - --numeric-owner --exclude='dev/*'
                   docker rm "$cid"
           post-steps:
             - run:
@@ -820,7 +820,7 @@ workflows:
                   docker pull registry.access.redhat.com/ubi9/ubi:latest
                   cid=$(docker create --entrypoint /placeholder registry.access.redhat.com/ubi9/ubi:latest)
                   mkdir -p /tmp/stig-rootfs
-                  docker export "$cid" | tar -C /tmp/stig-rootfs -xf - --numeric-owner --exclude='dev/*'
+                  docker export "$cid" | sudo tar -C /tmp/stig-rootfs -xf - --numeric-owner --exclude='dev/*'
                   docker rm "$cid"
           post-steps:
             - run:
@@ -884,7 +884,7 @@ workflows:
                   docker pull registry.access.redhat.com/ubi9/ubi:latest
                   cid=$(docker create --entrypoint /placeholder registry.access.redhat.com/ubi9/ubi:latest)
                   mkdir -p /tmp/stig-rootfs
-                  docker export "$cid" | tar -C /tmp/stig-rootfs -xf - --numeric-owner --exclude='dev/*'
+                  docker export "$cid" | sudo tar -C /tmp/stig-rootfs -xf - --numeric-owner --exclude='dev/*'
                   docker rm "$cid"
           post-steps:
             - run:
