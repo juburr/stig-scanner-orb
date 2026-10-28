@@ -3,6 +3,32 @@
 All notable changes to the STIG Scanner Orb are documented here. Releases use
 [Semantic Versioning](https://semver.org/).
 
+## 2.1.0
+
+Nothing changes for CircleCI pipelines.
+
+### Added
+
+- **GitHub Actions for every command.** `juburr/stig-scanner-orb/actions/scan`,
+  `generate_checklist`, `summarize` and `load_image` take the commands'
+  parameters as inputs, with the same defaults, and run the orb's own scripts
+  through `actions/run_script.sh`, so a scan on GitHub's runners uses the same
+  pinned scanners, checklist generator and gates. `generate_checklist` stages
+  the bundled DISA data in files, as the command does. The `scan` job has no
+  action: the README shows the workflow that composes the actions and uploads
+  the evidence, and what the job does that such a workflow does itself.
+- `.github/workflows/actions.yml` runs the offline tests and the actions on
+  GitHub-hosted runners: a Wolfi scan with its checklist and `fail_on` cases on
+  `ubuntu-24.04` and `ubuntu-24.04-arm`, a RHEL 9 scan of `ubi9/ubi`, a
+  `rootfs_path` scan and a `load_image` scan.
+
+### Changed
+
+- `scan` checks `target_base`, and `generate_checklist` checks `checklist` and
+  `checklist_default_answers`, before any work starts, failing with an `ERROR:`
+  line and exit status 2, since an action input is any string. CircleCI already
+  rejects such values when it compiles the config.
+
 ## 2.0.1
 
 This release changes gate behavior. It ships as a patch because 2.0.0 had only

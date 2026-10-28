@@ -15,5 +15,5 @@ steps:
   - run:
       name: Load image tarball
       environment:
-        PARAM_IMAGE_TARBALL: <<parameters.image_tarball>>
-      command: <<include(scripts/load-image.sh)>>
+        PARAM_IMAGE_TARBALL: << parameters.image_tarball >>
+      command: << include(scripts/load-image.sh) >>

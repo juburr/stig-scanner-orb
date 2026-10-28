@@ -1,0 +1,80 @@
+name: Summarize STIG results and apply the gates
+description: >
+  Parses the scan's results.xml, writes a human-readable summary.txt and
+  provenance.json, applies the optional ignore-list, and enforces the gates.
+  fail_on covers non-ignored fail results on rules at or above a severity,
+  fail_on_scan_error covers error and unknown results and missing package
+  inventory, and require_evaluated_rules fails the step when nothing
+  evaluated, so a mis-dispatched, all-notapplicable scan can't pass as a
+  clean one. Run it after the scan action (and generate_checklist, if you use
+  it) with the same output_dir. Needs Python 3. The GitHub Actions twin of the
+  orb's summarize command.
+author: juburr
+
+inputs:
+  defer_gate:
+    description: >
+      true or false. Record the policy exit status in
+      summary.txt.exit-code instead of failing the step. The orb's scan job
+      sets it so validated artifacts upload before its last step enforces the
+      policies; a workflow that sets it must enforce the recorded status
+      itself. Parsing and configuration errors still fail.
+    default: "false"
+  checklist:
+    description: >
+      auto, require or none. Checklist gate: auto fails conversion errors;
+      require also fails skips; none preserves standalone scan and summarize
+      callers. Valid meta is reported in every mode. Pass the same value used
+      by the generate_checklist action.
+    default: none
+  output_dir:
+    description: Same value as passed to the scan action.
+    default: build/stig
+  fail_on:
+    description: >
+      high, medium, low, info or never. Fail the step when any non-ignored
+      fail result (a compliance finding) is on a rule at or above this
+      severity. high, medium and low are DISA CAT I, II and III; info counts
+      every severity. A rule with no stated severity counts at every level.
+      The default, never, reports findings without failing. Scan-quality
+      issues and an unevaluated scan still fail; see fail_on_scan_error and
+      require_evaluated_rules.
+    default: never
+  fail_on_scan_error:
+    description: >
+      true or false. Fail the step on any error or unknown result, or package
+      inventory (dpkg or RPM) that scan-plan.env records as missing, at every
+      severity and whatever ignore_findings lists. Set false only to keep
+      incomplete evidence on purpose.
+    default: "true"
+  require_evaluated_rules:
+    description: >
+      true or false. Fail the step when zero rules evaluate to pass, fail,
+      fixed or informational, which usually means a mis-dispatched scan (wrong
+      target_base, a scanner missing the probe family the datastream needs).
+      Set false only on a job that intentionally records an all-notapplicable
+      baseline. The summary says so either way.
+    default: "true"
+  ignore_findings:
+    description: >
+      Comma-separated rule IDs whose fail results to subtract from the fail_on
+      count (still listed in summary.txt as ignored): a short DISA id
+      (SV-257779r925318), a full XCCDF rule id, or any value from the rule's
+      ident or reference text. Matching is case-insensitive and
+      whitespace-tolerant. Error and unknown results are never ignored.
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Summarize STIG results and apply gate
+      shell: bash
+      env:
+        PARAM_OUTPUT_DIR: ${{ inputs.output_dir }}
+        PARAM_DEFER_GATE: ${{ inputs.defer_gate }}
+        PARAM_CHECKLIST: ${{ inputs.checklist }}
+        PARAM_FAIL_ON: ${{ inputs.fail_on }}
+        PARAM_FAIL_ON_SCAN_ERROR: ${{ inputs.fail_on_scan_error }}
+        PARAM_REQUIRE_EVALUATED_RULES: ${{ inputs.require_evaluated_rules }}
+        PARAM_IGNORE_FINDINGS: ${{ inputs.ignore_findings }}
+      run: bash "${GITHUB_ACTION_PATH}/../run_script.sh" "${GITHUB_ACTION_PATH}/../../src/scripts/summarize.sh"

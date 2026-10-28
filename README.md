@@ -2,25 +2,27 @@
 
 <img src="assets/logos/stig-scanner-orb-512px.png" width="256" alt="STIG Scanner Orb logo: a checklist and shield badge over the Jefferson Memorial, the Washington Monument and cherry blossoms, inside a round scanner frame">
 
-# STIG Scanner Orb for CircleCI
+# STIG Scanner for CircleCI and GitHub Actions
 
 ### Scan container images against DISA STIGs in CI, and keep the evidence for your ATO.
 
-Run [OpenSCAP](https://www.open-scap.org/) against RHEL, Ubuntu, Debian, Fedora and Wolfi images, or extracted filesystems, with one CircleCI job,<br>
+Run [OpenSCAP](https://www.open-scap.org/) against RHEL, Ubuntu, Debian, Fedora and Wolfi images, or extracted filesystems, with one CircleCI job or a few GitHub Actions steps,<br>
 and get an HTML report, XCCDF results, STIG Viewer checklists and a provenance record back as artifacts.<br>
 Scanner images pinned by digest · Scan containers run with `--network none` · No `sudo`
 
 [![CircleCI Build Status](https://circleci.com/gh/juburr/stig-scanner-orb.svg?style=shield "CircleCI Build Status")](https://circleci.com/gh/juburr/stig-scanner-orb)
+[![GitHub Actions Status](https://github.com/juburr/stig-scanner-orb/actions/workflows/actions.yml/badge.svg?branch=main "GitHub Actions Status")](https://github.com/juburr/stig-scanner-orb/actions/workflows/actions.yml)
 [![CircleCI Orb Version](https://badges.circleci.com/orbs/juburr/stig-scanner-orb.svg)](https://circleci.com/developer/orbs/orb/juburr/stig-scanner-orb)
 [![GitHub License](https://img.shields.io/badge/license-MIT-lightgrey.svg)](LICENSE)
 [![CircleCI Community](https://img.shields.io/badge/community-CircleCI%20Discuss-343434.svg)](https://discuss.circleci.com/c/ecosystem/orbs)
 
+![CircleCI orb and GitHub Actions](https://img.shields.io/badge/CI-CircleCI%20%7C%20GitHub%20Actions-F97316?style=for-the-badge)
 ![Targets: RHEL, Ubuntu, Debian, Fedora and Wolfi](https://img.shields.io/badge/targets-RHEL%20%7C%20Ubuntu%20%7C%20Debian%20%7C%20Fedora%20%7C%20Wolfi-1E3A8A?style=for-the-badge&logo=linux&logoColor=white)
 ![STIG Viewer CKL and CKLB checklists](https://img.shields.io/badge/STIG%20Viewer-CKL%20%7C%20CKLB-DB2777?style=for-the-badge&logoColor=white)
 ![Scanner images pinned by digest](https://img.shields.io/badge/scanners-pinned%20by%20digest-7C3AED?style=for-the-badge&logo=docker&logoColor=white)
 ![Scan containers have no network](https://img.shields.io/badge/scan%20containers-no%20network-16A34A?style=for-the-badge&logoColor=white)
 
-**[Quick Start](#-quick-start)** · **[Features](#-why-stig-scanner-orb)** · **[Targets](#-supported-targets)** · **[Gates](#-gates)** · **[Checklists](#-stig-viewer-checklists)** · **[Job Parameters](#stig-scanner-orbscan)** · **[Security](#-secure-by-design)**
+**[Quick Start](#-quick-start)** · **[Features](#-why-stig-scanner-orb)** · **[Targets](#-supported-targets)** · **[Gates](#-gates)** · **[Checklists](#-stig-viewer-checklists)** · **[Job Parameters](#stig-scanner-orbscan)** · **[CircleCI Commands](#-circleci-commands)** · **[GitHub Actions](#-github-actions)** · **[Security](#-secure-by-design)**
 
 <sub>An unofficial, community-maintained orb, not endorsed by or affiliated with DISA, the Department of Defense, Red Hat or Canonical. [Contributions are welcome!](#-contributing)</sub>
 
@@ -116,12 +118,12 @@ This orb uses the same process Chainguard outlines in its [STIGs for Chainguard 
 
 ## 🚀 Quick Start
 
-Add the orb and point the `scan` job at an image. Copy this into `.circleci/config.yml`:
+On CircleCI, add the orb and point the `scan` job at an image. Copy this into `.circleci/config.yml`:
 
 ```yaml
 version: 2.1
 orbs:
-  stig-scanner-orb: juburr/stig-scanner-orb@2.0.1
+  stig-scanner-orb: juburr/stig-scanner-orb@2.1.0
 
 workflows:
   scan:
@@ -132,6 +134,52 @@ workflows:
 ```
 
 That's enough to produce `report.html`, `results.xml`, `summary.txt` and `provenance.json`, plus STIG Viewer checklists for supported profiles, under `stig/` in the job's **Artifacts** tab. Swap in your own image: any tag the runner can pull, or one an earlier job built (see [Recipes](#-recipes)). Leave out `target_base` to have the orb detect the OS from the image's `/etc/os-release`.
+
+On GitHub Actions, run the orb's [actions](#-github-actions) in a job on an Ubuntu runner, which has the Docker daemon the scan needs, and upload the evidence with `actions/upload-artifact`. Copy this into `.github/workflows/stig.yml`:
+
+```yaml
+name: STIG scan
+on: [push]
+
+jobs:
+  stig:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: juburr/stig-scanner-orb/actions/scan@v2.1.0
+        with:
+          image: cgr.dev/chainguard/static:latest
+          target_base: wolfi
+      - uses: juburr/stig-scanner-orb/actions/generate_checklist@v2.1.0
+      - uses: juburr/stig-scanner-orb/actions/summarize@v2.1.0
+        with:
+          checklist: auto
+      # The evidence uploads even when a gate fails.
+      - name: Upload the scan evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: stig-evidence
+          path: |
+            build/stig/report.html
+            build/stig/results.xml
+            build/stig/summary.txt
+            build/stig/provenance.json
+            build/stig/scan-plan.env
+            build/stig/tailoring-meta.json
+            build/stig/checklist-meta.json
+          if-no-files-found: ignore
+      # The checklists upload only when every step passed.
+      - name: Upload the checklists
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: stig-checklists
+          path: |
+            build/stig/checklist.ckl
+            build/stig/checklist.cklb
+          if-no-files-found: ignore
+```
+
+The same files land in the run's **Artifacts**. [GitHub Actions](#-github-actions) covers what the CircleCI job does that a workflow does itself.
 
 > [!NOTE]
 > `fail_on` is `never` by default, so evaluated `fail` results are reported without failing the build and you can triage a baseline before turning that gate on. Two gates are on by default, because neither result is a compliance answer: a scan with any `error` or `unknown` result, or no readable package inventory, fails the job (`fail_on_scan_error: true`), and so does a scan in which **zero rules evaluate** to pass or fail (`require_evaluated_rules: true`). An all-`notapplicable` result is what you get from a mis-dispatched scan (wrong `target_base`, or a scanner without the probes the datastream needs), and before 2.0.0 that was a green build. See [Gates](#-gates).
@@ -326,7 +374,7 @@ Save the image with `docker save` in the build job, pass the archive through the
 version: 2.1
 
 orbs:
-  stig-scanner-orb: juburr/stig-scanner-orb@2.0.1
+  stig-scanner-orb: juburr/stig-scanner-orb@2.1.0
 
 jobs:
   build-image:
@@ -386,7 +434,7 @@ More recipes live with the features they use: [STIG plus CIS Level 1](#recording
 
 ## 📁 Outputs
 
-Under `<output_dir>/`, uploaded under `stig/` in the job's **Artifacts** tab:
+Under `<output_dir>/`, uploaded under `stig/` in the CircleCI job's **Artifacts** tab (on GitHub Actions, upload them with `actions/upload-artifact`, as the [Quick Start](#-quick-start) does):
 
 - `report.html` — the XCCDF HTML report. CircleCI inlines this in the Artifacts tab so an assessor can open it from the build page.
 - `results.xml` — the XCCDF results document, machine-readable.
@@ -611,7 +659,7 @@ A donated or `datastream_path` datastream is copied into a private per-scan snap
 - A bundled, container-tailored RHEL STIG tailoring file (see [RHEL Host STIGs Evaluated Against Containers](#-rhel-host-stigs-evaluated-against-containers)). You can supply your own with [`tailoring_file`](#xccdf-tailoring).
 - A `harden-check` companion command (checksec / SUID enumeration / shell-presence assertions for `scratch` and Google-distroless targets).
 - SARIF emission for GitHub code scanning.
-- arm64 verification — the scan path works on amd64; arm64 may produce surprising probe results we haven't validated.
+- arm64 verification beyond Wolfi — CI scans a Wolfi image on arm64, but Debian and Ubuntu targets on arm64 may produce surprising probe results we haven't validated, and RHEL and Fedora targets need amd64.
 
 ## 🧱 Jobs
 
@@ -647,7 +695,7 @@ End-to-end STIG scan of a container image or an extracted filesystem. The job lo
 | `no_output_timeout` | `30m` | OpenSCAP can be silent for several minutes during evaluation, especially on RHEL datastreams (~28 MB). Shorten it only if you know your scan completes quickly. |
 | `checkout` | `true` | Boolean. Whether to `checkout` before scanning. Set `false` if the scan job doesn't need your source tree. |
 
-## 🧰 Commands
+## 🧰 CircleCI Commands
 
 The `scan` job runs these commands in order. Use them to assemble a custom job on a machine executor with a local Docker daemon, such as [`stig-scanner-orb/machine`](#stig-scanner-orbmachine): run `scan`, then `generate_checklist`, then `summarize`, passing the same `output_dir` to all three and the same `checklist` mode to the last two. The packaged scan job also provides pre-scan cleanup, the always-run upload guard and gate enforcement after the artifacts upload; prefer it when those guarantees are required.
 
@@ -719,7 +767,93 @@ Linux machine executor, required because the scan host-extracts the target rootf
 | `image` | `ubuntu-2404:current` | CircleCI machine image tag. Stick with the default unless you need a specific Docker version baked in. |
 | `resource_class` | `medium` | Machine resource class. STIG scans are CPU-light but I/O-heavy during rootfs extraction; `medium` is usually enough. |
 
+## ⚡ GitHub Actions
+
+Each of the orb's commands has a GitHub Action of the same name. The actions run the same scripts as the orb, so they extract, dispatch, scan, convert and gate the same way, with the same pinned scanner images, and take the same inputs with the same defaults.
+
+| Action | Orb command | Inputs |
+| --- | --- | --- |
+| `juburr/stig-scanner-orb/actions/load_image` | [`stig-scanner-orb/load_image`](#stig-scanner-orbload_image) | `image_tarball` |
+| `juburr/stig-scanner-orb/actions/scan` | [`stig-scanner-orb/scan`](#stig-scanner-orbscan-1) | `image` or `rootfs_path`, `target_base`, `profile_id`, `tailoring_file`, `scanner_image`, `donor_image`, `datastream_name`, `datastream_path`, `checklist_answers`, `output_dir`, `no_output_timeout` |
+| `juburr/stig-scanner-orb/actions/generate_checklist` | [`stig-scanner-orb/generate_checklist`](#stig-scanner-orbgenerate_checklist) | `output_dir`, `checklist`, `checklist_formats`, `checklist_asset_name`, `checklist_answers`, `checklist_default_answers`, `stig_xccdf_path` |
+| `juburr/stig-scanner-orb/actions/summarize` | [`stig-scanner-orb/summarize`](#stig-scanner-orbsummarize) | `output_dir`, `fail_on`, `fail_on_scan_error`, `require_evaluated_rules`, `ignore_findings`, `checklist`, `defer_gate` |
+
+The `scan` job is CircleCI's and has no action: a workflow runs the actions in order in one job, as the [Quick Start](#-quick-start) does. This one scans an image an earlier job built, fails on CAT I and CAT II findings, and uploads the evidence:
+
+```yaml
+jobs:
+  build-image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build and save the image
+        run: |
+          docker build -t localhost/myapp:latest .
+          docker save localhost/myapp:latest -o myapp.tar
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: myapp-image
+          path: myapp.tar
+
+  stig:
+    needs: build-image
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: myapp-image
+      - uses: juburr/stig-scanner-orb/actions/load_image@v2.1.0
+        with:
+          image_tarball: myapp.tar
+      - uses: juburr/stig-scanner-orb/actions/scan@v2.1.0
+        with:
+          image: localhost/myapp:latest
+      - uses: juburr/stig-scanner-orb/actions/generate_checklist@v2.1.0
+      - uses: juburr/stig-scanner-orb/actions/summarize@v2.1.0
+        with:
+          checklist: auto
+          fail_on: medium
+      - name: Upload the scan evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: stig-evidence
+          path: |
+            build/stig/report.html
+            build/stig/results.xml
+            build/stig/summary.txt
+            build/stig/provenance.json
+            build/stig/scan-plan.env
+            build/stig/tailoring-meta.json
+            build/stig/checklist-meta.json
+          if-no-files-found: ignore
+      - name: Upload the checklists
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: stig-checklists
+          path: |
+            build/stig/checklist.ckl
+            build/stig/checklist.cklb
+          if-no-files-found: ignore
+```
+
+How the actions differ from the orb:
+
+- **What the job does for you.** Besides running the commands, the CircleCI job uploads the evidence even when a gate fails, runs an artifact guard that removes any checklist its metadata doesn't vouch for, uploads the checklists only after the guard passes, and enforces the gates last (`summarize` with `defer_gate: true`), so a failing gate still leaves you the validated checklists. The guard and that last step are part of the job, not commands, so they have no actions. In a workflow, leave `defer_gate` at `false`, so `summarize` fails its own step, upload the evidence with `if: always()`, and upload the checklists only when every step passed (no `if:`): `summarize` has then checked `checklist-meta.json` against `results.xml`, and `generate_checklist` removed any earlier checklists before writing new ones. Upload those files by name, never the whole `output_dir`. Unlike the job, a failing gate keeps the checklists from uploading; the evidence still uploads.
+- **Versions.** An action is referenced by the repository's release tag, such as `v2.1.0`, the same tag the orb is published from. There is no moving major tag such as `v2` yet. For the strongest pinning, use the tag's commit SHA: `juburr/stig-scanner-orb/actions/scan@<sha> # v2.1.0`.
+- **Environment variables.** The orb expands `$NAME` in its string parameters with the CircleCI CLI, which GitHub's runners don't have, so the actions take values as they are. Use GitHub's expressions instead, such as `image: myapp:${{ github.sha }}`.
+- **Enums and booleans.** CircleCI checks the orb's enum and boolean parameters before any step runs. Action inputs are plain strings, which the scripts check before any work starts: `target_base`, `checklist`, `checklist_default_answers` and `fail_on` take the values listed above, and `defer_gate`, `fail_on_scan_error` and `require_evaluated_rules` take `true` or `false`. Anything else fails the step with an `ERROR:` line.
+- **Timeouts.** `no_output_timeout` is CircleCI's, kept so the inputs match the command; it has no effect on GitHub. Set `timeout-minutes` on the job or step instead.
+- **Private registries.** The actions take no credentials. Log in before the scan action, for example with `docker login --password-stdin` in a `run` step, as on CircleCI.
+- **Runners.** The scan needs Docker, bash and Python 3 on the runner itself, which GitHub-hosted `ubuntu-24.04` runners have. Run the actions directly on the runner, not in a job `container:`, for the same reason a CircleCI Docker executor doesn't work: the Docker daemon can't see a rootfs extracted inside the job container. RHEL and Fedora targets need an amd64 runner, since their scanner image is linux/amd64 only. CI runs the actions on `ubuntu-24.04`: a Wolfi scan, with its checklist and `summarize`'s gates; a RHEL 9 scan of `ubi9/ubi`; a `rootfs_path` scan; and a scan of an image loaded with `load_image`. The Wolfi scan also runs on `ubuntu-24.04-arm`.
+
+The actions are composite actions in [`actions/`](actions), next to the orb's source. Each passes its inputs to the orb's scripts as environment variables, and [`actions/run_script.sh`](actions/run_script.sh) gives each script what CircleCI would: a `BASH_ENV` file for the values it hands to later steps, which it then passes on through `GITHUB_ENV`. `generate_checklist` runs the same five steps as the command: four stage the bundled DISA reference data in files, whose paths reach the last step through `GITHUB_ENV`, and the last generates the checklists.
+
 ## 📦 Upgrading
+
+### From 2.0.1 to 2.1.0
+
+Nothing changes for CircleCI pipelines: 2.1.0 adds [GitHub Actions](#-github-actions) for every command. The command scripts now also check `target_base`, `checklist` and `checklist_default_answers` themselves before any work starts, which CircleCI already did when it compiled the config.
 
 ### From 2.0.0 to 2.0.1
 
@@ -753,7 +887,7 @@ Behavior changes:
 - **Integrity**: The default scanner and helper images are pulled by digest, so Docker rejects any content that doesn't match the pin. The datastream's sha256 is taken inside the scanner from the exact snapshot `oscap` evaluates. See [Reproducibility and Provenance](#-reproducibility-and-provenance).
 - **Provenance**: Scanners come from Chainguard's registry (`cgr.dev`) and the OpenShift compliance-operator project on `quay.io`. `provenance.json` records each image's registry digest, local image id and platform, target included, so what ran is identifiable after the fact.
 - **Isolation**: Every helper and scanner container runs with `--network none`. A `rootfs_path` containing a socket, named pipe or device node is refused, and the target's `/etc/os-release` is parsed as data, never sourced.
-- **Confidentiality**: The orb takes no credentials. Log in to a private registry in `pre-steps` (for example with `docker login --password-stdin`). Scratch directories come from `mktemp`, and an `EXIT` trap removes them, on failure too.
+- **Confidentiality**: The orb takes no credentials. Log in to a private registry in `pre-steps`, or on GitHub Actions in a step before the scan action (for example with `docker login --password-stdin`). Scratch directories come from `mktemp`, and an `EXIT` trap removes them, on failure too. The GitHub Actions pass inputs to the scripts as environment variables, never pasting them into a script, and use no other actions.
 - **Privacy**: No usage data or telemetry of any kind is collected or shipped back to the orb developer, and the scan containers have no network to send anything.
 
 > [!IMPORTANT]
@@ -768,11 +902,13 @@ Behavior changes:
 
 ## 💻 Supported Platforms
 
-The scan runs on a CircleCI **machine executor**: a Linux VM with a local Docker daemon, which the orb needs to extract the target filesystem and bind-mount it into the scanner. The `scan` job uses the orb's [`machine` executor](#stig-scanner-orbmachine) with `ubuntu-2404:current` by default; set `machine_image` to use another image (CI also runs a scan on `ubuntu-2204:current`). Docker executors don't work, even with `setup_remote_docker`, because the remote daemon can't see the extracted rootfs. Custom jobs built from the [commands](#-commands) need a machine executor too.
+The scan runs on a CircleCI **machine executor**: a Linux VM with a local Docker daemon, which the orb needs to extract the target filesystem and bind-mount it into the scanner. The `scan` job uses the orb's [`machine` executor](#stig-scanner-orbmachine) with `ubuntu-2404:current` by default; set `machine_image` to use another image (CI also runs a scan on `ubuntu-2204:current`). Docker executors don't work, even with `setup_remote_docker`, because the remote daemon can't see the extracted rootfs. Custom jobs built from the [commands](#-circleci-commands) need a machine executor too.
 
-CI runs every scan path on amd64. The pinned Chainguard image is a multi-arch index (linux/amd64, linux/arm64), but the compliance-operator scanner that RHEL and Fedora targets use is linux/amd64 only, and arm64 scans haven't been validated (see [Not Yet Supported](#-not-yet-supported)).
+CI runs every scan path on amd64, and a Wolfi scan, with its checklist, on GitHub's arm64 runners (`ubuntu-24.04-arm`). The pinned Chainguard image is a multi-arch index (linux/amd64, linux/arm64), but the compliance-operator scanner that RHEL and Fedora targets use is linux/amd64 only, and other arm64 scans haven't been validated (see [Not Yet Supported](#-not-yet-supported)).
 
 The runner needs Docker, bash and Python 3 (standard library only, used by `summarize`, checklist generation and the scan's input checks); CircleCI's Ubuntu machine images include all three. A `rootfs_path` tree with nested mounts needs Docker 25+ on kernel 5.12+ for a recursively read-only bind. Nothing is cached between jobs: the daemon pulls the pinned images unless they are already loaded, and donated datastreams are copied fresh for every scan.
+
+The [GitHub Actions](#-github-actions) need the same: a runner with a local Docker daemon, bash and Python 3, such as GitHub-hosted `ubuntu-24.04`, with the actions running on the runner itself rather than in a job `container:`. CI runs them on `ubuntu-24.04`, and the Wolfi scan on `ubuntu-24.04-arm` too.
 
 ## 🌐 Network Access
 
@@ -791,6 +927,8 @@ Hosts to allow (outbound HTTPS, port 443) from the runner. A host is contacted o
 The default scanner and helper images are pulled by digest (see [Pinned Images](#pinned-images)), so Docker rejects any content that doesn't match the pin. A `scanner_image` or `donor_image` override gets that check only if you pin it by digest too (`name:tag@sha256:…`, as in the air-gap example below); a tag-only override is used as is. The target image is pulled by whatever reference you pass. Either way, `provenance.json` records each image's local image id and, for an image that came from a registry, its registry digest (`repo_digests`), target included, so what ran is identifiable after the fact. A locally built image has no registry digest, and one loaded from `image_tarball` may not either. Its `repo_digests` is then empty, and the evidence has only the local image id, which no registry can confirm.
 
 Not the orb's traffic, but present in any CircleCI job: the `checkout` step talks to your VCS host, and `store_artifacts` uploads to CircleCI. Set `checkout: false` if the scan job doesn't need your source tree.
+
+The GitHub Actions contact the same hosts, so a self-hosted runner needs the same allowances. GitHub fetches the actions from this repository when the workflow starts, and `actions/upload-artifact` uploads to GitHub; a self-hosted runner needs the hosts GitHub lists for [communication with GitHub](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/about-self-hosted-runners#communication-between-self-hosted-runners-and-github).
 
 ## 📡 Running Offline
 
@@ -832,7 +970,7 @@ This is an unofficial, community-maintained orb, and contributions are welcome! 
 
 - **Found a bug or have an idea?** [Open an issue](https://github.com/juburr/stig-scanner-orb/issues).
 - **Need newer scanner content or a new STIG release?** Follow [Updating the Pinned Images](#updating-the-pinned-images) below, and open a pull request with the new digests, release tables and refreshed DISA bundles.
-- **Before opening a pull request**, run `shellcheck src/scripts/*.sh`, the Docker-free tests that CI's `test-scripts` job runs (`for t in tests/*_test.sh; do bash "$t"; done`), and the pack, validate and smoke commands under [Local Development](#local-development). After any edit to `src/scripts/checklist.sh`, run `python3 tools/pack-checklist.py` (see [Updating the Checklist Generator](#updating-the-checklist-generator)).
+- **Before opening a pull request**, run `shellcheck src/scripts/*.sh`, the Docker-free tests that CI's `test-scripts` job runs (`for t in tests/*_test.sh; do bash "$t"; done`), and the pack, validate and smoke commands under [Local Development](#local-development). After any edit to `src/scripts/checklist.sh`, run `python3 tools/pack-checklist.py` (see [Updating the Checklist Generator](#updating-the-checklist-generator)). A change to a command's parameters needs the same change to its action in [`actions/`](actions), which `tests/actions_test.sh` checks; CI also runs the actions on GitHub's runners.
 
 ### Local Development
 
@@ -919,5 +1057,5 @@ The bundled DISA reference content is reproduced from DISA's official Cyber Exch
   <br>
   <sub>STIG evidence from every build, not just at audit time. If this orb helps your team, a ⭐ helps others find it.</sub>
   <br>
-  <sub><a href="#stig-scanner-orb-for-circleci">Back to top ↑</a></sub>
+  <sub><a href="#stig-scanner-for-circleci-and-github-actions">Back to top ↑</a></sub>
 </div>

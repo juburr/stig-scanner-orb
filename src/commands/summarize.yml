@@ -77,11 +77,11 @@ steps:
   - run:
       name: Summarize STIG results and apply gate
       environment:
-        PARAM_OUTPUT_DIR: <<parameters.output_dir>>
-        PARAM_DEFER_GATE: <<parameters.defer_gate>>
-        PARAM_CHECKLIST: <<parameters.checklist>>
-        PARAM_FAIL_ON: <<parameters.fail_on>>
-        PARAM_FAIL_ON_SCAN_ERROR: <<parameters.fail_on_scan_error>>
-        PARAM_REQUIRE_EVALUATED_RULES: <<parameters.require_evaluated_rules>>
-        PARAM_IGNORE_FINDINGS: <<parameters.ignore_findings>>
-      command: <<include(scripts/summarize.sh)>>
+        PARAM_OUTPUT_DIR: << parameters.output_dir >>
+        PARAM_DEFER_GATE: << parameters.defer_gate >>
+        PARAM_CHECKLIST: << parameters.checklist >>
+        PARAM_FAIL_ON: << parameters.fail_on >>
+        PARAM_FAIL_ON_SCAN_ERROR: << parameters.fail_on_scan_error >>
+        PARAM_REQUIRE_EVALUATED_RULES: << parameters.require_evaluated_rules >>
+        PARAM_IGNORE_FINDINGS: << parameters.ignore_findings >>
+      command: << include(scripts/summarize.sh) >>

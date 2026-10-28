@@ -58,6 +58,15 @@ OUTPUT_DIR="$(subst "${PARAM_OUTPUT_DIR:-build/stig}")"
 DONOR_IMAGE="$(subst "${PARAM_DONOR_IMAGE:-}")"
 [ -n "${DONOR_IMAGE}" ] || DONOR_IMAGE="${DEFAULT_CHAINGUARD_IMAGE}"
 
+# CircleCI checks the enum before the step runs; a GitHub Action input is
+# any string, so check it before anything is pulled or extracted.
+case "${TARGET_BASE}" in
+    auto|wolfi|debian12|ubuntu2204|rhel8|rhel9|rhel10|fedora) ;;
+    *)
+        echo "ERROR: target_base must be auto, wolfi, debian12, ubuntu2204, rhel8, rhel9, rhel10 or fedora, not '${TARGET_BASE}'." >&2
+        exit 2 ;;
+esac
+
 # A datastream name is appended to paths in both the donor and scanner
 # containers.  Keep it a filename: accepting path separators would let a
 # typo select unrelated content (or write outside /out during donation).
