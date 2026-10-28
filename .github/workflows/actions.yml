@@ -1,0 +1,338 @@
+# Tests the GitHub Actions in actions/ on GitHub's own runners, as
+# .circleci/test-deploy.yml tests the orb on CircleCI. Each job runs the
+# actions from this checkout (uses: ./actions/...), so a pull request tests
+# its own changes. The scans mirror smoke-wolfi, smoke-gate, smoke-rhel9,
+# smoke-rootfs-checklist and smoke-tarball; the rest of the CircleCI matrix
+# runs the same scripts and isn't repeated here.
+name: GitHub Actions
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run tests/*_test.sh
+        run: |
+          for test in tests/*_test.sh; do
+            echo "=== ${test}"
+            bash "${test}"
+          done
+      # Action inputs are plain strings, which CircleCI would have checked
+      # against the enum or boolean. Each must fail before any work starts.
+      - id: bad-target-base
+        continue-on-error: true
+        uses: ./actions/scan
+        with:
+          image: cgr.dev/chainguard/static:latest
+          target_base: rhel7
+      - id: bad-checklist
+        continue-on-error: true
+        uses: ./actions/generate_checklist
+        with:
+          checklist: "yes"
+      - id: bad-boolean
+        continue-on-error: true
+        uses: ./actions/summarize
+        with:
+          fail_on_scan_error: "yes"
+      - name: Check that each bad input failed, before the scan pulled anything
+        env:
+          OUTCOMES: >-
+            ${{ steps.bad-target-base.outcome }}
+            ${{ steps.bad-checklist.outcome }}
+            ${{ steps.bad-boolean.outcome }}
+        run: |
+          echo "outcomes: ${OUTCOMES}"
+          [[ "${OUTCOMES}" == "failure failure failure" ]]
+          [[ -z "$(docker images -q cgr.dev/chainguard/static:latest)" ]]
+
+  wolfi:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux/amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./actions/scan
+        with:
+          image: cgr.dev/chainguard/static:latest
+          target_base: wolfi
+      - uses: ./actions/generate_checklist
+      - uses: ./actions/summarize
+        with:
+          checklist: auto
+      - name: Assert the summary shows real signal
+        run: |
+          test -f build/stig/summary.txt
+          test -f build/stig/results.xml
+          test -f build/stig/report.html
+          grep -q "target-base:    wolfi" build/stig/summary.txt
+          pass=$(awk '/^  pass / {print $2}' build/stig/summary.txt)
+          na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
+          echo "pass=${pass:-0} notapplicable=${na:-0}"
+          test "${pass:-0}" -gt 50 || { echo "expected >50 pass rules"; exit 1; }
+          test "${na:-0}" -gt 50 || { echo "expected >50 notapplicable rules"; exit 1; }
+          if grep -q "not evidence of compliance" build/stig/summary.txt; then
+            echo "wolfi scan was hollow; expected evaluated rules"
+            exit 1
+          fi
+      - name: Assert provenance records the pinned scanner
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          grep -q "^Provenance:" build/stig/summary.txt
+          pinned=$(sed -n 's/^DEFAULT_CHAINGUARD_IMAGE="[^@]*@\(sha256:[0-9a-f]*\)"$/\1/p' src/scripts/scan.sh)
+          test -n "$pinned"
+          python3 -c '
+          import json, re, sys
+          pinned, platform = sys.argv[1:]
+          p = json.load(open("build/stig/provenance.json"))
+          print(json.dumps(p, indent=2))
+          assert any(d.endswith("@" + pinned) for d in p["scanner"]["repo_digests"]), "scanner digest is not the pin"
+          assert p["scanner"]["openscap_version"], "no openscap version"
+          assert p["datastream"]["source"] == "bundled"
+          assert re.fullmatch(r"[0-9a-f]{64}", p["datastream"]["sha256"] or ""), "datastream not hashed"
+          assert p["datastream"]["benchmark_version"], "no benchmark version"
+          assert p["target"]["repo_digests"], "target pulled from cgr.dev must have a repo digest"
+          assert p["donor"]["used_for"] == ["extraction"]
+          assert p["scanner"]["platform"] == platform, p["scanner"]
+          assert p["target"]["platform"] == platform, p["target"]
+          ' "$pinned" "$PLATFORM"
+      - name: Assert checklist artifacts and release provenance
+        run: python3 tools/checklist-smoke.py build/stig generated
+      - name: Upload the scan evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: stig-wolfi-${{ matrix.runner }}
+          path: |
+            build/stig/report.html
+            build/stig/results.xml
+            build/stig/summary.txt
+            build/stig/provenance.json
+            build/stig/scan-plan.env
+            build/stig/checklist-meta.json
+          if-no-files-found: ignore
+      # smoke-gate: the same scan through summarize's gates.
+      - id: gate-info
+        continue-on-error: true
+        uses: ./actions/summarize
+        with:
+          fail_on: info
+      - name: Count fail results at high or unstated severity
+        id: high
+        run: |
+          # Fail entries read "  - <id> (<severity>, ...)". fail_on counts
+          # only fail results; a severity other than info, low, or medium
+          # counts at every level.
+          high=$(awk '
+            /^Fail \(/ {section=1; next}
+            /^[A-Za-z]/ {section=0}
+            section && $1 == "-" && $2 != "[IGNORED]" {
+              sev = $3; gsub(/[(),]/, "", sev)
+              if (sev != "info" && sev != "low" && sev != "medium") n++
+            }
+            END {print n + 0}
+          ' build/stig/summary.txt)
+          echo "fail results at high or unstated severity: ${high}"
+          if [ "${high}" -gt 0 ]; then
+            echo "expected=failure" >> "${GITHUB_OUTPUT}"
+          else
+            echo "expected=success" >> "${GITHUB_OUTPUT}"
+          fi
+          # Short ids from the Fail section, for the ignore list below.
+          fails=$(awk '
+            /^Fail \(/ {section=1; next}
+            /^[A-Za-z]/ {section=0}
+            section && $1 == "-" {
+              if ($2 == "[IGNORED]") print $3; else print $2
+            }
+          ' build/stig/summary.txt | sort -u | paste -sd, -)
+          test -n "$fails" || { echo "no failures parsed; the wolfi precondition is broken"; exit 1; }
+          echo "fails=${fails}" >> "${GITHUB_OUTPUT}"
+      - id: gate-high
+        continue-on-error: true
+        uses: ./actions/summarize
+        with:
+          fail_on: high
+      - name: Check the gates' outcomes
+        env:
+          INFO: ${{ steps.gate-info.outcome }}
+          HIGH: ${{ steps.gate-high.outcome }}
+          EXPECTED_HIGH: ${{ steps.high.outputs.expected }}
+        run: |
+          echo "fail_on info: ${INFO}; fail_on high: ${HIGH} (expected ${EXPECTED_HIGH})"
+          [[ "${INFO}" == failure ]]
+          [[ "${HIGH}" == "${EXPECTED_HIGH}" ]]
+          grep -q "^  fail-on: high$" build/stig/summary.txt
+      # Every real failure ignored: the gate passes, with scan-quality on.
+      - uses: ./actions/summarize
+        with:
+          fail_on: info
+          ignore_findings: ${{ steps.high.outputs.fails }}
+
+  rhel9:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./actions/scan
+        with:
+          image: registry.access.redhat.com/ubi9/ubi:latest
+          target_base: rhel9
+      - uses: ./actions/generate_checklist
+      - uses: ./actions/summarize
+        with:
+          checklist: auto
+      - name: Assert RPM dispatch and the evaluated host-STIG subset
+        run: |
+          test -f build/stig/results.xml
+          test -f build/stig/report.html
+          grep -q "scanner=quay.io/compliance-operator" build/stig/scan-plan.env
+          grep -q "datastream=ssg-rhel9-ds.xml" build/stig/scan-plan.env
+          grep -q "family=rpm" build/stig/scan-plan.env
+          python3 -c '
+          import json, re
+          p = json.load(open("build/stig/provenance.json"))
+          assert any(d.startswith("quay.io/compliance-operator/openscap-ocp@sha256:") for d in p["scanner"]["repo_digests"])
+          assert p["datastream"]["source"] == "donated"
+          assert re.fullmatch(r"[0-9a-f]{64}", p["datastream"]["sha256"] or "")
+          assert p["datastream"]["ssg_version"], "RHEL datastream is SSG content"
+          assert p["donor"]["used_for"] == ["extraction", "datastream"]
+          assert p["target_base"]["resolved"] == "rhel9"
+          assert p["scanner"]["platform"] == "linux/amd64", p["scanner"]
+          assert p["donor"]["platform"].startswith("linux/"), p["donor"]
+          '
+          na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
+          ev=$(awk '/^Evaluated rules:/ {print $3}' build/stig/summary.txt)
+          echo "evaluated=${ev:-0} notapplicable=${na:-0}"
+          test "${na:-0}" -gt 50
+          test "${ev:-0}" -gt 0
+          if grep -q "not evidence of compliance" build/stig/summary.txt; then
+            echo "host-STIG scan was hollow; expected evaluated rules"
+            exit 1
+          fi
+      - name: Assert checklist artifacts and release provenance
+        run: python3 tools/checklist-smoke.py build/stig generated
+      # The upload pattern the README shows: the evidence always, the
+      # checklists only when every step passed.
+      - name: Upload the scan evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: stig-rhel9-evidence
+          path: |
+            build/stig/report.html
+            build/stig/results.xml
+            build/stig/summary.txt
+            build/stig/provenance.json
+            build/stig/scan-plan.env
+            build/stig/tailoring-meta.json
+            build/stig/checklist-meta.json
+          if-no-files-found: ignore
+      - name: Upload the checklists
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: stig-rhel9-checklists
+          path: |
+            build/stig/checklist.ckl
+            build/stig/checklist.cklb
+          if-no-files-found: ignore
+
+  rootfs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Stage an extracted rootfs
+        run: |
+          docker pull registry.access.redhat.com/ubi9/ubi:latest
+          cid=$(docker create --entrypoint /placeholder registry.access.redhat.com/ubi9/ubi:latest)
+          mkdir -p /tmp/stig-rootfs
+          docker export "$cid" | sudo tar -C /tmp/stig-rootfs -xf - --numeric-owner --exclude='dev/*'
+          docker rm "$cid"
+      - uses: ./actions/scan
+        with:
+          rootfs_path: /tmp/stig-rootfs
+          target_base: rhel9
+      - uses: ./actions/generate_checklist
+        with:
+          checklist_asset_name: rootfs-smoke-app
+      - uses: ./actions/summarize
+        with:
+          checklist: auto
+      - name: Assert rootfs-mode outputs
+        run: |
+          test -f build/stig/results.xml
+          test -f build/stig/report.html
+          grep -q "target-rootfs:" build/stig/summary.txt
+          na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
+          echo "notapplicable=${na:-0}"
+          test "${na:-0}" -gt 50
+      - name: Assert checklist artifacts and release provenance
+        run: python3 tools/checklist-smoke.py build/stig generated
+
+  tarball:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The tag is local-only and not pullable, so the scan can only succeed
+      # if load_image actually loaded the archive.
+      - name: Build a non-pullable image tarball
+        run: |
+          docker pull cgr.dev/chainguard/static:latest
+          docker tag cgr.dev/chainguard/static:latest localhost/stig-tarball-smoke:latest
+          docker save localhost/stig-tarball-smoke:latest -o "${RUNNER_TEMP}/stig-image.tar"
+          docker rmi localhost/stig-tarball-smoke:latest cgr.dev/chainguard/static:latest
+          echo "STIG_IMAGE_TAR=${RUNNER_TEMP}/stig-image.tar" >> "${GITHUB_ENV}"
+      - uses: ./actions/load_image
+        with:
+          image_tarball: ${{ env.STIG_IMAGE_TAR }}
+      - uses: ./actions/scan
+        with:
+          image: localhost/stig-tarball-smoke:latest
+          target_base: wolfi
+      - uses: ./actions/summarize
+      - name: Assert the scan ran against the loaded image
+        run: |
+          test -f build/stig/summary.txt
+          grep -q "localhost/stig-tarball-smoke:latest" build/stig/scan-plan.env
+          na=$(awk '/^  notapplicable / {print $2}' build/stig/summary.txt)
+          echo "notapplicable=${na:-0}"
+          test "${na:-0}" -gt 50

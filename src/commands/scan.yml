@@ -114,17 +114,17 @@ parameters:
 steps:
   - run:
       name: STIG scan
-      no_output_timeout: <<parameters.no_output_timeout>>
+      no_output_timeout: << parameters.no_output_timeout >>
       environment:
-        PARAM_IMAGE: <<parameters.image>>
-        PARAM_ROOTFS_PATH: <<parameters.rootfs_path>>
-        PARAM_TARGET_BASE: <<parameters.target_base>>
-        PARAM_SCANNER_IMAGE: <<parameters.scanner_image>>
-        PARAM_DATASTREAM_NAME: <<parameters.datastream_name>>
-        PARAM_DATASTREAM_PATH: <<parameters.datastream_path>>
-        PARAM_CHECKLIST_ANSWERS: <<parameters.checklist_answers>>
-        PARAM_TAILORING_FILE: <<parameters.tailoring_file>>
-        PARAM_PROFILE_ID: <<parameters.profile_id>>
-        PARAM_OUTPUT_DIR: <<parameters.output_dir>>
-        PARAM_DONOR_IMAGE: <<parameters.donor_image>>
-      command: <<include(scripts/scan.sh)>>
+        PARAM_IMAGE: << parameters.image >>
+        PARAM_ROOTFS_PATH: << parameters.rootfs_path >>
+        PARAM_TARGET_BASE: << parameters.target_base >>
+        PARAM_SCANNER_IMAGE: << parameters.scanner_image >>
+        PARAM_DATASTREAM_NAME: << parameters.datastream_name >>
+        PARAM_DATASTREAM_PATH: << parameters.datastream_path >>
+        PARAM_CHECKLIST_ANSWERS: << parameters.checklist_answers >>
+        PARAM_TAILORING_FILE: << parameters.tailoring_file >>
+        PARAM_PROFILE_ID: << parameters.profile_id >>
+        PARAM_OUTPUT_DIR: << parameters.output_dir >>
+        PARAM_DONOR_IMAGE: << parameters.donor_image >>
+      command: << include(scripts/scan.sh) >>

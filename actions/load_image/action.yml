@@ -1,0 +1,24 @@
+name: Load an image tarball for a STIG scan
+description: >
+  Loads a docker save archive into the runner's Docker daemon with docker
+  load, so the scan action can find the image without pulling it. Useful when
+  an earlier job built the image and passed the archive on as an artifact. A
+  no-op when image_tarball is empty. The GitHub Actions twin of the orb's
+  load_image command.
+author: juburr
+
+inputs:
+  image_tarball:
+    description: >
+      Path to a docker save archive (for example images/myapp.tar). No-op when
+      empty.
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Load image tarball
+      shell: bash
+      env:
+        PARAM_IMAGE_TARBALL: ${{ inputs.image_tarball }}
+      run: bash "${GITHUB_ACTION_PATH}/../run_script.sh" "${GITHUB_ACTION_PATH}/../../src/scripts/load-image.sh"

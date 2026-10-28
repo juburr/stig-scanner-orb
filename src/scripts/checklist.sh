@@ -23,6 +23,18 @@ if [ -n "${BASH_SOURCE[0]:-}" ]; then
     BUNDLE_DIR="$(dirname "${BASH_SOURCE[0]}")/stig-data"
 fi
 ROOTFS_PATH="$(subst "${PARAM_ROOTFS_PATH:-}")"
+# CircleCI checks these enums before the step runs; a GitHub Action input is
+# any string. Refuse a bad one before any earlier output is touched.
+if [ "${GUARD}" != "true" ]; then
+    case "${CHECKLIST}" in
+        auto|require|none) ;;
+        *) echo "ERROR: checklist must be auto, require or none, not '${CHECKLIST}'." >&2; exit 2 ;;
+    esac
+    case "${DEFAULT_ANSWERS}" in
+        none|container-host) ;;
+        *) echo "ERROR: checklist_default_answers must be none or container-host, not '${DEFAULT_ANSWERS}'." >&2; exit 2 ;;
+    esac
+fi
 args=("--results=${OUTPUT_DIR}/results.xml" "--out-dir=${OUTPUT_DIR}")
 if [ "${GUARD}" = "true" ]; then
     args=(--guard "${args[@]}" "--rootfs-path=${ROOTFS_PATH}")

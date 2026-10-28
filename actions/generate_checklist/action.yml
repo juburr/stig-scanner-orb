@@ -1,0 +1,84 @@
+name: Generate STIG Viewer checklists
+description: >
+  Generates offline STIG Viewer CKL and CKLB checklists from the scan's
+  results.xml. DISA STIG profiles use verified pinned content or a supplied
+  DISA skeleton, and the pinned Chainguard vendor profile produces a GPOS SRG
+  checklist. Conversion failures are recorded in checklist-meta.json, and the
+  summarize action enforces the checklist policy. Run it between the scan and
+  summarize actions. Needs Python 3. The GitHub Actions twin of the orb's
+  generate_checklist command.
+author: juburr
+
+inputs:
+  output_dir:
+    description: Same value as passed to the scan action.
+    default: build/stig
+  checklist:
+    description: >
+      auto, require or none. auto generates supported STIG checklists and
+      allows documented skips; require also fails skips at summarize; none
+      disables generation.
+    default: auto
+  checklist_formats:
+    description: Comma-separated ckl and/or cklb, case-insensitive.
+    default: ckl,cklb
+  checklist_answers:
+    description: >
+      Runner-readable, release-bound site answers JSON (at most 1 MiB),
+      outside output_dir. Applied only to checklists; automated scan gates are
+      unchanged.
+    default: ""
+  checklist_default_answers:
+    description: >
+      none or container-host. container-host opts into reviewed manual host
+      answers for RHEL 9 V2R9 container images; you must establish that the
+      image uses its runtime host's kernel.
+    default: none
+  stig_xccdf_path:
+    description: >
+      Runner-readable DISA manual XCCDF file or ZIP (16 MiB maximum). Read
+      offline from one in-memory snapshot; overrides the checklist release.
+    default: ""
+  checklist_asset_name:
+    description: >
+      Stable asset name. Defaults to the image reference in image mode;
+      required for rootfs_path scans. Sanitized and capped at 255 characters.
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # The bundled DISA reference data is staged in files, as the command does,
+    # and found by the last step through the STIG_DATA_* variables the
+    # staging scripts export.
+    - name: Stage bundled DISA reference (rhel8)
+      shell: bash
+      env:
+        PARAM_CHECKLIST: ${{ inputs.checklist }}
+      run: bash "${GITHUB_ACTION_PATH}/../run_script.sh" "${GITHUB_ACTION_PATH}/../../src/scripts/stig-data/rhel8.sh"
+    - name: Stage bundled DISA reference (rhel9)
+      shell: bash
+      env:
+        PARAM_CHECKLIST: ${{ inputs.checklist }}
+      run: bash "${GITHUB_ACTION_PATH}/../run_script.sh" "${GITHUB_ACTION_PATH}/../../src/scripts/stig-data/rhel9.sh"
+    - name: Stage bundled DISA reference (rhel10)
+      shell: bash
+      env:
+        PARAM_CHECKLIST: ${{ inputs.checklist }}
+      run: bash "${GITHUB_ACTION_PATH}/../run_script.sh" "${GITHUB_ACTION_PATH}/../../src/scripts/stig-data/rhel10.sh"
+    - name: Stage bundled DISA reference (ubuntu2204)
+      shell: bash
+      env:
+        PARAM_CHECKLIST: ${{ inputs.checklist }}
+      run: bash "${GITHUB_ACTION_PATH}/../run_script.sh" "${GITHUB_ACTION_PATH}/../../src/scripts/stig-data/ubuntu2204.sh"
+    - name: Generate STIG Viewer checklists
+      shell: bash
+      env:
+        PARAM_OUTPUT_DIR: ${{ inputs.output_dir }}
+        PARAM_CHECKLIST: ${{ inputs.checklist }}
+        PARAM_CHECKLIST_FORMATS: ${{ inputs.checklist_formats }}
+        PARAM_CHECKLIST_ANSWERS: ${{ inputs.checklist_answers }}
+        PARAM_CHECKLIST_DEFAULT_ANSWERS: ${{ inputs.checklist_default_answers }}
+        PARAM_STIG_XCCDF_PATH: ${{ inputs.stig_xccdf_path }}
+        PARAM_CHECKLIST_ASSET_NAME: ${{ inputs.checklist_asset_name }}
+      run: bash "${GITHUB_ACTION_PATH}/../run_script.sh" "${GITHUB_ACTION_PATH}/../../src/scripts/checklist-packed.sh"
