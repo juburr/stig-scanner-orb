@@ -659,7 +659,7 @@ A donated or `datastream_path` datastream is copied into a private per-scan snap
 - A bundled, container-tailored RHEL STIG tailoring file (see [RHEL Host STIGs Evaluated Against Containers](#-rhel-host-stigs-evaluated-against-containers)). You can supply your own with [`tailoring_file`](#xccdf-tailoring).
 - A `harden-check` companion command (checksec / SUID enumeration / shell-presence assertions for `scratch` and Google-distroless targets).
 - SARIF emission for GitHub code scanning.
-- arm64 verification — the scan path works on amd64; arm64 may produce surprising probe results we haven't validated.
+- arm64 verification beyond Wolfi — CI scans a Wolfi image on arm64, but Debian and Ubuntu targets on arm64 may produce surprising probe results we haven't validated, and RHEL and Fedora targets need amd64.
 
 ## 🧱 Jobs
 
@@ -845,7 +845,7 @@ How the actions differ from the orb:
 - **Enums and booleans.** CircleCI checks the orb's enum and boolean parameters before any step runs. Action inputs are plain strings, which the scripts check before any work starts: `target_base`, `checklist`, `checklist_default_answers` and `fail_on` take the values listed above, and `defer_gate`, `fail_on_scan_error` and `require_evaluated_rules` take `true` or `false`. Anything else fails the step with an `ERROR:` line.
 - **Timeouts.** `no_output_timeout` is CircleCI's, kept so the inputs match the command; it has no effect on GitHub. Set `timeout-minutes` on the job or step instead.
 - **Private registries.** The actions take no credentials. Log in before the scan action, for example with `docker login --password-stdin` in a `run` step, as on CircleCI.
-- **Runners.** The scan needs Docker, bash and Python 3 on the runner itself, which GitHub-hosted `ubuntu-24.04` runners have. Run the actions directly on the runner, not in a job `container:`, for the same reason a CircleCI Docker executor doesn't work: the Docker daemon can't see a rootfs extracted inside the job container. RHEL and Fedora targets need an amd64 runner, since their scanner image is linux/amd64 only. CI runs the actions on `ubuntu-24.04`: a Wolfi scan with its checklist and `fail_on` set to `info` and `high`, and with every finding ignored, a RHEL 9 scan of `ubi9/ubi`, a `rootfs_path` scan, and a scan of an image loaded with `load_image`.
+- **Runners.** The scan needs Docker, bash and Python 3 on the runner itself, which GitHub-hosted `ubuntu-24.04` runners have. Run the actions directly on the runner, not in a job `container:`, for the same reason a CircleCI Docker executor doesn't work: the Docker daemon can't see a rootfs extracted inside the job container. RHEL and Fedora targets need an amd64 runner, since their scanner image is linux/amd64 only. CI runs the actions on `ubuntu-24.04`: a Wolfi scan, with its checklist and `summarize`'s gates; a RHEL 9 scan of `ubi9/ubi`; a `rootfs_path` scan; and a scan of an image loaded with `load_image`. The Wolfi scan also runs on `ubuntu-24.04-arm`.
 
 The actions are composite actions in [`actions/`](actions), next to the orb's source. Each passes its inputs to the orb's scripts as environment variables, and [`actions/run_script.sh`](actions/run_script.sh) gives each script what CircleCI would: a `BASH_ENV` file for the values it hands to later steps, which it then passes on through `GITHUB_ENV`. `generate_checklist` runs the same five steps as the command: four stage the bundled DISA reference data in files, whose paths reach the last step through `GITHUB_ENV`, and the last generates the checklists.
 
@@ -904,11 +904,11 @@ Behavior changes:
 
 The scan runs on a CircleCI **machine executor**: a Linux VM with a local Docker daemon, which the orb needs to extract the target filesystem and bind-mount it into the scanner. The `scan` job uses the orb's [`machine` executor](#stig-scanner-orbmachine) with `ubuntu-2404:current` by default; set `machine_image` to use another image (CI also runs a scan on `ubuntu-2204:current`). Docker executors don't work, even with `setup_remote_docker`, because the remote daemon can't see the extracted rootfs. Custom jobs built from the [commands](#-circleci-commands) need a machine executor too.
 
-CI runs every scan path on amd64. The pinned Chainguard image is a multi-arch index (linux/amd64, linux/arm64), but the compliance-operator scanner that RHEL and Fedora targets use is linux/amd64 only, and arm64 scans haven't been validated (see [Not Yet Supported](#-not-yet-supported)).
+CI runs every scan path on amd64, and a Wolfi scan, with its checklist, on GitHub's arm64 runners (`ubuntu-24.04-arm`). The pinned Chainguard image is a multi-arch index (linux/amd64, linux/arm64), but the compliance-operator scanner that RHEL and Fedora targets use is linux/amd64 only, and other arm64 scans haven't been validated (see [Not Yet Supported](#-not-yet-supported)).
 
 The runner needs Docker, bash and Python 3 (standard library only, used by `summarize`, checklist generation and the scan's input checks); CircleCI's Ubuntu machine images include all three. A `rootfs_path` tree with nested mounts needs Docker 25+ on kernel 5.12+ for a recursively read-only bind. Nothing is cached between jobs: the daemon pulls the pinned images unless they are already loaded, and donated datastreams are copied fresh for every scan.
 
-The [GitHub Actions](#-github-actions) need the same: a runner with a local Docker daemon, bash and Python 3, such as GitHub-hosted `ubuntu-24.04`, with the actions running on the runner itself rather than in a job `container:`. CI runs them on `ubuntu-24.04`.
+The [GitHub Actions](#-github-actions) need the same: a runner with a local Docker daemon, bash and Python 3, such as GitHub-hosted `ubuntu-24.04`, with the actions running on the runner itself rather than in a job `container:`. CI runs them on `ubuntu-24.04`, and the Wolfi scan on `ubuntu-24.04-arm` too.
 
 ## 🌐 Network Access
 
